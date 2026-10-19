@@ -1,0 +1,77 @@
+/** Keyboard + pointer-lock mouse input. `enabled=false` while a UI panel has focus. */
+export class Input {
+  keys = new Set<string>();
+  mouseDX = 0;
+  mouseDY = 0;
+  enabled = true;
+  locked = false;
+  private pressHandlers = new Map<string, Array<() => void>>();
+
+  constructor(private canvas: HTMLCanvasElement) {
+    window.addEventListener('keydown', (e) => {
+      if (isTyping(e)) return;
+      if (e.code === 'Tab') e.preventDefault();
+      if (!e.repeat) this.pressHandlers.get(e.code)?.forEach((h) => h());
+      if (this.enabled) this.keys.add(e.code);
+    });
+    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    window.addEventListener('blur', () => this.keys.clear());
+    canvas.addEventListener('click', () => {
+      if (this.enabled && !this.locked) canvas.requestPointerLock();
+    });
+    document.addEventListener('pointerlockchange', () => {
+      this.locked = document.pointerLockElement === canvas;
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!this.locked || !this.enabled) return;
+      this.mouseDX += e.movementX;
+      this.mouseDY += e.movementY;
+    });
+  }
+
+  /** Register a handler for a key press (KeyboardEvent.code, e.g. 'KeyE'). */
+  onPress(code: string, handler: () => void) {
+    const list = this.pressHandlers.get(code) ?? [];
+    list.push(handler);
+    this.pressHandlers.set(code, list);
+  }
+
+  down(code: string) {
+    return this.enabled && this.keys.has(code);
+  }
+
+  /** Movement axes: x = strafe right, y = forward. */
+  axes() {
+    let x = 0, y = 0;
+    if (this.down('KeyW') || this.down('ArrowUp')) y += 1;
+    if (this.down('KeyS') || this.down('ArrowDown')) y -= 1;
+    if (this.down('KeyD') || this.down('ArrowRight')) x += 1;
+    if (this.down('KeyA') || this.down('ArrowLeft')) x -= 1;
+    return { x, y };
+  }
+
+  consumeMouse() {
+    const d = { x: this.mouseDX, y: this.mouseDY };
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    return d;
+  }
+
+  /** Disable game input (a panel is open) and release the mouse. */
+  setEnabled(on: boolean) {
+    this.enabled = on;
+    if (!on) {
+      this.keys.clear();
+      if (document.pointerLockElement) document.exitPointerLock();
+    }
+  }
+
+  lock() {
+    if (!this.locked) this.canvas.requestPointerLock();
+  }
+}
+
+function isTyping(e: KeyboardEvent) {
+  const t = e.target as HTMLElement | null;
+  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+}

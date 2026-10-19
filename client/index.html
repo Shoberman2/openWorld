@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenWorld HQ</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <!-- Title / city select -->
+    <section id="title" class="screen">
+      <div class="title-inner">
+        <div class="brand">
+          <div class="brand-mark">OW</div>
+          <div>
+            <h1>OpenWorld HQ</h1>
+            <p>Your GitHub, as a living city. Every repo is a building. Every PR is a person.</p>
+          </div>
+        </div>
+        <div id="gh-status" class="gh-status">Connecting to GitHub…</div>
+        <form id="token-form" class="token-form hidden">
+          <input id="token-input" type="password" placeholder="Paste a GitHub token (repo scope)" autocomplete="off" />
+          <button type="submit">Connect</button>
+        </form>
+        <h2>Choose your city</h2>
+        <div id="cities" class="cities"></div>
+        <button id="play" class="play" disabled>Enter the city</button>
+        <p class="controls-hint">WASD move · Shift run · Mouse look · <b>E</b> interact · Tab directory · M map · T time of day · Esc release mouse</p>
+      </div>
+    </section>
+
+    <!-- Loading -->
+    <section id="loading" class="screen hidden">
+      <div class="loading-inner">
+        <div class="spinner"></div>
+        <div id="loading-text">Building your city…</div>
+      </div>
+    </section>
+
+    <!-- HUD -->
+    <div id="hud" class="hidden">
+      <div id="hud-location" class="hud-chip"></div>
+      <div id="hud-time" class="hud-chip"></div>
+      <div id="hud-agents" class="hud-chip hidden"></div>
+      <canvas id="minimap" width="220" height="220"></canvas>
+      <div id="prompt" class="prompt hidden"></div>
+      <div id="toasts"></div>
+      <div id="crosshair"></div>
+      <div id="click-to-look" class="hidden">Click to look around</div>
+    </div>
+
+    <div id="fade"></div>
+    <div id="panel-root"></div>
+    <div id="labels"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

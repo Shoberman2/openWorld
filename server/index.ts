@@ -1,0 +1,252 @@
+import { createServer } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import express, { type Request, type Response, type NextFunction } from 'express';
+import { WebSocketServer, WebSocket } from 'ws';
+import type { BoardroomRequest, RepoDetail, ServerMsg, TalkRequest } from '../shared/types.ts';
+import { PATHS, writeConfig, logEvent } from './config.ts';
+import {
+  getMe, listRepos, findRepo, repoWorkers, findWorker, workerDiff, ensureLogo, logoContentType,
+  validateToken, resetToken,
+} from './github.ts';
+import { streamClaude, transcriptPrompt } from './llm.ts';
+import { listAgents, startAgent, stopAgent, openPr, agentLog, setBroadcaster } from './agents.ts';
+import { convene, listDecisions } from './boardroom.ts';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const PORT = Number(process.env.PORT) || 4317;
+const app = express();
+app.use(express.json({ limit: '1mb' }));
+
+type Handler = (req: Request, res: Response) => Promise<unknown>;
+const h = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => {
+  fn(req, res).then(
+    (out) => {
+      if (out !== undefined && !res.headersSent) res.json(out);
+    },
+    next,
+  );
+};
+
+function sse(res: Response) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  return (data: unknown) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function abortOnClose(res: Response) {
+  const ctrl = new AbortController();
+  res.on('close', () => {
+    if (!res.writableFinished) ctrl.abort();
+  });
+  return ctrl.signal;
+}
+
+// ---------- account ----------
+
+app.get('/api/me', h(() => getMe()));
+
+app.post('/api/token', h(async (req, res) => {
+  const token = String(req.body?.token || '').trim();
+  if (!token) return res.status(400).json({ error: 'token is required' });
+  const me = await validateToken(token);
+  if (!me.connected) return res.status(401).json({ error: 'That token was rejected by GitHub' });
+  writeConfig({ token });
+  resetToken();
+  return getMe();
+}));
+
+// ---------- repos ----------
+
+app.get('/api/repos', h(() => listRepos()));
+
+app.get('/api/repos/:name', h(async (req) => {
+  const repo = await findRepo(String(req.params.name));
+  const { readme, workers } = await repoWorkers(repo);
+  const detail: RepoDetail = {
+    repo,
+    readme,
+    workers,
+    decisions: listDecisions(repo.name),
+    agents: listAgents(repo.name),
+  };
+  return detail;
+}));
+
+app.get('/api/repos/:name/logo', h(async (req, res) => {
+  const repo = await findRepo(String(req.params.name));
+  const file = await ensureLogo(repo);
+  if (!file) return res.status(404).json({ error: 'No logo found' });
+  res.setHeader('Content-Type', logoContentType(file));
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.send(readFileSync(file));
+  return undefined;
+}));
+
+// ---------- desk talk ----------
+
+app.post('/api/talk', h(async (req, res) => {
+  const body = req.body as TalkRequest;
+  const repo = await findRepo(String(body.repo));
+  const messages = Array.isArray(body.messages) ? body.messages.slice(-20) : [];
+  const { readme, workers } = await repoWorkers(repo);
+  let system: string;
+  let opener: string;
+  let fallback: string;
+
+  if (body.workerId === 'reception') {
+    const agents = listAgents(repo.name);
+    system = [
+      `You are Morgan, the receptionist in the lobby of the "${repo.name}" building in an open-world city game where every GitHub repo is a building.`,
+      `You know this project well and greet visitors warmly. Speak in first person, concise (<=120 words unless asked for detail), no markdown headings.`,
+      `Direct visitors around the office: the desks on the work floor are staffed by the people and AI agents behind past pull requests and commits (walk up and press E to talk to them); the glass Agent Lab is where you can hire new AI agents to work on the code and watch them live; the Boardroom at the back is where the board debates big decisions.`,
+      ``,
+      `Project: ${repo.fullName}${repo.description ? ` — ${repo.description}` : ''}`,
+      `Stats: ${repo.commits} commits, ${repo.prs} pull requests, ${repo.stars} stars, main language ${repo.language ?? 'unknown'}, last push ${repo.pushedAt}${repo.homepageUrl ? `, live at ${repo.homepageUrl}` : ''}.`,
+      readme ? `README excerpt:\n${readme.slice(0, 3000)}` : 'There is no README.',
+      workers.length ? `People at the desks (most recent first):\n${workers.slice(0, 15).map((w) => `- ${w.agentName ? `${w.agentName} (AI agent)` : w.author}: ${w.title} [${w.state}, ${w.date.slice(0, 10)}]`).join('\n')}` : 'No one is at the desks yet.',
+      agents.length ? `Agents hired in the Agent Lab:\n${agents.slice(0, 6).map((a) => `- ${a.name}: "${a.task.slice(0, 80)}" (${a.status})`).join('\n')}` : '',
+    ].join('\n');
+    opener = 'A visitor just walked up to your reception desk. Greet them and give a short, vivid overview of what this project is, what has been happening lately, and where they might want to go first.';
+    fallback = `Welcome to ${repo.name}! ${repo.description || 'This is one of your projects.'} We have ${repo.commits} commits and ${repo.prs} pull requests on record. The desks behind me are staffed by the people and agents behind recent changes — walk up and press E to chat. Hire new agents in the Agent Lab, or take big decisions to the Boardroom at the back.`;
+  } else {
+    const w = await findWorker(repo, String(body.workerId));
+    const diff = await workerDiff(repo, w);
+    const who = w.agentName ? `${w.agentName}, an AI coding agent` : w.author;
+    system = [
+      `You are ${who}, a worker at a desk inside the "${repo.name}" building in an open-world city game where every GitHub repo is a building.`,
+      `You made this change and you're proud of it. Speak in first person, warm and concise (<=120 words unless asked for detail), like a colleague explaining their work at their desk. Explain what changed and why, and what risks or follow-ups remain. No markdown headings. If asked something the diff doesn't show, say so honestly.`,
+      ``,
+      `Your ${w.kind === 'pr' ? `pull request #${w.number}` : `commit ${w.sha?.slice(0, 7)}`}: "${w.title}" (${w.state}, ${w.date.slice(0, 10)}, +${w.additions}/-${w.deletions}, ${w.changedFiles} files)`,
+      w.body && w.body !== w.title ? `Description:\n${w.body}` : '',
+      w.files.length ? `Files: ${w.files.join(', ')}` : '',
+      diff ? `The diff:\n${diff}` : 'The diff is unavailable.',
+      repo.description ? `About the project: ${repo.description}` : '',
+    ].filter(Boolean).join('\n');
+    opener = 'A visitor just walked up to your desk. Greet them briefly and summarize the change you made: what it does, why, and anything still worth watching.';
+    fallback = `Hi! I'm ${who}. I ${w.kind === 'pr' ? `opened PR #${w.number}` : 'committed'} "${w.title}" — that touched ${w.changedFiles || w.files.length} files (+${w.additions}/-${w.deletions}). ${w.body && w.body !== w.title ? w.body.slice(0, 300) : ''}`;
+  }
+
+  logEvent('desk_talk', { repo: repo.name, worker: body.workerId, turn: messages.length });
+  const send = sse(res);
+  const signal = abortOnClose(res);
+  try {
+    await streamClaude({
+      system,
+      prompt: transcriptPrompt(messages, opener),
+      fallback,
+      signal,
+      onDelta: (delta) => send({ delta }),
+    });
+    send({ done: true });
+  } catch (e: any) {
+    send({ error: e.message });
+  }
+  res.end();
+  return undefined;
+}));
+
+// ---------- agents ----------
+
+app.get('/api/agents', h(async () => listAgents()));
+app.post('/api/agents', h(async (req) => {
+  const repo = await findRepo(String(req.body?.repo));
+  return startAgent(repo, String(req.body?.task || ''));
+}));
+app.get('/api/agents/:id/log', h(async (req) => agentLog(String(req.params.id))));
+app.post('/api/agents/:id/stop', h(async (req) => stopAgent(String(req.params.id))));
+app.post('/api/agents/:id/pr', h(async (req) => openPr(String(req.params.id))));
+
+// ---------- boardroom ----------
+
+app.post('/api/boardroom', h(async (req, res) => {
+  const body = req.body as BoardroomRequest;
+  const question = String(body.question || '').trim();
+  if (!question) return res.status(400).json({ error: 'question is required' });
+  const repo = await findRepo(String(body.repo));
+  const send = sse(res);
+  const signal = abortOnClose(res);
+  try {
+    await convene(repo, question, send, signal);
+  } catch (e: any) {
+    send({ type: 'error', error: e.message });
+  }
+  res.end();
+  return undefined;
+}));
+
+// ---------- local analytics ----------
+
+app.post('/api/events', h(async (req) => {
+  const name = String(req.body?.name || '').slice(0, 64);
+  if (name) logEvent(name, typeof req.body?.props === 'object' && req.body.props ? req.body.props : {});
+  return { ok: true };
+}));
+
+app.get('/api/stats', h(async () => {
+  const lines = existsSync(PATHS.events) ? readFileSync(PATHS.events, 'utf8').split('\n').filter(Boolean) : [];
+  const byDay: Record<string, Record<string, number>> = {};
+  const totals: Record<string, number> = {};
+  for (const line of lines) {
+    try {
+      const e = JSON.parse(line);
+      const day = String(e.ts).slice(0, 10);
+      (byDay[day] ||= {})[e.name] = (byDay[day][e.name] || 0) + 1;
+      totals[e.name] = (totals[e.name] || 0) + 1;
+    } catch {
+      /* skip bad line */
+    }
+  }
+  const sessions = totals.session_start || 0;
+  return {
+    sessions,
+    totals,
+    byDay,
+    perSession: sessions
+      ? Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, Math.round((v / sessions) * 100) / 100]))
+      : {},
+  };
+}));
+
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
+
+// ---------- static client (production) ----------
+
+const dist = join(ROOT, 'client', 'dist');
+if (existsSync(dist)) {
+  app.use(express.static(dist));
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api') || req.path === '/ws') return next();
+    res.sendFile(join(dist, 'index.html'));
+  });
+}
+
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  const status = typeof err?.status === 'number' ? err.status : 500;
+  if (res.headersSent) {
+    res.end();
+    return;
+  }
+  res.status(status).json({ error: err?.message || 'Server error' });
+});
+
+// ---------- http + websocket ----------
+
+const server = createServer(app);
+const wss = new WebSocketServer({ server, path: '/ws' });
+setBroadcaster((msg: ServerMsg) => {
+  const data = JSON.stringify(msg);
+  for (const client of wss.clients) if (client.readyState === WebSocket.OPEN) client.send(data);
+});
+
+server.listen(PORT, () => {
+  console.log(`OpenWorld server on http://localhost:${PORT}`);
+  // warm the repo cache (and kick off logo discovery) so the city loads fast
+  listRepos().catch((e) => console.warn('GitHub not ready:', e.message));
+});
