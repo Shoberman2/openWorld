@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { Layout } from './city/layout.ts';
 
 function paint(g: THREE.BufferGeometry, c: number) {
   const geo = g.index ? g.toNonIndexed() : g;
@@ -70,9 +69,9 @@ export class Aircraft {
   private center: THREE.Vector3;
   private radius: number;
 
-  constructor(l: Layout, planes = 4) {
-    this.center = new THREE.Vector3((l.land.minX + l.land.maxX) / 2, 0, (l.land.minZ + l.land.maxZ) / 2);
-    this.radius = Math.max(l.land.maxX - l.land.minX, l.land.maxZ - l.land.minZ);
+  constructor(land: { minX: number; maxX: number; minZ: number; maxZ: number }, planes = 4) {
+    this.center = new THREE.Vector3((land.minX + land.maxX) / 2, 0, (land.minZ + land.maxZ) / 2);
+    this.radius = Math.max(land.maxX - land.minX, land.maxZ - land.minZ);
     const liveries = [0x0b3d91, 0xc8102e, 0x00a1de, 0x5b2c83, 0x1f7a3a];
     for (let i = 0; i < planes; i++) {
       const g = new THREE.Group();

@@ -1,12 +1,12 @@
 import type { Repo } from '../../../shared/types.ts';
-import type { RepoSite } from '../city/layout.ts';
+import type { Site } from '../place.ts';
 import { openPanel } from './panel.ts';
 import { esc } from '../interact.ts';
 
 const TIER_LABEL = { landmark: 'Skyscraper', tower: 'Tower', midrise: 'Mid-rise', small: 'Storefront' } as const;
 
 /** Tab: every project HQ in the city — set a waypoint or fast-travel to its door. */
-export function openDirectory(sites: RepoSite[], agentsByRepo: Map<string, number>, cityName: string, actions: { waypoint(s: RepoSite): void; travel(s: RepoSite): void }) {
+export function openDirectory(sites: Site[], agentsByRepo: Map<string, number>, cityName: string, actions: { waypoint(s: Site): void; travel(s: Site): void }) {
   const panel = openPanel({ title: 'City Directory', subtitle: `${sites.length} project headquarters in ${esc(cityName)}`, avatar: '⌘' });
   panel.footer.innerHTML = `<input type="text" placeholder="Search projects…" />`;
   const input = panel.footer.querySelector('input')!;

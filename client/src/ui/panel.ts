@@ -13,7 +13,15 @@ let setInputEnabled: (on: boolean) => void = () => {};
 
 /** Called once by main.ts so panels can pause game input while open. */
 export function bindPanelInput(fn: (on: boolean) => void) { setInputEnabled = fn; }
-export function panelOpen() { return !!active; }
+export function panelOpen() { return !!active || overlayOpen; }
+
+let overlayOpen = false;
+/** A full-screen-ish overlay (the phone) that, like a panel, pauses game input while open. */
+export function setOverlayOpen(on: boolean) {
+  overlayOpen = on;
+  if (on) active?.close();
+  setInputEnabled(!on);
+}
 export function closePanel() { active?.close(); }
 
 window.addEventListener('keydown', (e) => {
@@ -103,4 +111,5 @@ export function toast(html: string, ms = 5000) {
   el.innerHTML = html;
   root.appendChild(el);
   setTimeout(() => el.remove(), ms);
+  return el;
 }

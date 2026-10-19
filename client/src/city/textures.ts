@@ -43,8 +43,8 @@ export const asphalt = () => canvasTex(512, (g, s) => {
 });
 
 export const concrete = (base: number) => canvasTex(256, (g, s) => {
-  const c = new THREE.Color(base);
-  noise(g, s, [c.r * 255, c.g * 255, c.b * 255], 30, 7000, 1.6);
+  // Canvas pixels are sRGB: use the hex channels directly (THREE.Color would hand back linear values).
+  noise(g, s, [(base >> 16) & 255, (base >> 8) & 255, base & 255], 30, 7000, 1.6);
   g.strokeStyle = 'rgba(0,0,0,0.22)';
   g.lineWidth = 2;
   for (let i = 0; i <= 2; i++) {

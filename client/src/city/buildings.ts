@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Layout, Lot, RepoSite } from './layout.ts';
+import type { Repo } from '../../../shared/types.ts';
 import { facadeMaterial, unitBox, taperedBox, unitCylinder } from './facade.ts';
 import type { Box } from '../player.ts';
 import { api } from '../api.ts';
@@ -134,7 +135,7 @@ function initials(name: string) {
 }
 
 /** Square sign: the repo logo on a light panel, or a monogram in the brand color. */
-function logoTexture(site: RepoSite, img: HTMLImageElement | null) {
+export function logoTexture(site: { repo: Repo }, img: HTMLImageElement | null) {
   const c = document.createElement('canvas');
   c.width = c.height = 512;
   const g = c.getContext('2d')!;
@@ -158,7 +159,7 @@ function logoTexture(site: RepoSite, img: HTMLImageElement | null) {
   return t;
 }
 
-function nameTexture(text: string, color: string) {
+export function nameTexture(text: string, color: string) {
   const c = document.createElement('canvas');
   c.width = 1024; c.height = 192;
   const g = c.getContext('2d')!;
@@ -178,7 +179,7 @@ function nameTexture(text: string, color: string) {
 }
 
 /** Glass lobby doors with frames, warm light inside and a brand-colored transom. */
-function doorTexture(brand: string) {
+export function doorTexture(brand: string) {
   const c = document.createElement('canvas');
   c.width = 512; c.height = 256;
   const g = c.getContext('2d')!;
@@ -209,7 +210,7 @@ export function updateGlow(time: number) {
   for (const m of glowMaterials) m.emissiveIntensity = (m.userData.base ?? 1) * (0.35 + n * 0.6) * (m.userData.blink ? (Math.sin(time * 3) > 0.6 ? 1 : 0.05) : 1);
 }
 
-function glow(color: THREE.ColorRepresentation, base = 1, blink = false) {
+export function glow(color: THREE.ColorRepresentation, base = 1, blink = false) {
   const m = new THREE.MeshStandardMaterial({ color: 0x111111, emissive: color, emissiveIntensity: base, roughness: 0.4 });
   m.userData = { base, blink };
   glowMaterials.push(m);

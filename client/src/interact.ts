@@ -50,6 +50,7 @@ export class Labels {
   private v = new THREE.Vector3();
   /** Optional line-of-sight test; labels behind buildings are hidden. Re-checked a few at a time. */
   occluder: ((from: THREE.Vector3, to: THREE.Vector3) => boolean) | null = null;
+  maxVisible = 7;
   private cursor = 0;
 
   set(id: string, pos: THREE.Vector3, html: string, opts: { cls?: string; maxDist?: number; minDist?: number } = {}) {
@@ -85,15 +86,28 @@ export class Labels {
         it.hidden = camera.position.distanceTo(it.pos) < it.maxDist && this.occluder(camera.position, it.pos);
       }
     } else for (const it of all) it.hidden = false;
+    // Nearest first; at most `maxVisible`, and never two on top of each other.
+    const shown: { it: typeof all[0]; x: number; y: number; d: number }[] = [];
     for (const it of all) {
       const d = camera.position.distanceTo(it.pos);
       this.v.copy(it.pos).project(camera);
       const visible = !it.hidden && d < it.maxDist && d > it.minDist && this.v.z < 1 && Math.abs(this.v.x) < 1.1 && Math.abs(this.v.y) < 1.1;
       if (!visible) { it.el.style.display = 'none'; continue; }
-      it.el.style.display = '';
-      it.el.style.left = `${((this.v.x + 1) / 2) * w}px`;
-      it.el.style.top = `${((1 - this.v.y) / 2) * h}px`;
-      it.el.style.opacity = String(THREE.MathUtils.clamp((it.maxDist - d) / (it.maxDist * 0.25), 0, 1));
+      shown.push({ it, x: ((this.v.x + 1) / 2) * w, y: ((1 - this.v.y) / 2) * h, d });
+    }
+    shown.sort((a, b) => a.d - b.d);
+    const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
+    let n = 0;
+    for (const s of shown) {
+      const half = Math.min(150, (s.it.el.textContent?.length ?? 10) * 3.8 + 14);
+      const r = { x0: s.x - half, x1: s.x + half, y0: s.y - 30, y1: s.y + 4 };
+      if (n >= this.maxVisible || placed.some((p) => r.x0 < p.x1 && p.x0 < r.x1 && r.y0 < p.y1 && p.y0 < r.y1)) { s.it.el.style.display = 'none'; continue; }
+      placed.push(r);
+      n++;
+      s.it.el.style.display = '';
+      s.it.el.style.left = `${s.x}px`;
+      s.it.el.style.top = `${s.y}px`;
+      s.it.el.style.opacity = String(THREE.MathUtils.clamp((s.it.maxDist - s.d) / (s.it.maxDist * 0.25), 0, 1));
     }
   }
 }

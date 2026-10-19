@@ -333,7 +333,7 @@ function mergedMesh(geos: THREE.BufferGeometry[], mat: THREE.Material) {
   return m;
 }
 
-function radialTex() {
+export function radialTex() {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const g = c.getContext('2d')!;
@@ -361,7 +361,7 @@ function colored(g: THREE.BufferGeometry, c: number, jitter = 0) {
   return geo;
 }
 
-function oakGeometry() {
+export function oakGeometry() {
   const parts = [colored(new THREE.CylinderGeometry(0.16, 0.26, 3.4, 7).translate(0, 1.7, 0), 0x4a3a2c)];
   const blobs: [number, number, number, number][] = [[0, 4.6, 0, 2.1], [0.9, 4.0, 0.4, 1.5], [-0.8, 4.2, -0.5, 1.6], [0.2, 5.4, -0.3, 1.4]];
   for (const [x, yy, z, r] of blobs) {
@@ -378,7 +378,7 @@ function oakGeometry() {
   return mergeGeometries(parts);
 }
 
-function palmGeometry() {
+export function palmGeometry() {
   const parts: THREE.BufferGeometry[] = [];
   // Curved trunk from stacked segments.
   let px = 0, py = 0;

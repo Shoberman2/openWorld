@@ -13,9 +13,9 @@ const PRESETS: Record<FacadeKind, { bayW: number; floorH: number; ground: number
  * glassy reflective panes by day, randomly lit offices + bright storefronts at night.
  * Geometry must be a unit box/cylinder with its base at y=0, scaled by the (instance) matrix.
  */
-export function facadeMaterial(kind: FacadeKind, opts: { color?: THREE.ColorRepresentation; cylinder?: boolean; glass?: THREE.ColorRepresentation } = {}) {
+export function facadeMaterial(kind: FacadeKind, opts: { color?: THREE.ColorRepresentation; cylinder?: boolean; glass?: THREE.ColorRepresentation; world?: boolean } = {}) {
   const pr = PRESETS[kind];
-  const mat = new THREE.MeshStandardMaterial({ color: opts.color ?? 0xffffff, roughness: pr.rough, metalness: pr.metal });
+  const mat = new THREE.MeshStandardMaterial({ color: opts.color ?? 0xffffff, roughness: pr.rough, metalness: pr.metal, vertexColors: !!opts.world });
   const uniforms = {
     uBayW: { value: pr.bayW },
     uFloorH: { value: pr.floorH },
@@ -28,28 +28,46 @@ export function facadeMaterial(kind: FacadeKind, opts: { color?: THREE.ColorRepr
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms, { uNight: shared.uNight });
     if (opts.cylinder) sh.defines = { ...(sh.defines ?? {}), CYL: '' };
+    // World mode: arbitrary extruded footprints carry their own facade coordinates per vertex
+    // (aFac = along-wall meters, height above sea level, wall length, building top; aSeed = per building).
+    if (opts.world) sh.defines = { ...(sh.defines ?? {}), WORLD: '' };
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
-        varying vec3 vUnit; flat varying vec3 vScale; varying vec3 vObjN; flat varying float vSeed;`)
+        varying vec3 vUnit; flat varying vec3 vScale; varying vec3 vObjN; flat varying float vSeed;
+        #ifdef WORLD
+          attribute vec4 aFac; attribute float aSeed; varying vec4 vFac;
+        #endif`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vUnit = position; vObjN = normal;
+        #ifdef WORLD
+          vFac = aFac;
+        #endif
         #ifdef USE_INSTANCING
           mat4 fm = modelMatrix * instanceMatrix;
         #else
           mat4 fm = modelMatrix;
         #endif
         vScale = vec3(length(fm[0].xyz), length(fm[1].xyz), length(fm[2].xyz));
-        vSeed = floor(fract(sin(dot(floor(fm[3].xz), vec2(0.1298, 0.7823))) * 437.585) * 997.0);`);
+        vSeed = floor(fract(sin(dot(floor(fm[3].xz), vec2(0.1298, 0.7823))) * 437.585) * 997.0);
+        #ifdef WORLD
+          vSeed = aSeed;
+        #endif`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
         varying vec3 vUnit; flat varying vec3 vScale; varying vec3 vObjN; flat varying float vSeed;
+        #ifdef WORLD
+          varying vec4 vFac;
+        #endif
         float h21(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
         uniform float uBayW, uFloorH, uGround, uLit, uNight, uFrame; uniform vec2 uWin; uniform vec3 uGlass;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec3 fn = normalize(vObjN);
         float wall = 1.0 - step(0.55, abs(fn.y));
         float along; float width;
-        #ifdef CYL
+        float hgt = vUnit.y * vScale.y, topH = vScale.y;
+        #if defined(WORLD)
+          width = vFac.z; along = vFac.x / max(width, 0.01); hgt = vFac.y; topH = vFac.w;
+        #elif defined(CYL)
           along = atan(vUnit.z, vUnit.x) / 6.28318 + 0.5; width = 3.14159 * vScale.x;
         #else
           bool sideX = abs(fn.x) > abs(fn.z);
@@ -59,12 +77,11 @@ export function facadeMaterial(kind: FacadeKind, opts: { color?: THREE.ColorRepr
         float bayW = uBayW * (0.85 + 0.3 * fract(vSeed * 0.618));
         float bays = max(1.0, floor(width / bayW));
         float fu = along * bays;
-        float hgt = vUnit.y * vScale.y;
         float fv = (hgt - uGround) / uFloorH;
         vec2 cell = floor(vec2(fu, fv));
         vec2 fr = fract(vec2(fu, fv));
         float isGround = step(hgt, uGround);
-        float topCut = step(hgt, vScale.y - 1.4);
+        float topCut = step(hgt, topH - 1.4);
         float wwin = step(abs(fr.x - 0.5), uWin.x * 0.5) * step(abs(fr.y - 0.55), uWin.y * 0.5);
         float gwin = step(abs(fract(fu * 0.5) - 0.5), 0.44) * step(0.35, hgt) * step(hgt, uGround - 0.7);
         float win = wall * topCut * mix(wwin, gwin, isGround);
@@ -88,7 +105,7 @@ export function facadeMaterial(kind: FacadeKind, opts: { color?: THREE.ColorRepr
         totalEmissiveRadiance += win * (1.0 - isGround) * lit * warm * (0.35 + 0.65 * fract(hsh * 13.1)) * (uNight * 0.6 + 0.02);
         totalEmissiveRadiance += win * isGround * vec3(1.0, 0.86, 0.62) * (uNight * 0.8 + 0.03);`);
   };
-  mat.customProgramCacheKey = () => `facade-${kind}-${opts.cylinder ? 'c' : 'b'}`;
+  mat.customProgramCacheKey = () => `facade-${kind}-${opts.cylinder ? 'c' : 'b'}${opts.world ? 'w' : ''}`;
   return mat;
 }
 

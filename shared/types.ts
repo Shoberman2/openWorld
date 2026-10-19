@@ -2,6 +2,20 @@
 
 export type CityId = 'nyc' | 'sf' | 'miami' | 'boston';
 
+// ---------- Real places (OpenStreetMap) ----------
+// GET /api/geo/search?q=          -> GeoPlace[]
+// GET /api/geo/reverse?lat=&lon=  -> GeoPlace
+// GET /api/tiles/{v|dem|sat}/z/x/y -> map tiles (vector, terrain, imagery), cached in ~/.openworld/cache/tiles
+
+export interface GeoPlace {
+  name: string;
+  label: string; // "Times Square, New York, United States"
+  lat: number;
+  lon: number;
+  countryCode: string;
+  kind: string;
+}
+
 /** Building size class, derived from how "big" a repo is (commits, size, PRs, live site). */
 export type Tier = 'landmark' | 'tower' | 'midrise' | 'small';
 
@@ -122,7 +136,9 @@ export interface BoardDecision {
 
 export type ServerMsg =
   | { type: 'agent:update'; agent: AgentInfo }
-  | { type: 'agent:event'; agentId: string; event: AgentEvent; ts: number };
+  | { type: 'agent:event'; agentId: string; event: AgentEvent; ts: number }
+  | { type: 'office:message'; message: OfficeMessage }
+  | { type: 'office:typing'; on: boolean; channel: OfficeChannel };
 
 // ---------- SSE streams ----------
 // POST /api/talk       body TalkRequest       -> SSE events: {delta:string} ... {done:true}
@@ -153,3 +169,41 @@ export interface BoardroomRequest {
 // POST /api/agents/:id/pr           -> AgentInfo (commits, pushes branch, opens PR)
 // POST /api/events {name, props}    -> {ok:true}     (local-only product analytics)
 // GET  /api/stats                   -> learning metrics summary
+
+// ---------- Office / phone ----------
+// The office ("HQ") is one orchestrator agent that owns every repo and dispatches worker agents.
+// POST /api/office/message {channel, text, subject?} -> SSE: {type:'me', message} {type:'delta', delta}
+//      {type:'message', message} (HQ's final message, with dispatched agents) {type:'error', error} {type:'done'}
+// GET  /api/office/thread  -> {messages: OfficeMessage[], unread: number}
+// POST /api/office/read {channel?} -> {unread}   (marks HQ messages read, optionally for one channel)
+
+export type OfficeChannel = 'text' | 'email';
+
+export interface OfficeDispatch {
+  agentId: string;
+  agentName: string;
+  repo: string;
+  task: string;
+}
+
+export interface OfficeMessage {
+  id: string;
+  from: 'me' | 'hq';
+  channel: OfficeChannel;
+  subject?: string;
+  text: string;
+  ts: string;
+  /** Worker agents HQ started because of this message. */
+  dispatched?: OfficeDispatch[];
+  /** Agents this message is about (stops, PRs, finish reports). */
+  refs?: { agentId: string; action: 'stopped' | 'pr' | 'report' }[];
+  read?: boolean;
+}
+
+export interface OfficeRequest {
+  channel: OfficeChannel;
+  text: string;
+  subject?: string;
+  /** Client session id, for local analytics only. */
+  session?: string;
+}

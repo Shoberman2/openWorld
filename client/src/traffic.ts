@@ -6,9 +6,9 @@ import { mulberry32 } from './city/layout.ts';
 import { laneOffsets, type Streets } from './city/streets.ts';
 import { shared } from './engine.ts';
 
-type TypeId = 'sedan' | 'suv' | 'taxi' | 'bus' | 'truck';
+export type TypeId = 'sedan' | 'suv' | 'taxi' | 'bus' | 'truck';
 
-interface CarType { id: TypeId; length: number; speed: number; body: THREE.BufferGeometry; lights: THREE.BufferGeometry }
+export interface CarType { id: TypeId; length: number; speed: number; body: THREE.BufferGeometry; lights: THREE.BufferGeometry }
 
 function paint(g: THREE.BufferGeometry, c: THREE.ColorRepresentation) {
   const geo = g.index ? g.toNonIndexed() : g;
@@ -51,7 +51,7 @@ function lightsFor(len: number, w: number, y: number, extra: THREE.BufferGeometr
   ]);
 }
 
-function makeTypes(): CarType[] {
+export function makeTypes(): CarType[] {
   const sedan: CarType = { id: 'sedan', length: 4.7, speed: 12, body: mergeGeometries(car(4.7, 1.85, 1.3, 2.4, 0.62, 0xffffff)), lights: lightsFor(4.7, 1.85, 0.85) };
   const suv: CarType = { id: 'suv', length: 4.95, speed: 11.5, body: mergeGeometries(car(4.95, 2.0, 1.65, 3.2, 0.78, 0xffffff)), lights: lightsFor(4.95, 2.0, 1.0) };
   const roofSign = paint(new THREE.BoxGeometry(0.9, 0.32, 0.3).translate(0, 2.05, -0.2), 0xfff2b0);
@@ -101,7 +101,7 @@ interface Car {
   lastCross: number;
 }
 
-const BODY_COLORS = [0x1c1c1e, 0xe9eaec, 0x8a8f96, 0x3b4a5c, 0x7a1f1f, 0x23395d, 0x4b4f54, 0xc9c5bd, 0x0f3d2e, 0x5a5a5a, 0xa3a7ad, 0x612a2a];
+export const BODY_COLORS = [0x1c1c1e, 0xe9eaec, 0x8a8f96, 0x3b4a5c, 0x7a1f1f, 0x23395d, 0x4b4f54, 0xc9c5bd, 0x0f3d2e, 0x5a5a5a, 0xa3a7ad, 0x612a2a];
 
 export class Traffic {
   group = new THREE.Group();

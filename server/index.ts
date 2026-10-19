@@ -13,11 +13,18 @@ import {
 import { streamClaude, transcriptPrompt } from './llm.ts';
 import { listAgents, startAgent, stopAgent, openPr, agentLog, setBroadcaster } from './agents.ts';
 import { convene, listDecisions } from './boardroom.ts';
+import { searchPlaces, reverse } from './geo.ts';
+import { registerOffice } from './office.ts';
+import { registerTiles } from './tiles.ts';
+import { registerWeather } from './weather.ts';
+import { registerPhotos } from './photos.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4317;
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+// Photo uploads (large data URLs) parse their own body.
+const json1mb = express.json({ limit: '1mb' });
+app.use((req, res, next) => (req.path === '/api/photos' ? next() : json1mb(req, res, next)));
 
 type Handler = (req: Request, res: Response) => Promise<unknown>;
 const h = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => {
@@ -163,6 +170,15 @@ app.get('/api/agents/:id/log', h(async (req) => agentLog(String(req.params.id)))
 app.post('/api/agents/:id/stop', h(async (req) => stopAgent(String(req.params.id))));
 app.post('/api/agents/:id/pr', h(async (req) => openPr(String(req.params.id))));
 
+// ---------- real places ----------
+
+app.get('/api/geo/search', h(async (req) => searchPlaces(String(req.query.q ?? '').slice(0, 200))));
+app.get('/api/geo/reverse', h(async (req, res) => {
+  const lat = Number(req.query.lat), lon = Number(req.query.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 85 || Math.abs(lon) > 180) return res.status(400).json({ error: 'lat and lon are required' });
+  return (await reverse(Math.round(lat * 1e4) / 1e4, Math.round(lon * 1e4) / 1e4)) ?? res.status(404).json({ error: 'nothing there' });
+}));
+
 // ---------- boardroom ----------
 
 app.post('/api/boardroom', h(async (req, res) => {
@@ -193,9 +209,18 @@ app.get('/api/stats', h(async () => {
   const lines = existsSync(PATHS.events) ? readFileSync(PATHS.events, 'utf8').split('\n').filter(Boolean) : [];
   const byDay: Record<string, Record<string, number>> = {};
   const totals: Record<string, number> = {};
+  const phoneSessions = new Set<string>();
+  const dispatchSessions = new Set<string>();
+  const earthSessions = new Set<string>();
+  const exploredSessions = new Set<string>();
   for (const line of lines) {
     try {
       const e = JSON.parse(line);
+      if (e.props?.automated) continue;
+      if (e.name === 'session_start' && e.props?.city === 'world' && e.props?.session) earthSessions.add(e.props.session);
+      if ((e.name === 'explore_far' || e.name === 'explore_teleport') && e.props?.session) exploredSessions.add(e.props.session);
+      if (e.name === 'phone_opened' && e.props?.session) phoneSessions.add(e.props.session);
+      if (e.name === 'office_dispatch' && e.props?.session) dispatchSessions.add(e.props.session);
       const day = String(e.ts).slice(0, 10);
       (byDay[day] ||= {})[e.name] = (byDay[day][e.name] || 0) + 1;
       totals[e.name] = (totals[e.name] || 0) + 1;
@@ -207,12 +232,30 @@ app.get('/api/stats', h(async () => {
   return {
     sessions,
     totals,
+    // Learning metric for the phone: share of game sessions where HQ dispatched at least one agent.
+    phone: {
+      sessionsOpened: phoneSessions.size,
+      sessionsDispatched: dispatchSessions.size,
+      dispatchShare: sessions ? Math.round((dispatchSessions.size / sessions) * 1000) / 1000 : 0,
+    },
+    // Learning metric for the streaming world: share of Earth sessions that leave the home district
+    // (fly or walk 2 km+ away, or drop in somewhere else from the map).
+    explore: {
+      earthSessions: earthSessions.size,
+      exploredSessions: exploredSessions.size,
+      exploreShare: earthSessions.size ? Math.round((exploredSessions.size / earthSessions.size) * 1000) / 1000 : 0,
+    },
     byDay,
     perSession: sessions
       ? Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, Math.round((v / sessions) * 100) / 100]))
       : {},
   };
 }));
+
+registerOffice(app, (msg) => broadcastAll(msg));
+registerTiles(app);
+registerWeather(app);
+registerPhotos(app);
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -240,10 +283,11 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
-setBroadcaster((msg: ServerMsg) => {
+function broadcastAll(msg: ServerMsg) {
   const data = JSON.stringify(msg);
   for (const client of wss.clients) if (client.readyState === WebSocket.OPEN) client.send(data);
-});
+}
+setBroadcaster(broadcastAll);
 
 server.listen(PORT, () => {
   console.log(`OpenWorld server on http://localhost:${PORT}`);

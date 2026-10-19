@@ -31,6 +31,12 @@ export function setBroadcaster(fn: (msg: ServerMsg) => void) {
   broadcast = fn;
 }
 
+/** Other server modules (the office) can watch agent status changes. */
+const updateListeners = new Set<(info: AgentInfo) => void>();
+export function onAgentUpdate(fn: (info: AgentInfo) => void) {
+  updateListeners.add(fn);
+}
+
 // restore persisted agents; anything that was running when we died is now stopped
 for (const info of readJson<AgentInfo[]>(PATHS.agents, [])) {
   if (info.status === 'running' || info.status === 'preparing') {
@@ -52,6 +58,7 @@ function update(a: LiveAgent, patch: Partial<AgentInfo>) {
   Object.assign(a.info, patch);
   persist();
   broadcast({ type: 'agent:update', agent: a.info });
+  for (const fn of updateListeners) fn(a.info);
 }
 
 function emit(a: LiveAgent, event: AgentEvent) {

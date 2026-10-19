@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentInfo, Me, Repo, RepoDetail, ServerMsg, TalkRequest, BoardroomRequest } from '../../shared/types.ts';
+import type { AgentEvent, AgentInfo, Me, Repo, RepoDetail, ServerMsg, TalkRequest, BoardroomRequest, OfficeChannel, OfficeMessage, OfficeRequest } from '../../shared/types.ts';
 
 async function json<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}));
@@ -78,10 +78,21 @@ export function onLive(l: Listener) {
 
 // ---------- Local-only product analytics (written to ~/.openworld/events.jsonl) ----------
 const sessionId = Math.random().toString(36).slice(2, 10);
+export const getSessionId = () => sessionId;
 export function track(name: string, props: Record<string, unknown> = {}) {
   fetch('/api/events', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name, props: { ...props, session: sessionId } }),
+    // Headless test runs are tagged so they don't count toward the learning metrics.
+    body: JSON.stringify({ name, props: { ...props, session: sessionId, ...(navigator.webdriver ? { automated: true } : {}) } }),
   }).catch(() => {});
 }
+
+// ---------- Office (HQ) via the phone ----------
+export const office = {
+  thread: () => fetch('/api/office/thread').then((r) => json<{ messages: OfficeMessage[]; unread: number }>(r)),
+  markRead: (channel?: OfficeChannel) =>
+    fetch('/api/office/read', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channel }) }).then((r) => json<{ unread: number }>(r)),
+  send: (req: OfficeRequest, onEvent: (d: { type: 'me' | 'delta' | 'message' | 'error' | 'done'; message?: OfficeMessage; delta?: string; error?: string }) => void) =>
+    postSSE('/api/office/message', { ...req, session: sessionId }, onEvent),
+};
