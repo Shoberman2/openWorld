@@ -58,7 +58,7 @@ function wheel(b: ReturnType<typeof builder>, r: number, w: number, tire: THREE.
 
 export function skateboardModel(): Model {
   const b = builder(), group = new THREE.Group();
-  const deck = std(0xe0642c, 0.6), grip = std(0x2a2d32, 0.95), metal = std(0x9aa0a6, 0.4, 0.6), white = std(0xf2efe8, 0.55);
+  const deck = std(0xf4bf1d, 0.6), grip = std(0x2a2d32, 0.95), metal = std(0x9aa0a6, 0.4, 0.6), white = std(0xf2efe8, 0.55);
   b.add(new THREE.CapsuleGeometry(0.11, 0.62, 4, 12).rotateX(Math.PI / 2).scale(1, 0.1, 1), deck, 0, 0.11, 0);
   b.add(new THREE.BoxGeometry(0.2, 0.006, 0.7), grip, 0, 0.123, 0);
   for (const z of [-0.26, 0.26]) b.add(new THREE.BoxGeometry(0.16, 0.035, 0.04), metal, 0, 0.075, z);

@@ -53,7 +53,7 @@ export function skyColors(elev: number, out?: SkyColors): SkyColors {
 // ------------------------------------------------------------------------------ art-directed sky
 
 /**
- * The sky the way the Hello World game paints it: saturated blue days, periwinkle-to-peach sunsets
+ * An art-directed sky: saturated blue days, periwinkle-to-peach sunsets
  * with lavender shade, deep navy nights. Keyed on sun elevation (degrees); colors are sRGB hex.
  */
 export interface ArtSky {
@@ -422,4 +422,80 @@ export function makeStars(radius: number) {
   p.frustumCulled = false;
   p.renderOrder = -9;
   return p;
+}
+
+// ------------------------------------------------------------------- skyline in the reflections
+
+/**
+ * The real buildings around you, painted into the reflection environment: a profile of the skyline
+ * (per compass sector: the angle up to the roofs and down to the street, and how far away) drawn as
+ * facades with floors and windows. Glass towers and car paint then mirror the street they stand on
+ * instead of an empty sky. Lives only in the environment scene; rebaked as you move.
+ */
+const ringVert = /* glsl */ `
+varying vec3 vDir;
+void main() { vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+const ringFrag = /* glsl */ `
+uniform sampler2D uProfile;
+uniform vec3 uLit, uShade, uGlass, uHaze, uSunDir, uGround;
+uniform float uNight, uFog, uOn;
+varying vec3 vDir;
+float rh(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+void main() {
+  vec3 d = normalize(vDir);
+  float az = atan(d.x, d.z);
+  vec4 pr = texture2D(uProfile, vec2(az / 6.28318 + 0.5, 0.5));
+  float el = asin(clamp(d.y, -1.0, 1.0));
+  float top = pr.r, bot = pr.g, dist = max(pr.b, 1.0);
+  bool bld = uOn > 0.5 && pr.a > 0.5 && el <= top && el >= bot;
+  if (!bld && el >= 0.0) discard;
+  vec3 c;
+  if (bld) {
+    // The facade facing us: lit if it faces the sun.
+    vec2 n = -normalize(d.xz);
+    float sunK = clamp(dot(n, normalize(uSunDir.xz + 1e-4)), 0.0, 1.0) * smoothstep(-0.02, 0.12, uSunDir.y);
+    vec3 wall = mix(uShade, uLit, sunK);
+    // Floors and window bays at that distance.
+    float y = dist * tan(el), x = az * dist;
+    vec2 cell = vec2(floor(x / 1.7), floor(y / 3.8));
+    vec2 f = vec2(fract(x / 1.7), fract(y / 3.8));
+    float win = step(0.18, f.x) * step(f.x, 0.82) * step(0.25, f.y) * step(f.y, 0.85);
+    float glassy = step(0.45, rh(vec2(floor(az * 40.0), floor(dist / 15.0))));
+    win = mix(win, 1.0, glassy * 0.75);
+    // Bays smaller than a texel of the environment map blur into their average (no sparkle in the glass).
+    float aa = clamp(max(fwidth(x / 1.7), fwidth(y / 3.8)) * 1.5, 0.0, 1.0);
+    win = mix(win, mix(0.36, 1.0, glassy * 0.75), aa);
+    vec3 glass = uGlass * mix(0.8 + 0.4 * rh(cell), 1.0, aa);
+    c = mix(wall, glass, win);
+    c += win * mix(step(0.62, rh(cell + 7.0)), 0.38, aa) * uNight * vec3(1.0, 0.75, 0.45) * 0.9;
+    // Distance haze.
+    c = mix(c, uHaze, 1.0 - exp(-dist * uFog));
+  } else {
+    c = uGround;
+  }
+  gl_FragColor = vec4(c, 1.0);
+}`;
+
+export class SkylineRing {
+  static SECTORS = 256;
+  readonly data = new Float32Array(SkylineRing.SECTORS * 4);
+  readonly tex = new THREE.DataTexture(this.data, SkylineRing.SECTORS, 1, THREE.RGBAFormat, THREE.FloatType);
+  uniforms = {
+    uProfile: { value: this.tex },
+    uLit: { value: new THREE.Color() }, uShade: { value: new THREE.Color() }, uGlass: { value: new THREE.Color() },
+    uHaze: { value: new THREE.Color() }, uGround: { value: new THREE.Color() },
+    uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+    uNight: { value: 0 }, uFog: { value: 0.0004 }, uOn: { value: 0 },
+  };
+  mesh: THREE.Mesh;
+  constructor(radius = 800) {
+    this.tex.magFilter = this.tex.minFilter = THREE.NearestFilter;
+    this.tex.wrapS = THREE.RepeatWrapping;
+    this.tex.needsUpdate = true;
+    this.mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 64, 32),
+      new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: ringVert, fragmentShader: ringFrag, side: THREE.BackSide, depthWrite: false, fog: false }),
+    );
+    this.mesh.frustumCulled = false;
+  }
 }

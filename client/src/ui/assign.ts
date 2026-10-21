@@ -4,17 +4,18 @@ import type { GameCtx } from '../ctx.ts';
 import { api, track } from '../api.ts';
 import { esc } from '../interact.ts';
 import { toast } from './panel.ts';
+import { agentPicker, agentShort, pickedAgent } from './agentPick.ts';
 import './work.css';
 
 export type AssignFrom = 'desk' | 'reception' | 'kiosk' | 'lab-desk' | 'phone' | 'lead';
 
 /** Start an agent on `task` in `repo`, with clear feedback about where it went. */
 export async function assignTask(ctx: GameCtx, repo: Repo, task: string, from: AssignFrom, onWatch?: (a: AgentInfo) => void): Promise<AgentInfo> {
-  const a = await api.startAgent(repo.name, task);
+  const a = await api.startAgent(repo.name, task, pickedAgent());
   ctx.agents.set(a.id, a);
-  track('agent_assigned', { from, repo: repo.name, taskLen: task.length });
+  track('agent_assigned', { from, repo: repo.name, taskLen: task.length, provider: a.provider });
   track('agent_started', { repo: repo.name, taskLen: task.length, via: from });
-  const t = toast(`<b>${esc(a.name)}</b> is taking a desk in the ${esc(repo.name)} Agent Lab (floor 3).${onWatch ? ' <u>Watch</u>' : ''}`, 7000);
+  const t = toast(`<b>${esc(a.name)}</b> (${esc(agentShort(a.provider))}) is taking a desk in the ${esc(repo.name)} Agent Lab (floor 3).${onWatch ? ' <u>Watch</u>' : ''}`, 7000);
   if (onWatch) { t.style.cursor = 'pointer'; t.style.pointerEvents = 'auto'; t.addEventListener('click', () => { t.remove(); onWatch(a); }); }
   return a;
 }
@@ -30,6 +31,7 @@ export function assignStrip(ctx: GameCtx, repo: Repo, from: AssignFrom, opts: { 
     <input type="text" maxlength="2000" placeholder="${esc(opts.placeholder ?? `What should get done in ${repo.name}?`)}" />
     <button class="btn primary" type="submit">Assign</button>
     <div class="as-done hidden"></div>`;
+  el.querySelector('button')!.after(agentPicker());
   const input = el.querySelector('input')!;
   const btn = el.querySelector('button')!;
   const done = el.querySelector<HTMLDivElement>('.as-done')!;

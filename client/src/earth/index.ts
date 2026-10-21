@@ -14,6 +14,7 @@ import { EarthTraffic, EarthPedestrians, EarthShips } from './traffic.ts';
 import { buildEarthRepo, chooseEarthSites, type EarthSite, type HostFp } from './sites.ts';
 import { updateWater } from './style.ts';
 import { OceanWaves } from './ocean.ts';
+import { SkylineRing } from '../sky.ts';
 import type { DayNight } from '../engine.ts';
 import { driveLeft } from './build/chunk.ts';
 import type { FootprintData } from './build/types.ts';
@@ -326,6 +327,34 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
     return false;
   };
 
+  // The skyline around the camera, for reflections: per compass sector, the angles up to the roofs
+  // and down to the street of the building that fills most of the sky there, and its distance.
+  const skyAt = new THREE.Vector3(1e9, 0, 0);
+  let skyT = 0, skySig = -1;
+  const skyline = (p: THREE.Vector3, ring: SkylineRing) => {
+    const N = SkylineRing.SECTORS, data = ring.data, R = 700, TAU = Math.PI * 2;
+    for (let i = 0; i < N; i++) { data[i * 4] = -2; data[i * 4 + 1] = 0; data[i * 4 + 2] = 0; data[i * 4 + 3] = 0; }
+    for (const ch of chunks.chunks.values()) {
+      if (Math.abs(ch.x0 + ch.size / 2 - p.x) > ch.size / 2 + R || Math.abs(ch.z0 + ch.size / 2 - p.z) > ch.size / 2 + R) continue;
+      const hid = chunks.hidden.get(ch.key);
+      for (const f of ch.footprints) {
+        if (f.h < 4 || hid?.has(f.key)) continue;
+        const dx = f.cx + ch.x0 - p.x, dz = f.cz + ch.z0 - p.z, dc = Math.hypot(dx, dz);
+        const rad = Math.sqrt(f.area) * 0.5;
+        if (dc > R || dc < rad * 0.8) continue;
+        const d = Math.max(4, dc - rad);
+        const top = Math.atan2(f.top - p.y, d), bot = Math.atan2(f.base - p.y, d);
+        const az = Math.atan2(dx, dz), half = Math.atan2(rad, dc);
+        const i0 = Math.floor(((az - half) / TAU + 0.5) * N), i1 = Math.floor(((az + half) / TAU + 0.5) * N);
+        for (let i = i0; i <= i1; i++) {
+          const k = (((i % N) + N) % N) * 4;
+          if (top > data[k]) { data[k] = top; data[k + 1] = bot; data[k + 2] = d; data[k + 3] = 1; }
+        }
+      }
+    }
+    ring.tex.needsUpdate = true;
+  };
+
   // Away from home, ask the geocoder which city we're in (at most every 20 s, after moving 1.5 km).
   let revCity = '', revAt: LatLon | null = null, revTime = -1e9;
   /** The geocoder found no address under us last time: open sea (or the middle of nowhere). */
@@ -490,6 +519,14 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
         if (oceanCheck < 0) { oceanCheck = 1; oceanNear = checkOcean(cam.position.x, cam.position.z); }
         const w = dn.weather;
         waves.update(dt, cam, oceanNear ? -e0 : null, Math.max(w.storm, (w.windSpeed - 15) / 50));
+        // Refresh the reflected skyline after moving a little (or as chunks stream in).
+        skyT -= dt;
+        if (skyT < 0 && (skyAt.distanceToSquared(cam.position) > 30 * 30 || (skyT < -8 && chunks.chunks.size !== skySig))) {
+          skyT = lite ? 6 : 1; skyAt.copy(cam.position); skySig = chunks.chunks.size;
+          skyline(cam.position, dn.skyline);
+          dn.skyline.uniforms.uOn.value = 1;
+          dn.skylineChanged();
+        }
       }
     },
     debug: { get chunks() { return chunks; }, get far() { return far; }, pool, traffic, peds, ships, sites, get frame() { return frame; }, colliders },

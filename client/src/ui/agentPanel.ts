@@ -4,6 +4,7 @@ import { api, onLive } from '../api.ts';
 import { esc } from '../interact.ts';
 import { openPanel, toast } from './panel.ts';
 import { assignTask } from './assign.ts';
+import { agentPicker } from './agentPick.ts';
 import { openReview } from './review.ts';
 
 /** Task ideas tailored a little to the repo. */
@@ -23,7 +24,7 @@ export function agentSuggestions(repo: Repo, detail?: RepoDetail | null): string
 }
 
 export function openHireAgentPanel(ctx: GameCtx, repo: Repo, detail: RepoDetail | null, onLaunched: (a: AgentInfo) => void) {
-  const panel = openPanel({ title: 'Hire an agent', subtitle: `Claude Code will work in a fresh branch of <b>${esc(repo.fullName)}</b>. Nothing is pushed until you open a PR.`, avatar: '🤖', color: '#3ddc97' });
+  const panel = openPanel({ title: 'Hire an agent', subtitle: `Your agent works in a fresh branch of <b>${esc(repo.fullName)}</b>. Nothing is pushed until you open a PR.`, avatar: '🤖', color: '#3ddc97' });
   panel.body.innerHTML = `
     <div class="section-title">What should the agent do?</div>
     <textarea class="task" placeholder="e.g. Add a dark mode toggle to the settings page (Enter to launch)"></textarea>
@@ -32,6 +33,7 @@ export function openHireAgentPanel(ctx: GameCtx, repo: Repo, detail: RepoDetail 
     <p class="hint">The agent can read and edit files and run tests/builds in an isolated git worktree. You can watch it live at its desk in the Agent Lab.</p>
     <div class="err hidden"></div>`;
   const ta = panel.body.querySelector('textarea')!;
+  ta.after(agentPicker());
   panel.body.querySelectorAll<HTMLButtonElement>('.chip').forEach((b) => b.addEventListener('click', () => { ta.value = b.textContent ?? ''; ta.focus(); }));
   // One step: Enter launches (Shift+Enter for a new line).
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); launch.click(); } });

@@ -4,7 +4,8 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import type { Layout } from './city/layout.ts';
 import { mulberry32 } from './city/layout.ts';
 import { laneOffsets, type Streets } from './city/streets.ts';
-import { shared } from './engine.ts';
+import { quality, shared } from './engine.ts';
+import { carPaintMaterial } from './carPaint.ts';
 
 export type TypeId = 'sedan' | 'suv' | 'taxi' | 'pickup' | 'van' | 'bus' | 'truck';
 
@@ -35,7 +36,10 @@ function wheels(len: number, width: number, r: number, axles: number[]) {
  */
 function profile(pts: [number, number][], w: number, color: number, bevel = 0.05) {
   const shape = new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y)));
-  const g = new THREE.ExtrudeGeometry(shape, { depth: w - bevel * 2, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 2, curveSegments: 1 });
+  // Body panels get a fuller, rounder edge (pressed steel, not a slab); glass keeps a tight one.
+  const round = bevel > 0.04;
+  if (round) bevel *= 1.6;
+  const g = new THREE.ExtrudeGeometry(shape, { depth: w - bevel * 2, bevelEnabled: true, bevelThickness: bevel, bevelSize: round ? bevel * 0.5 : bevel, bevelOffset: round ? -bevel * 0.5 : 0, bevelSegments: round ? 4 : 2, curveSegments: 1 });
   g.translate(0, 0, -(w - bevel * 2) / 2).rotateY(Math.PI / 2);
   return paint(g, color);
 }
@@ -202,7 +206,7 @@ export class Traffic {
     const pick = (): TypeId => (rand() < p.taxiShare ? 'taxi' : pickType(rand()));
     const plan: TypeId[] = Array.from({ length: count }, pick);
     plan.forEach((t) => want[t]++);
-    const bodyMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.55 });
+    const bodyMat = carPaintMaterial(quality.low);
     for (const t of this.types) {
       const n = Math.max(1, want[t.id]);
       const b = new THREE.InstancedMesh(t.body, bodyMat, n);

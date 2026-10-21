@@ -1,12 +1,12 @@
 # OpenWorld HQ
 
-Your GitHub, as a living open world: **the whole planet**, streamed from OpenStreetMap with real terrain, in the bright, toy-like style of Charlie Chapman's "Hello World" game. You're a little robot in an orange hoodie with rocket shoes. Start anywhere, walk the real streets, or fly over the city and keep going: the world loads around you. Every repository you own becomes a building where you start: big, active projects take the tallest towers with their logo on the crown, small experiments are storefronts. Press **E** at a door to go inside. (The four hand-built classic cities, New York, San Francisco, Miami and Boston, are still there too.)
+Your GitHub, as a living open world: **the whole planet**, streamed from OpenStreetMap with real terrain, in the bright, toy-like style of Charlie Chapman's "Hello World" game. You're a little robot in an orange hoodie with rocket shoes. Start anywhere, walk the real streets, or fly over the city and keep going: the world loads around you. Every repository you own becomes a building where you start: big, active projects take the tallest towers with their logo on the crown, small experiments are storefronts. Press **E** at a door to go inside.
 
 Inside each building:
 
 - **Reception**: a receptionist who knows the project (README, stats, recent work) and points you around.
 - **Work floor**: one desk per past PR (or commit, for repos without PRs). The person at the desk is whoever made the change: you, a teammate, or an AI agent like Claude. Press **E** and they explain the change in their own words, with the real diff as context, then answer follow-up questions.
-- **Agent Lab**: hire an agent. Type a task and a real Claude Code agent starts working in an isolated git worktree of the repo. It takes a desk, its monitor shows live progress, and you can watch the diff grow, stop it, or open a pull request when it's done.
+- **Agent Lab**: hire an agent. Type a task and a real coding agent (Claude Code, Codex or Gemini CLI, whichever you set up) starts working in an isolated git worktree of the repo. It takes a desk, its monitor shows live progress, and you can watch the diff grow, stop it, or open a pull request when it's done.
 - **Boardroom**: put a decision to the board (Chair, CTO, Head of Product, Design Lead, Growth). They debate in turns, take positions for or against, and the Chair records a resolution with next steps. Past decisions stay on the wall.
 
 ## Anywhere on Earth
@@ -36,7 +36,7 @@ Map data © OpenStreetMap contributors, © OpenMapTiles; terrain © Mapterhorn, 
 
 Press **P** (or click the phone in the corner) anywhere, outside or inside a building. The office is one agent, **HQ**, that runs every other agent:
 
-- **Messages**: text HQ ("can someone add tests to calendar-hub?"). HQ replies, hires agents in the right buildings, and texts you back with a report when they finish.
+- **Messages**: text HQ ("can someone add tests to my-api?"). HQ replies, hires agents in the right buildings, and texts you back with a report when they finish.
 - **Mail**: the same thing as email, with a subject line and full reports in your inbox.
 - **Agents**: every agent across all buildings, live: status, last action, files changed, cost. Stop one, open its log, or jump to its building.
 - **Maps**: every project HQ in the current place; pin a waypoint or fast-travel.
@@ -45,17 +45,27 @@ HQ never opens a pull request unless you ask for one in your message.
 
 ## Run it
 
-Requirements: Node 22+, the [GitHub CLI](https://cli.github.com) logged in (`gh auth login`), or a GitHub token pasted on the title screen. [Claude Code](https://claude.com/claude-code) is needed for desk conversations, agents and the boardroom.
+Requirements: Node 22+ and git. Everything else is your own: your GitHub account, and whichever coding agents you want working for you.
 
-```bash
-npm install
-npm start          # builds the client, starts the local server, open http://localhost:4317
-# or
-npx openworld      # same, and opens your browser
-npm run dev        # development: Vite on :5317 with hot reload, API on :4317
-```
+1. **Install and start**
+   ```bash
+   git clone <this repo> && cd openWorld
+   npm install
+   npm run dev        # Vite on :5317 with hot reload, API on :4317. Open http://localhost:5317
+   # or: npm start    # builds the client once and serves it on http://localhost:4317
+   ```
+2. **Connect GitHub.** Either log in with the [GitHub CLI](https://cli.github.com) (`gh auth login`), set `GITHUB_TOKEN`, or paste a token with `repo` scope on the landing page. Your repos become the buildings.
+3. **Add at least one agent** in **Settings → Agents & keys** (the landing page shows a short setup card until you have). Each agent works with its own CLI login or with an API key you paste:
 
-Everything runs locally. Your token never leaves your machine except to call GitHub. State lives in `~/.openworld/` (logo cache, agent worktrees, boardroom minutes, local analytics).
+   | Agent | Install | Sign in, or key |
+   | --- | --- | --- |
+   | [Claude Code](https://claude.com/claude-code) | `npm i -g @anthropic-ai/claude-code` | run `claude` once, or an Anthropic key (`ANTHROPIC_API_KEY`) |
+   | [Codex CLI](https://github.com/openai/codex) | `npm i -g @openai/codex` | run `codex` once, or an OpenAI key (`OPENAI_API_KEY` / `CODEX_API_KEY`) |
+   | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `npm i -g @google/gemini-cli` | run `gemini` once, or a Gemini key (`GEMINI_API_KEY`) |
+
+   Pick a default agent there; every "give a task" box also lets you choose per task. The same tab sets who voices the office (the receptionist, project leads, HQ and the boardroom): your Anthropic, OpenAI or Gemini key, or your Claude Code login, and which model. With no key at all the world, your repos and the buildings still work; the people inside read from a script and agents wait until you add one.
+
+**Privacy.** Everything runs on your computer. Keys you paste are stored only in `~/.openworld/config.json` (readable by your user only), sent only to the company that made that agent or model, never returned to the browser (Settings shows the last 4 characters), and can only be changed from the computer running OpenWorld, not from a headset on the network. Environment variables override stored keys. Your GitHub token is only used to call GitHub. Other state lives in `~/.openworld/` too (map tile and logo cache, agent worktrees, boardroom minutes, local analytics); delete the folder to start over.
 
 ## VR on Quest
 
@@ -106,7 +116,7 @@ To keep it smooth on the headset, VR streams a smaller area, uses a smaller shad
 | Wheel | Camera distance |
 | **E** | Enter a building, talk to someone, use a kiosk |
 | **P** | Phone: text or email HQ, see every agent, map |
-| **M** | Map of the world: search, Drop here, Navigate here (big map in classic cities) |
+| **M** | Map of the world: search, Drop here, Navigate here |
 | Tab | Directory: waypoint or fast travel to any project |
 | G / X | Wave / sit down |
 | T | Skip ahead 3 hours (day/night cycle) |
@@ -120,7 +130,7 @@ To keep it smooth on the headset, VR streams a smaller area, uses a smaller shad
   - `src/ui/`: HUD (compass, info panel, navigation card, hints, mode bar), the heading-up minimap and the world map (`tilemap.ts` renders vector tiles in a worker), the phone, panels.
   - `src/xr/`: VR (WebXR on Meta Quest): controllers, play space, wrist phone, panel mirror, comfort vignette.
   - Classic cities (`src/city/`), interiors (`interior.ts`), aircraft (`aircraft.ts`).
-- `server/`: Express + WebSocket. Map tiles proxied and cached (`tiles.ts`), place search (`geo.ts`, Nominatim), the HQ office agent (`office.ts`), GitHub GraphQL/REST (`github.ts`), the `claude` CLI for conversations (`llm.ts`), agent runs in git worktrees streamed over the socket (`agents.ts`), the boardroom (`boardroom.ts`), and HTTPS for VR headsets (`https.ts`, with `OPENWORLD_HTTPS=1`).
+- `server/`: Express + WebSocket. Map tiles proxied and cached (`tiles.ts`), place search (`geo.ts`, Nominatim), the HQ office agent (`office.ts`), GitHub GraphQL/REST (`github.ts`), conversations through your chosen key or CLI (`llm.ts`), agent runs in git worktrees streamed over the socket (`agents.ts`, with one adapter per coding CLI in `providers/`: Claude Code, Codex, Gemini; keys and readiness in `providers/index.ts`), the boardroom (`boardroom.ts`), and HTTPS for VR headsets (`https.ts`, with `OPENWORLD_HTTPS=1`).
 - `shared/types.ts`: the contract between them.
 
 Building size comes from a score of commits, PRs, repo size, a live homepage and recency, ranked into landmark, tower, mid-rise and storefront tiers.

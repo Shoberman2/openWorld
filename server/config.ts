@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, appendFileSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execFile, spawn, type SpawnOptions } from 'node:child_process';
@@ -23,6 +23,10 @@ export const MODEL = process.env.OPENWORLD_MODEL || 'sonnet';
 
 export interface Config {
   token?: string;
+  /** The user's own API keys, by vendor. Only ever read on the server. */
+  keys?: { anthropic?: string; openai?: string; gemini?: string };
+  defaultProvider?: 'claude' | 'codex' | 'gemini';
+  chat?: { provider?: 'anthropic' | 'claude-cli' | 'openai' | 'gemini'; model?: string };
 }
 
 export function readConfig(): Config {
@@ -36,6 +40,8 @@ export function readConfig(): Config {
 export function writeConfig(patch: Partial<Config>) {
   const next = { ...readConfig(), ...patch };
   writeFileSync(PATHS.config, JSON.stringify(next, null, 2), { mode: 0o600 });
+  chmodSync(PATHS.config, 0o600); // the mode above only applies when the file is new; it holds tokens and keys
+
 }
 
 export function readJson<T>(path: string, fallback: T): T {

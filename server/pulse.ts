@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Express, Request, Response } from 'express';
 import type { AgentInfo, RepoPulse, ServerMsg } from '../shared/types.ts';
 import { PATHS, readJson, writeJson } from './config.ts';
-import { listRepos, repoPulses, type RawPulse } from './github.ts';
+import { findRepo, listRepos, repoPulses, type RawPulse } from './github.ts';
 import { listAgents, onAgentUpdate } from './agents.ts';
 
 const FILE = join(PATHS.home, 'pulse.json');
@@ -64,6 +64,26 @@ export function refreshPulse(): Promise<void> {
     }
   })();
   return refreshing;
+}
+
+/** Re-read one repo right after the user acted on it from the phone (merge, close, new issue…). */
+export async function refreshRepo(name: string) {
+  try {
+    const repo = await findRepo(name);
+    const p = (await repoPulses([repo])).get(repo.name);
+    if (p && put(withAgents({ repo: repo.name, stale: false, ...p }, listAgents()))) save();
+  } catch (e: any) {
+    console.warn(`pulse refresh for ${name} failed:`, e.message);
+  }
+}
+
+/** Apply a local change to a repo's pulse (dry-run writes never reach GitHub, so nothing would change). */
+export function patchPulse(name: string, fn: (p: RepoPulse) => void) {
+  const p = pulses.get(name);
+  if (!p) return;
+  const next: RepoPulse = structuredClone(p);
+  fn(next);
+  if (put(withAgents(next, listAgents()))) save();
 }
 
 /** Agents changed: recount who's working and what's waiting, without asking GitHub. */

@@ -26,7 +26,7 @@ function drawAtlas() {
     { bg: ['#ffffff', '#cfe6ff'], title: 'SKYLINE AIR', sub: 'Fly further for less', fg: '#0b2a6b', shape: 'circle' },
     { bg: ['#14002b', '#ff00a8'], title: 'PULSE RADIO', sub: '24/7 · 101.9', fg: '#fff', shape: 'bars' },
     { bg: ['#00222b', '#00c2c7'], title: 'ORBIT SNEAKERS', sub: 'Run the five boroughs', fg: '#fff', shape: 'stripes' },
-    { bg: ['#2b1600', '#ff9d2e'], title: 'HELLO WORLD', sub: 'Go anywhere on Earth', fg: '#fff', shape: 'circle' },
+    { bg: ['#15233f', '#2c5aa0'], title: 'OPENWORLD HQ', sub: 'Your repos live here', fg: '#f6c21c', shape: 'bars' },
   ];
   const repos = repoNames.slice(0, 3);
   const repoAds = repos.map((n, i) => ({ bg: (['#0a1a3a', '#2c74d6'] as [string, string]), title: n.toUpperCase(), sub: ['Now hiring agents', 'Built here in Times Square', 'Ship something today'][i % 3], fg: '#fff', shape: 'bars' as const }));

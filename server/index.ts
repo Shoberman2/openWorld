@@ -23,6 +23,8 @@ import { httpsEnabled, startHttps } from './https.ts';
 import { registerPulse } from './pulse.ts';
 import { registerSchedules } from './schedules.ts';
 import { registerBriefing } from './briefing.ts';
+import { registerControl } from './control.ts';
+import { registerProviders, providerStatuses } from './providers/index.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4317;
@@ -62,7 +64,8 @@ function abortOnClose(res: Response) {
 
 // ---------- account ----------
 
-app.get('/api/me', h(() => getMe()));
+// agentsReady is checked fresh each time (it changes when keys are added); the GitHub part is cached.
+app.get('/api/me', h(async () => ({ ...(await getMe()), agentsReady: (await providerStatuses()).some((p) => p.ready) })));
 
 app.post('/api/token', h(async (req, res) => {
   const token = String(req.body?.token || '').trim();
@@ -169,7 +172,7 @@ app.post('/api/talk', h(async (req, res) => {
 app.get('/api/agents', h(async () => listAgents()));
 app.post('/api/agents', h(async (req) => {
   const repo = await findRepo(String(req.body?.repo));
-  return startAgent(repo, String(req.body?.task || ''));
+  return startAgent(repo, String(req.body?.task || ''), req.body?.provider ? String(req.body.provider) : null);
 }));
 app.get('/api/agents/:id/log', h(async (req) => agentLog(String(req.params.id))));
 app.post('/api/agents/:id/stop', h(async (req) => stopAgent(String(req.params.id))));
@@ -280,6 +283,11 @@ registerPulse(app, (msg) => broadcastAll(msg));
 // ---- schedules & briefing ----
 registerSchedules(app, (msg) => broadcastAll(msg));
 registerBriefing(app);
+// ---- project control ----
+registerControl(app);
+
+// ---- agents & keys ----
+registerProviders(app, h);
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 

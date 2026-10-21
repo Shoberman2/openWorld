@@ -1,7 +1,9 @@
 /// <reference types="vite/client" />
-// The streaming-world HUD: compass strip, info panel, navigation card, control hints, mode bar and
-// map attributions. Pure DOM in #hud; update() is cheap enough to call every frame.
+// The streaming-world HUD: compass strip, location card (off unless chosen in Settings), navigation
+// card, mode bar and map attributions. Pure DOM in #hud; update() is cheap enough to call every frame.
+// The control list lives in Settings now, not on screen.
 import { bearing, haversine } from '../earth/frame.ts';
+import { prefs, onPrefs } from '../prefs.ts';
 import './hud.css';
 
 export interface HudFrame {
@@ -35,10 +37,12 @@ export interface Hud {
   update(f: HudFrame): void;
   setMode(id: string): void;
   setVisible(on: boolean): void;
-  /** Swap the hint set shown bottom-left (also follows HudFrame.mode automatically). */
-  setHints(key: string): void;
+  /** Latest location lines (kept current even while the card is hidden), for Settings. */
+  location: HudLocation;
   el: HTMLElement;
 }
+
+export interface HudLocation { coord: string; alt: string; hdg: string; weather: string; place: string; time: string }
 
 const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const PX_PER_DEG = 3.2;
@@ -48,11 +52,6 @@ export const ATTRIBUTION = 'Terrain © Mapterhorn, Copernicus · Imagery: Sentin
 
 function esc(s: string) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-}
-
-/** "[W][A][S][D] Move · [Space] Jump" → keycaps. */
-function hintHtml(s: string) {
-  return s.split(' · ').map((part) => `<span class="ow-hint">${esc(part).replace(/\[([^\]]+)\]/g, '<kbd>$1</kbd>')}</span>`).join('');
 }
 
 export function formatDistance(m: number, imperial: boolean) {
@@ -86,7 +85,7 @@ function fakeWeather(lat: number, lon: number, localTime: string, imperial: bool
   return imperial ? `${label} · ${Math.round(c * 9 / 5 + 32)} °F · wind ${wind} mph from the ${from}` : `${label} · ${Math.round(c)} °C · wind ${Math.round(wind * 1.609)} km/h from the ${from}`;
 }
 
-export function installHud(opts: { modes: { id: string; label: string; icon?: string }[]; hints: Record<string, string[]>; onMode?: (id: string) => void }): Hud {
+export function installHud(opts: { modes: { id: string; label: string; icon?: string }[]; onMode?: (id: string) => void }): Hud {
   const root = document.getElementById('hud') ?? document.body;
   root.classList.add('ow-earth-hud');
   const el = document.createElement('div');
@@ -124,7 +123,6 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
       <div class="ow-nav-arrow">↑</div>
       <div class="ow-nav-text"><b></b><span></span><small><i></i><em></em></small></div>
     </div>
-    <div class="ow-hints"></div>
     <div class="ow-modes">${opts.modes.map((m) => `<div class="ow-mode" data-id="${esc(m.id)}">${m.icon ? `<span class="ow-mode-i">${m.icon}</span>` : ''}<span>${esc(m.label)}</span></div>`).join('')}</div>
     <div class="ow-attrib">${esc(ATTRIBUTION)}</div>`;
   root.appendChild(el);
@@ -134,17 +132,13 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
   const coord = q('.ow-i-coord'), alt = q('.ow-i-alt'), hdg = q('.ow-i-hdg'), wx = q('.ow-i-wx'), place = q('.ow-i-place'), time = q('.ow-i-time');
   const nav = q('.ow-nav'), navArrow = q('.ow-nav-arrow');
   const navDist = q('.ow-nav-text b'), navDir = q('.ow-nav-text span'), navName = q('.ow-nav-text em');
-  const hints = q('.ow-hints');
+  const info = q('.ow-info');
+  const showInfo = () => info.classList.toggle('hidden', !prefs.showLocation);
+  showInfo();
+  onPrefs(showInfo);
+  const location: HudLocation = { coord: '', alt: '', hdg: '', weather: '', place: '', time: '' };
   const look = q('.ow-look'), lookTitle = q('.ow-look b'), lookSub = q('.ow-look span');
   let lookKey = '';
-  let hintKey = '';
-  const setHints = (key: string) => {
-    if (key === hintKey) return;
-    hintKey = key;
-    const rows = opts.hints[key] ?? [];
-    hints.innerHTML = rows.map((r) => `<div class="ow-hrow">${hintHtml(r)}</div>`).join('');
-    hints.classList.toggle('hidden', rows.length === 0);
-  };
   if (opts.onMode) el.querySelectorAll<HTMLElement>('.ow-mode').forEach((m) => { m.style.pointerEvents = 'auto'; m.style.cursor = 'pointer'; m.addEventListener('click', () => opts.onMode!(m.dataset.id!)); });
   const setMode = (id: string) => el.querySelectorAll<HTMLElement>('.ow-mode').forEach((m) => m.classList.toggle('on', m.dataset.id === id));
 
@@ -153,7 +147,7 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
   return {
     el,
     setMode,
-    setHints,
+    location,
     setVisible(on) { el.classList.toggle('hidden', !on); root.classList.toggle('ow-earth-hud', on); },
     update(f) {
       const h = ((f.heading % 360) + 360) % 360;
@@ -186,7 +180,6 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
         nav.classList.add('hidden');
       }
 
-      setHints(f.mode);
       const lk = lookLabels.on && f.mode !== 'indoors' ? f.looking ?? null : null;
       const key = lk ? lk.title + '|' + lk.sub : '';
       if (key !== lookKey) {
@@ -199,16 +192,23 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
       if (slow > 0) return;
       slow = 6;
       const ns = f.lat >= 0 ? 'N' : 'S', ew = f.lon >= 0 ? 'E' : 'W';
-      coord.textContent = `${Math.abs(f.lat).toFixed(5)}° ${ns}, ${Math.abs(f.lon).toFixed(5)}° ${ew}`;
+      location.coord = `${Math.abs(f.lat).toFixed(5)}° ${ns}, ${Math.abs(f.lon).toFixed(5)}° ${ew}`;
       const len = (m: number) => (f.imperial ? `${Math.round(m * 3.28084).toLocaleString()} ft` : `${Math.round(m).toLocaleString()} m`);
-      alt.textContent = `Alt ${len(f.altitude)} · AGL ${len(Math.max(0, f.agl))}${f.surface ? ` · ${f.surface}` : ''}`;
+      location.alt = `Alt ${len(f.altitude)} · AGL ${len(Math.max(0, f.agl))}${f.surface ? ` · ${f.surface}` : ''}`;
       const spd = f.imperial ? `${Math.round(f.speed * 2.23694)} mph` : `${Math.round(f.speed * 3.6)} km/h`;
-      hdg.textContent = `Hdg ${String(Math.round(h) % 360).padStart(3, '0')}° · Pitch ${Math.round(f.pitch)}° · ${spd}`;
+      location.hdg = `Hdg ${String(Math.round(h) % 360).padStart(3, '0')}° · Pitch ${Math.round(f.pitch)}° · ${spd}`;
       if (f.weather) wxText = f.weather;
       else if (Date.now() - wxAt > 20000) { wxText = fakeWeather(f.lat, f.lon, f.localTime, f.imperial); wxAt = Date.now(); }
-      wx.textContent = wxText;
-      place.textContent = f.sub ? `${f.place} · ${f.sub}` : f.place;
-      time.textContent = f.localTime;
+      location.weather = wxText;
+      location.place = f.sub ? `${f.place} · ${f.sub}` : f.place;
+      location.time = f.localTime;
+      if (!prefs.showLocation) return;
+      coord.textContent = location.coord;
+      alt.textContent = location.alt;
+      hdg.textContent = location.hdg;
+      wx.textContent = location.weather;
+      place.textContent = location.place;
+      time.textContent = location.time;
     },
   };
 }

@@ -4,7 +4,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-import { Clouds, SkyDome, artSky, makeStars } from './sky.ts';
+import { Clouds, SkyDome, SkylineRing, artSky, makeStars } from './sky.ts';
 import { WeatherState, Precipitation, Lightning, Aurora } from './weather.ts';
 import { AtmospherePass } from './atmosphere.ts';
 
@@ -36,17 +36,30 @@ export interface SkyLook {
   ambient?: number;
 }
 
-/** Camera-like grade on the final image: natural saturation, a little contrast, a soft lens vignette. */
+/**
+ * Camera-like grade on the final image: a gentle S-curve and a touch more color (the clear, vivid look
+ * of a modern open-world game in good weather), a light sharpen to restore texture detail the
+ * multisampling softens, and a soft lens vignette.
+ */
 const GradeShader = {
-  uniforms: { tDiffuse: { value: null }, uSat: { value: 1.0 }, uContrast: { value: 1.02 }, uVignette: { value: 0.1 } },
+  uniforms: { tDiffuse: { value: null }, uSat: { value: 1.07 }, uContrast: { value: 1.06 }, uVignette: { value: 0.12 }, uSharpen: { value: 0.22 }, uTexel: { value: new THREE.Vector2(1 / 1280, 1 / 720) } },
   vertexShader: /* glsl */ `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: /* glsl */ `
-    uniform sampler2D tDiffuse; uniform float uSat, uContrast, uVignette; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float uSat, uContrast, uVignette, uSharpen; uniform vec2 uTexel; varying vec2 vUv;
     void main() {
       vec4 c = texture2D(tDiffuse, vUv);
+      if (uSharpen > 0.0) {
+        vec3 n = texture2D(tDiffuse, vUv + vec2(uTexel.x, 0.0)).rgb + texture2D(tDiffuse, vUv - vec2(uTexel.x, 0.0)).rgb
+               + texture2D(tDiffuse, vUv + vec2(0.0, uTexel.y)).rgb + texture2D(tDiffuse, vUv - vec2(0.0, uTexel.y)).rgb;
+        vec3 d = c.rgb - n * 0.25;
+        c.rgb += clamp(d, -0.06, 0.06) * uSharpen * 4.0;
+      }
       float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
       c.rgb = mix(vec3(l), c.rgb, uSat);
-      c.rgb = (c.rgb - 0.5) * uContrast + 0.5;
+      // S-curve around mid grey: richer shadows and highlights without crushing either.
+      vec3 x = clamp(c.rgb, 0.0, 1.0);
+      vec3 s = x * x * (3.0 - 2.0 * x);
+      c.rgb = mix(x, s, (uContrast - 1.0) * 2.0);
       vec2 d = vUv - 0.5;
       c.rgb *= 1.0 - uVignette * smoothstep(0.25, 0.75, dot(d, d) * 2.0);
       gl_FragColor = vec4(clamp(c.rgb, 0.0, 1.0), c.a);
@@ -96,7 +109,9 @@ export class Engine {
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
     this.grade = new ShaderPass(GradeShader);
+    if (quality.low) this.grade.uniforms.uSharpen.value = 0;
     this.composer.addPass(this.grade);
+    this.resize();
 
     window.addEventListener('resize', () => this.resize());
   }
@@ -113,6 +128,8 @@ export class Engine {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
+    const pr = this.renderer.getPixelRatio();
+    (this.grade.uniforms.uTexel.value as THREE.Vector2).set(1 / (w * pr), 1 / (h * pr));
   }
 
   /**
@@ -173,6 +190,10 @@ export class DayNight {
   stars: THREE.Points;
   private skyScene = new THREE.Scene();
   private envGround: THREE.Mesh;
+  /** The buildings around you, for reflections (the streaming world fills in its profile). */
+  readonly skyline = new SkylineRing();
+  private skylineDirty = false;
+  private lastBake = 0;
   private envRT: THREE.WebGLRenderTarget | null = null;
   private lastEnvHour = -99;
   private sunDir = new THREE.Vector3();
@@ -207,6 +228,8 @@ export class DayNight {
       new THREE.MeshBasicMaterial({ color: 0x222018, side: THREE.BackSide, fog: false }),
     );
     this.skyScene.add(this.envGround);
+    this.skyline.mesh.renderOrder = 1;
+    this.skyScene.add(this.skyline.mesh);
 
     this.cloudLayer = new Clouds();
     this.cloudLayer.cover = look.cloudCover ?? 0.55;
@@ -234,6 +257,9 @@ export class DayNight {
   }
 
   get night() { return shared.uNight.value; }
+
+  /** The skyline profile changed (you moved): rebake the reflections soon. */
+  skylineChanged() { this.skylineDirty = true; }
 
   /** Where we are: the weather follows the real conditions there (in live mode), auroras the latitude. */
   setLocation(lat: number, lon: number) {
@@ -374,7 +400,7 @@ export class DayNight {
       this.lightDir.copy(this.sunDir);
       if (this.lightDir.y < 0.06) { this.lightDir.y = 0.06; this.lightDir.normalize(); }
       this.sun.color.copy(a.sun);
-      this.sun.intensity = 3.0 * (0.72 + 0.28 * day);
+      this.sun.intensity = 3.4 * (0.72 + 0.28 * day);
     } else {
       this.lightDir.copy(this.moonDir);
       this.sun.color.set(0x9fb4ff);
@@ -386,7 +412,7 @@ export class DayNight {
     // Bright, sky-colored fill: shade reads lavender-grey at dusk and soft blue by day, never black.
     this.hemi.color.copy(a.hemiSky).lerp(_grey.setScalar(a.hemiSky.r * 0.3 + a.hemiSky.g * 0.59 + a.hemiSky.b * 0.11), this.realSun ? 0.55 : 0.8).lerp(overcast, g * 0.5);
     this.hemi.groundColor.copy(a.hemiGround);
-    this.hemi.intensity = THREE.MathUtils.lerp(this.look.ambient ?? 2.0, 0.9, night) * (1 - w.dark * 0.3) * (1 + g * 0.5) + flash * 3;
+    this.hemi.intensity = THREE.MathUtils.lerp(this.look.ambient ?? 1.8, 0.9, night) * (1 - w.dark * 0.3) * (1 + g * 0.5) + flash * 3;
 
     const cl = this.cloudLayer.uniforms;
     cl.uSunDir.value.copy(day > 0.02 ? this.sunDir : this.moonDir);
@@ -396,6 +422,16 @@ export class DayNight {
     (this.stars.material as THREE.PointsMaterial).opacity = THREE.MathUtils.smoothstep(night, 0.5, 1) * 0.95 * (1 - g);
 
     (this.envGround.material as THREE.MeshBasicMaterial).color.copy(a.hemiGround).multiplyScalar(0.8);
+    // Facades in the reflections: sunlit stone, shade that takes the sky's color, glass that mirrors it.
+    const sk = this.skyline.uniforms, lum = 1 - night * 0.97;
+    sk.uLit.value.setRGB(0.6, 0.57, 0.52).multiply(a.sun).multiplyScalar(lum * (1 - Math.min(0.7, g)));
+    sk.uShade.value.copy(a.hemiSky).multiplyScalar(0.32 * lum).lerp(sk.uLit.value, g * 0.4);
+    sk.uGlass.value.copy(a.zenith).lerp(haze, 0.4).multiplyScalar(0.55 * lum).addScalar(0.01);
+    sk.uHaze.value.copy(haze);
+    sk.uGround.value.copy(a.hemiGround).multiplyScalar(0.8);
+    sk.uSunDir.value.copy(this.sunDir);
+    sk.uNight.value = night;
+    sk.uFog.value = (this.scene.fog as THREE.FogExp2 | null)?.density ?? 0.0004;
     // Haze matches the horizon so distant buildings melt into the sky.
     const fog = this.scene.fog as THREE.FogExp2;
     fog.color.copy(haze);
@@ -410,7 +446,10 @@ export class DayNight {
 
     // Re-bake the reflection environment every ~15 game minutes.
     const wk = g + flash * 0.5;
-    if (force || Math.abs(h - this.lastEnvHour) > 0.25 || Math.abs(wk - this.envWeather) > 0.15) {
+    const now = performance.now();
+    if (force || Math.abs(h - this.lastEnvHour) > 0.25 || Math.abs(wk - this.envWeather) > 0.15 || (this.skylineDirty && now - this.lastBake > 3000)) {
+      this.skylineDirty = false;
+      this.lastBake = now;
       this.envWeather = wk;
       this.lastEnvHour = h;
       const old = this.envRT;

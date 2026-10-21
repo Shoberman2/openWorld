@@ -2,32 +2,24 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { ChildProcess } from 'node:child_process';
-import type { AgentEvent, AgentInfo, Repo, ReviewAction, ServerMsg } from '../shared/types.ts';
+import type { AgentEvent, AgentInfo, AgentProviderId, Repo, ReviewAction, ServerMsg } from '../shared/types.ts';
 import { PATHS, readJson, writeJson, run, spawnProc, logEvent } from './config.ts';
 import { getDefaultBranch } from './github.ts';
+import { summarizeTool } from './providers/common.ts';
+import { pickProvider, runner, runnerEnv } from './providers/index.ts';
+
+export { summarizeTool } from './providers/common.ts';
+export { parseStreamLine, sessionIdOf } from './providers/claude.ts';
 
 const NAMES = [
   'Nova', 'Atlas', 'Juniper', 'Orion', 'Wren', 'Sable', 'Indigo', 'Rook', 'Lyra', 'Cass',
   'Milo', 'Vega', 'Quinn', 'Echo', 'Sage', 'Bodhi', 'Iris', 'Pax', 'Remy', 'Tess',
 ];
 
-const ALLOWED_TOOLS = [
-  'Read', 'Edit', 'Write', 'Glob', 'Grep',
-  'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(ls:*)',
-  'Bash(npm test:*)', 'Bash(npm run:*)', 'Bash(npx tsc:*)',
-];
-
 /** OPENWORLD_FAKE_AGENTS=1: simulated runs (no clone, no claude) with a believable log and diff, for tests and tutorials. */
 const FAKE = process.env.OPENWORLD_FAKE_AGENTS === '1';
 /** OPENWORLD_DRY_PR=1: approving never pushes; it records a made-up PR link. */
 const DRY_PR = process.env.OPENWORLD_DRY_PR === '1';
-
-const SYSTEM_PROMPT = [
-  'You are an agent working inside the OpenWorld game office for this repo. Make focused changes for the task.',
-  'Do not push or open PRs; the user reviews your work in the game and opens the PR.',
-  'If you are genuinely blocked on a decision only the user can make (not something you can look up or reasonably choose), stop and end your reply with one line: `QUESTION: <your question>`. The user will answer and you will continue in this same session. Otherwise finish the task without asking.',
-  'End with a short plain summary of what you changed and why.',
-].join(' ');
 
 interface LiveAgent {
   info: AgentInfo;
@@ -106,33 +98,6 @@ function slugify(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'task';
 }
 
-function rel(dir: string, p: unknown) {
-  const s = String(p ?? '');
-  return dir && s.startsWith(dir + '/') ? s.slice(dir.length + 1) : s;
-}
-
-export function summarizeTool(name: string, input: any, dir: string): string {
-  switch (name) {
-    case 'Read': return `Reading ${rel(dir, input?.file_path)}`;
-    case 'Edit':
-    case 'MultiEdit': return `Editing ${rel(dir, input?.file_path)}`;
-    case 'Write': return `Writing ${rel(dir, input?.file_path)}`;
-    case 'Glob': return `Looking for ${input?.pattern}`;
-    case 'Grep': return `Searching for "${input?.pattern}"`;
-    case 'Bash': return `Running ${String(input?.command ?? '').slice(0, 80)}`;
-    case 'TodoWrite': return 'Planning next steps';
-    case 'WebFetch': return `Reading ${input?.url}`;
-    case 'WebSearch': return `Searching the web for ${input?.query}`;
-    default: return `Using ${name}`;
-  }
-}
-
-function resultText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) return content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join('\n');
-  return '';
-}
-
 /** "3 files changed, +40 −12" from `git diff --shortstat` (or a raw unified diff). */
 export function shortStat(files: number, diff: string): string {
   let add = 0, del = 0;
@@ -191,9 +156,11 @@ async function prepareWorktree(repo: Repo, id: string, branch: string): Promise<
   return dir;
 }
 
-export async function startAgent(repo: Repo, task: string): Promise<AgentInfo> {
+export async function startAgent(repo: Repo, task: string, requested?: AgentProviderId | string | null): Promise<AgentInfo> {
   task = task.trim();
   if (!task) throw Object.assign(new Error('Task is required'), { status: 400 });
+  const provider = (await pickProvider(requested)) ?? (FAKE ? 'claude' : null);
+  if (!provider) throw Object.assign(new Error('No coding agent is set up yet. Add one in Settings → Agents & keys.'), { status: 400 });
   const id = Math.random().toString(36).slice(2, 8);
   const used = new Set(listAgents(repo.name).map((a) => a.name));
   const name = 'Agent ' + (NAMES.find((n) => !used.has('Agent ' + n)) || NAMES[agents.size % NAMES.length]);
@@ -202,13 +169,13 @@ export async function startAgent(repo: Repo, task: string): Promise<AgentInfo> {
     id, repo: repo.name, task, name, status: 'preparing', branch,
     startedAt: new Date().toISOString(), endedAt: null,
     lastAction: 'Getting a desk and cloning the repo', filesChanged: [], prUrl: null, costUsd: null,
-    question: null, summary: null, diffStat: null, review: null,
+    question: null, summary: null, diffStat: null, review: null, provider,
   };
   const a: LiveAgent = { info, dir: worktreeDir(repo.name, id), log: [], proc: null };
   agents.set(id, a);
   update(a, {});
   emit(a, { kind: 'status', status: 'preparing', message: info.lastAction });
-  logEvent('agent_started', { repo: repo.name });
+  logEvent('agent_started', { repo: repo.name, provider });
 
   if (FAKE) {
     a.fake = fakeWork(info);
@@ -244,27 +211,22 @@ function summaryOf(text: string) {
   return text.split('\n').filter((l) => !/^\W*QUESTION:/i.test(l.trim())).join('\n').trim().slice(0, 4000) || null;
 }
 
-/** Start (or, with the agent's session id, resume) `claude -p` in the agent's worktree. */
+/** Start (or, with the agent's session id, resume) its coding CLI in the agent's worktree. */
 function launch(a: LiveAgent, prompt: string) {
-  const resume = a.info.sessionId ? ['--resume', a.info.sessionId] : [];
-  const child = spawnProc(
-    'claude',
-    [
-      '-p',
-      ...resume,
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--permission-mode', 'acceptEdits',
-      '--allowedTools', ALLOWED_TOOLS.join(' '),
-      '--append-system-prompt', SYSTEM_PROMPT,
-    ],
-    { cwd: a.dir, stdio: ['pipe', 'pipe', 'pipe'], detached: true },
-  );
+  const r = runner(a.info.provider ?? 'claude')!;
+  const resuming = !!a.info.sessionId;
+  const cmd = r.command(prompt, a.info.sessionId ?? null);
+  const child = spawnProc(r.bin, cmd.args, {
+    cwd: a.dir,
+    stdio: [cmd.stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+    detached: true,
+    env: runnerEnv(r),
+  });
   a.proc = child;
-  update(a, { status: 'running', endedAt: null, question: null, lastAction: resume.length ? 'Picking the work back up' : 'Reading the task' });
+  update(a, { status: 'running', endedAt: null, question: null, lastAction: resuming ? 'Picking the work back up' : 'Reading the task' });
   emit(a, { kind: 'status', status: 'running' });
 
-  const pendingTools = new Map<string, string>();
+  const parse = r.parser(a.dir);
   let stderr = '';
   let resultText = '';
   child.stderr!.on('data', (d) => (stderr += d));
@@ -276,34 +238,35 @@ function launch(a: LiveAgent, prompt: string) {
     } catch {
       return;
     }
-    const sid = sessionIdOf(msg);
+    const { events, sessionId: sid } = parse(msg);
     if (sid && sid !== a.info.sessionId) update(a, { sessionId: sid });
-    for (const { toolName, ...ev } of parseStreamLine(msg, a.dir, pendingTools)) {
+    for (const { toolName, ...ev } of events) {
       emit(a, ev as AgentEvent);
       if (ev.kind === 'tool') update(a, { lastAction: ev.summary });
       if (ev.kind === 'result') {
         resultText = ev.text;
-        update(a, { costUsd: (a.info.costUsd ?? 0) + (ev.costUsd ?? 0) });
+        if (ev.costUsd != null) update(a, { costUsd: (a.info.costUsd ?? 0) + ev.costUsd });
       }
       if (ev.kind === 'tool_result' && toolName && /^(Edit|MultiEdit|Write|Bash)$/.test(toolName)) void emitDiff(a);
     }
   });
-  child.on('error', (e) => {
-    update(a, { status: 'error', lastAction: e.message, endedAt: new Date().toISOString() });
-    emit(a, { kind: 'status', status: 'error', message: e.message });
+  child.on('error', (e: any) => {
+    const message = e?.code === 'ENOENT' ? `${r.label} isn't installed. ${r.installCmd}` : e.message;
+    update(a, { status: 'error', lastAction: message, endedAt: new Date().toISOString() });
+    emit(a, { kind: 'status', status: 'error', message });
   });
   child.on('close', async (code) => {
     a.proc = null;
     await emitDiff(a);
-    if (a.info.status === 'stopped') return;
+    if (a.info.status === 'stopped' || a.info.status === 'error') return;
     if (code === 0) finish(a, resultText);
     else {
       update(a, { status: 'error', endedAt: new Date().toISOString(), lastAction: `Exited (${code}) ${stderr.trim().slice(0, 200)}` });
       emit(a, { kind: 'status', status: 'error', message: a.info.lastAction });
-      logEvent('agent_finished', { repo: a.info.repo, ok: false, files: a.info.filesChanged.length });
+      logEvent('agent_finished', { repo: a.info.repo, ok: false, files: a.info.filesChanged.length, provider: r.id });
     }
   });
-  child.stdin!.end(prompt);
+  if (cmd.stdin != null) child.stdin!.end(cmd.stdin);
 }
 
 /** A turn ended cleanly: either the agent is waiting on a question, or the run is done and up for review. */
@@ -327,11 +290,6 @@ function finish(a: LiveAgent, resultText: string) {
   });
   emit(a, { kind: 'status', status: 'done', message: a.info.lastAction });
   logEvent('agent_finished', { repo: a.info.repo, ok: true, files });
-}
-
-/** session_id appears on the init line and on every later message of `--output-format stream-json`. */
-export function sessionIdOf(msg: any): string | null {
-  return typeof msg?.session_id === 'string' && msg.session_id ? msg.session_id : null;
 }
 
 /** POST /api/agents/:id/answer: the user answered the agent's question; continue the same session. */
@@ -497,36 +455,6 @@ function fakeStep(a: LiveAgent) {
     return;
   }
   f.timer = setTimeout(() => fakeStep(a), 1600 + ((a.info.id.charCodeAt(step % a.info.id.length) * 37) % 1400));
-}
-
-type ParsedEvent = AgentEvent & { toolName?: string };
-
-/** Turn one stream-json line from `claude -p` into game events. Exported for testing. */
-export function parseStreamLine(msg: any, dir: string, pendingTools: Map<string, string>): ParsedEvent[] {
-  const out: ParsedEvent[] = [];
-  if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-    for (const block of msg.message.content) {
-      if (block.type === 'text' && block.text?.trim()) out.push({ kind: 'text', text: block.text });
-      if (block.type === 'tool_use') {
-        pendingTools.set(block.id, block.name);
-        out.push({ kind: 'tool', tool: block.name, summary: summarizeTool(block.name, block.input, dir), input: block.input });
-      }
-    }
-  } else if (msg.type === 'user' && Array.isArray(msg.message?.content)) {
-    for (const block of msg.message.content) {
-      if (block.type !== 'tool_result') continue;
-      const text = resultText(block.content).trim();
-      out.push({
-        kind: 'tool_result',
-        summary: text.slice(0, 200),
-        isError: !!block.is_error,
-        toolName: pendingTools.get(block.tool_use_id),
-      });
-    }
-  } else if (msg.type === 'result') {
-    out.push({ kind: 'result', text: typeof msg.result === 'string' ? msg.result : '', costUsd: msg.total_cost_usd ?? null });
-  }
-  return out;
 }
 
 export function stopAgent(id: string): AgentInfo {

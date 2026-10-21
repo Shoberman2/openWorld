@@ -7,6 +7,7 @@ import { esc } from '../interact.ts';
 import { openPanel, toast } from './panel.ts';
 import { openReview } from './review.ts';
 import './briefing.css';
+import { keymap } from '../keymap.ts';
 
 export interface BriefingHooks {
   /** Walk/fly to a repo's building. */
@@ -111,7 +112,7 @@ export function briefingHtml(b: Briefing) {
   html += `<h5 class="bf-h">Coming up</h5>`;
   html += b.scheduled.length
     ? `<ul class="bf-list">${b.scheduled.slice(0, 5).map((s) => `<li class="bf-row"><span class="bf-dot sched"></span><div><b>${esc(s.repo)}</b><small>${esc(firstLine(s.task).slice(0, 110))}</small><em>${esc(when(s.nextRunAt!))} · ${s.cadence}</em></div></li>`).join('')}</ul>`
-    : `<p class="bf-empty">No scheduled work. Set a lead to run nightly from the phone's <b>Schedules</b> app.</p>`;
+    : `<p class="bf-empty">No scheduled work. Switch some on from a project's page on your phone (<b>Projects</b>).</p>`;
   return html;
 }
 
@@ -238,6 +239,6 @@ export function drawBriefingMonitor(x: CanvasRenderingContext2D, b: Briefing | n
   y += 330;
   const next = b.scheduled[0];
   x.fillStyle = '#8a95a3'; x.font = `22px ${F}`;
-  x.fillText(next ? `Next scheduled: ${next.repo} · ${when(next.nextRunAt!)}` : 'No scheduled work · set some up in the phone’s Schedules app', 40, Math.min(y + 10, H - 30));
-  x.fillStyle = '#e8a33d'; x.textAlign = 'right'; x.fillText('Press E at the desk to read it', W - 40, Math.min(y + 10, H - 30)); x.textAlign = 'left';
+  x.fillText(next ? `Next scheduled: ${next.repo} · ${when(next.nextRunAt!)}` : 'No scheduled work · switch some on from a project on your phone', 40, Math.min(y + 10, H - 30));
+  x.fillStyle = '#e8a33d'; x.textAlign = 'right'; x.fillText(`Press ${keymap.label('interact')} at the desk to read it`, W - 40, Math.min(y + 10, H - 30)); x.textAlign = 'left';
 }

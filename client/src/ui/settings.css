@@ -1,0 +1,104 @@
+/* Settings (ui/settings.ts): a centered sheet over the game or the landing page. */
+body.settings-open #panel-root { z-index: 60; background: rgba(4, 7, 12, .45); pointer-events: auto; animation: st-dim .2s ease-out; }
+@keyframes st-dim { from { background: rgba(4, 7, 12, 0); } }
+.panel.settings-panel { left: 50%; right: auto; top: 50%; bottom: auto; transform: translate(-50%, -50%); width: min(760px, calc(100vw - 32px)); height: min(760px, calc(100vh - 32px)); }
+.settings-panel .panel-footer { display: none; }
+.settings-panel .panel-header .avatar { font-size: 20px; }
+.settings-panel .panel-body { padding: 0 18px 18px; }
+
+.st-tabs { position: sticky; top: 0; z-index: 2; display: flex; gap: 4px; padding: 12px 0; margin-bottom: 4px; background: var(--glass-strong); }
+.st-tabs button { flex: 1; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--muted); font-weight: 600; font-size: 13px; }
+.st-tabs button[aria-selected="true"] { background: var(--text); border-color: var(--text); color: #0b0f17; }
+
+.st-intro { display: flex; gap: 14px; align-items: center; justify-content: space-between; margin: 4px 0 10px; }
+.st-intro p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.st-intro b { color: var(--text); }
+.st-btn { flex: none; padding: 8px 12px; border-radius: 9px; border: 1px solid var(--line); background: rgba(255,255,255,.05); color: var(--text); font-size: 12.5px; font-weight: 600; }
+.st-btn:hover { background: rgba(255,255,255,.1); }
+.st-note { margin: 0 0 10px; padding: 10px 12px; border-radius: 10px; background: rgba(79, 209, 255, .1); border: 1px solid rgba(79, 209, 255, .25); font-size: 13px; color: #cfe9f5; }
+
+.st-group { margin-top: 16px; }
+.st-group h4 { margin: 0 0 6px; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.st-row { display: flex; align-items: center; gap: 14px; padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,.03); border: 1px solid transparent; }
+.st-row + .st-row { margin-top: 4px; }
+.st-row.unbound { border-color: rgba(255, 93, 108, .35); }
+.st-act { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.st-act b { font-size: 14px; font-weight: 600; }
+.st-act span { font-size: 12px; color: var(--muted); line-height: 1.4; }
+
+.st-keys { flex: none; display: flex; gap: 6px; align-items: center; }
+.st-key { min-width: 64px; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,.18); border-bottom-width: 3px;
+  background: rgba(255,255,255,.08); color: var(--text); font: 600 13px var(--mono); display: inline-grid; place-items: center; }
+button.st-key:hover { background: rgba(255,255,255,.16); }
+.st-key.empty { color: var(--muted); border-style: dashed; border-bottom-width: 1px; font-family: inherit; font-size: 12px; }
+.st-key.capturing { min-width: 120px; background: var(--accent); border-color: var(--accent); color: #111; font-family: inherit; animation: st-blink 1s ease-in-out infinite; }
+@keyframes st-blink { 50% { opacity: .65; } }
+.st-key.fixed { opacity: .7; }
+.st-undo { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--muted); font-size: 15px; }
+.st-undo:hover { color: var(--text); }
+.st-undo[hidden] { display: inline-block !important; visibility: hidden; }
+
+.st-switch { flex: none; position: relative; width: 46px; height: 28px; border-radius: 14px; border: 0; background: rgba(255,255,255,.18); transition: background .15s; }
+.st-switch i { position: absolute; left: 3px; top: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); transition: transform .15s; }
+.st-switch[aria-checked="true"] { background: var(--good); }
+.st-switch[aria-checked="true"] i { transform: translateX(18px); }
+
+.st-seg { flex: none; display: flex; padding: 3px; border-radius: 10px; background: rgba(255,255,255,.08); }
+.st-seg button { padding: 7px 12px; border-radius: 8px; border: 0; background: transparent; color: var(--muted); font-weight: 600; font-size: 13px; }
+.st-seg button[aria-checked="true"] { background: var(--text); color: #0b0f17; }
+
+.st-vol { flex: none; display: flex; align-items: center; gap: 10px; }
+.st-vol input { width: 160px; accent-color: var(--accent); }
+.st-vol output { width: 40px; text-align: right; font: 600 12px var(--mono); color: var(--muted); }
+
+.st-loc { margin: 8px 0 12px; padding: 16px; border-radius: 12px; background: rgba(255,255,255,.04); border: 1px solid var(--line); }
+.st-loc-place { font-size: 17px; font-weight: 700; }
+.st-loc-time { margin-top: 2px; color: var(--muted); font-size: 13px; }
+.st-loc dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 14px 0 0; font-size: 13px; }
+.st-loc dt { color: var(--muted); }
+.st-loc dd { margin: 0; font-variant-numeric: tabular-nums; }
+.st-empty { padding: 30px 6px; color: var(--muted); }
+
+/* In-game gear, top left where the location card was. */
+.ow-gear { position: absolute; left: 12px; top: 12px; z-index: 3; width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border-radius: 10px;
+  border: 0; background: rgba(28,30,36,.62); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: rgba(255,255,255,.9); pointer-events: auto; }
+.ow-gear:hover { background: rgba(28,30,36,.85); }
+.ow-gear svg { width: 20px; height: 20px; }
+body.show-location .ow-info { top: 58px; }
+body.phone-docked .ow-gear { opacity: 0; pointer-events: none; }
+/* The old city HUD's place and time chips follow the same setting. */
+body:not(.show-location) #hud-location, body:not(.show-location) #hud-time { display: none; }
+
+@media (max-width: 600px) {
+  .st-row { flex-wrap: wrap; }
+  .st-keys, .st-vol, .st-seg { width: 100%; justify-content: flex-end; }
+  .st-intro { flex-direction: column; align-items: stretch; }
+  .st-vol input { flex: 1; width: auto; }
+}
+body:not(.show-location) .agent-call { top: 60px; }
+
+/* Agents & keys (ui/agentKeys.ts) */
+.st-btn.ghost { background: transparent; color: var(--muted); }
+.st-intro code, .ak-hint code, .ak-get code { font: 12px var(--mono); padding: 1px 5px; border-radius: 5px; background: rgba(255,255,255,.08); }
+.ak-card { padding: 12px; border-radius: 12px; background: rgba(255,255,255,.03); border: 1px solid var(--line); }
+.ak-card + .ak-card { margin-top: 8px; }
+.ak-card.ready { border-color: rgba(61, 220, 151, .3); }
+.ak-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ak-head b { font-size: 15px; }
+.ak-head small { display: block; color: var(--muted); font-size: 12px; margin-top: 1px; }
+.ak-chip { flex: none; font-style: normal; font-size: 11.5px; font-weight: 600; padding: 4px 9px; border-radius: 999px; background: rgba(255,255,255,.08); color: var(--muted); }
+.ak-chip.ok { background: rgba(61, 220, 151, .14); color: #7ff0bf; }
+.ak-chip.warn { background: rgba(255, 196, 77, .14); color: #ffd27a; }
+.ak-hint { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.ak-cmd { display: inline-block; margin-top: 6px; padding: 6px 9px; border-radius: 8px; background: rgba(0,0,0,.35); font: 12px var(--mono); user-select: all; }
+.ak-key { display: flex; gap: 6px; margin-top: 10px; }
+.ak-key input { flex: 1; min-width: 0; height: 36px; padding: 0 11px; border-radius: 9px; border: 1px solid var(--line); background: rgba(0,0,0,.25); color: var(--text); font: 13px var(--mono); }
+.ak-key input:focus { outline: none; border-color: var(--accent); }
+.ak-get { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.ak-get a { color: var(--accent); text-decoration: none; }
+.ak-note { margin: 8px 0 0; font-size: 12.5px; }
+.ak-note.ok { color: #7ff0bf; }
+.ak-note.bad { color: #ff8a95; }
+.ak-def { margin-top: 10px; }
+.ak-model { flex: none; height: 34px; max-width: 220px; padding: 0 8px; border-radius: 9px; border: 1px solid var(--line); background: rgba(0,0,0,.25); color: var(--text); font-size: 13px; }
+@media (max-width: 600px) { .st-tabs { flex-wrap: wrap; } .st-tabs button { flex: 1 1 40%; } .ak-model { max-width: none; width: 100%; } }

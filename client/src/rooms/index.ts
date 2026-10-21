@@ -370,7 +370,7 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
     const step = Math.max(1, Math.floor(windows.length / 6));
     for (let k = 0; k < windows.length; k += step) {
       const w = windows[k];
-      inter.push({ id: `room:win:${k}`, position: new THREE.Vector3(w.x + w.nx * 0.7, y, w.z + w.nz * 0.7), radius: 1.3, label: 'Jump out the window', sub: f > 0 ? `Floor ${f + 1} · rocket shoes ready` : 'Back to the street', action: () => api.onExit?.('window', f) });
+      inter.push({ id: `room:win:${k}`, position: new THREE.Vector3(w.x + w.nx * 0.7, y, w.z + w.nz * 0.7), radius: 1.3, label: 'Jump out the window', sub: f > 0 ? `Floor ${f + 1} · thrusters ready` : 'Back to the street', action: () => api.onExit?.('window', f) });
     }
 
     // ---- Core ----

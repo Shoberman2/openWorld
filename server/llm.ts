@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
-import { PATHS, MODEL, hasClaude, spawnProc } from './config.ts';
+import { PATHS, spawnProc } from './config.ts';
+import { chatProvider, keyFor } from './providers/index.ts';
 
 export interface StreamOpts {
   system: string;
@@ -17,11 +18,18 @@ const API_MODELS: Record<string, string> = {
   haiku: 'claude-haiku-5-5',
 };
 
+/**
+ * One reply for HQ, a project lead or a desk, from whichever chat the user set up in Settings → Agents & keys:
+ * their Anthropic, OpenAI or Gemini key, or a signed-in Claude Code. OPENWORLD_MODEL still overrides the model.
+ */
 export async function streamClaude(opts: StreamOpts): Promise<string> {
-  const model = opts.model || MODEL;
-  if (process.env.ANTHROPIC_API_KEY) return streamApi({ ...opts, model });
-  if (await hasClaude()) return streamCli({ ...opts, model });
-  const text = opts.fallback || '(No AI available — install Claude Code to bring the office to life.)';
+  const chat = await chatProvider();
+  const model = opts.model || process.env.OPENWORLD_MODEL || chat?.model || '';
+  if (chat?.provider === 'anthropic') return streamApi({ ...opts, model });
+  if (chat?.provider === 'claude-cli') return streamCli({ ...opts, model });
+  if (chat?.provider === 'openai') return streamOpenAi({ ...opts, model });
+  if (chat?.provider === 'gemini') return streamGemini({ ...opts, model });
+  const text = opts.fallback || '(No AI set up yet. Add a key in Settings → Agents & keys to bring the office to life.)';
   // emit in small chunks so the UI still "types"
   for (const chunk of text.match(/.{1,24}(\s|$)|.+/g) || [text]) {
     opts.onDelta?.(chunk);
@@ -86,7 +94,7 @@ async function streamApi(opts: StreamOpts & { model: string }): Promise<string> 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
-      'x-api-key': process.env.ANTHROPIC_API_KEY!,
+      'x-api-key': keyFor('anthropic').key!,
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
     },
@@ -100,6 +108,43 @@ async function streamApi(opts: StreamOpts & { model: string }): Promise<string> 
     signal: opts.signal,
   });
   if (!res.ok || !res.body) throw new Error(`Anthropic API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return readSse(res, opts, (ev) => (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' ? ev.delta.text : ''));
+}
+
+async function streamOpenAi(opts: StreamOpts & { model: string }): Promise<string> {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${keyFor('openai').key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: opts.model,
+      stream: true,
+      max_completion_tokens: 1500,
+      messages: [{ role: 'system', content: opts.system }, { role: 'user', content: opts.prompt }],
+    }),
+    signal: opts.signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`OpenAI API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return readSse(res, opts, (ev) => ev.choices?.[0]?.delta?.content ?? '');
+}
+
+async function streamGemini(opts: StreamOpts & { model: string }): Promise<string> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(opts.model)}:streamGenerateContent?alt=sse`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'x-goog-api-key': keyFor('gemini').key!, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: opts.system }] },
+      contents: [{ role: 'user', parts: [{ text: opts.prompt }] }],
+      generationConfig: { maxOutputTokens: 1500 },
+    }),
+    signal: opts.signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`Gemini API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return readSse(res, opts, (ev) => (ev.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? '').join(''));
+}
+
+/** Read a `data: {...}` event stream, pulling the new text out of each event. */
+async function readSse(res: globalThis.Response, opts: StreamOpts, textOf: (ev: any) => string): Promise<string> {
   let full = '';
   let buf = '';
   const decoder = new TextDecoder();
@@ -109,12 +154,12 @@ async function streamApi(opts: StreamOpts & { model: string }): Promise<string> 
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i).trim();
       buf = buf.slice(i + 1);
-      if (!line.startsWith('data:')) continue;
+      if (!line.startsWith('data:') || line === 'data: [DONE]') continue;
       try {
-        const ev = JSON.parse(line.slice(5));
-        if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-          full += ev.delta.text;
-          opts.onDelta?.(ev.delta.text);
+        const text = textOf(JSON.parse(line.slice(5)));
+        if (text) {
+          full += text;
+          opts.onDelta?.(text);
         }
       } catch {
         /* keep-alive */

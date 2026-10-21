@@ -209,8 +209,8 @@ body:has(#hud.hidden) #phone-tab, body:has(#hud.hidden) .phone-notif, body:has(#
 .pf-vol2 { left: -3px; top: 32%; height: 8%; }
 .pf-power { right: -3px; top: 25%; height: 12%; background: linear-gradient(270deg, #2a2e35, #50565f); }
 /* While the phone is out, the left-side HUD steps aside so nothing sits under it. */
-body.phone-docked .ow-info, body.phone-docked .ow-hints, body.phone-docked #hud-location, body.phone-docked #hud-time { opacity: 0; pointer-events: none; }
-.ow-info, .ow-hints, #hud-location, #hud-time { transition: opacity .25s; }
+body.phone-docked .ow-info, body.phone-docked #hud-location, body.phone-docked #hud-time { opacity: 0; pointer-events: none; }
+.ow-info, #hud-location, #hud-time { transition: opacity .25s; }
 /* The phone tab shows the working-agent count now. */
 #hud-agents { display: none !important; }
 

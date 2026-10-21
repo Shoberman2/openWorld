@@ -1,3 +1,5 @@
+// Settings first: a saved quality choice must reach the URL before the engine reads it.
+import './prefs.ts';
 import * as THREE from 'three';
 import type { AgentInfo, CityId, GeoPlace, Repo } from '../../shared/types.ts';
 import { api, connectLive, onLive, track } from './api.ts';
@@ -37,6 +39,8 @@ import { currentBriefing, maybePromptBriefing, openBriefingPanel, waiting, type 
 import { saveSession, takeResume, type SavedSession } from './session.ts';
 import { installCityPulse } from './city/signals.ts';
 import { openReview } from './ui/review.ts';
+import { installSettings, toggleSettings } from './ui/settings.ts';
+import { keymap } from './keymap.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -49,19 +53,6 @@ installLanding({
 });
 
 // ------------------------------------------------------------------ the game
-const HINTS = {
-  walk: ['[W][A][S][D] Move · [Shift] Run · [Space] Jump', '[Space] in the air: rocket shoes', '[E] Interact · [P] Phone · [M] Map', '[Tab] Directory · [F] Photo mode · [L] Time-lapse · [G] Wave'],
-  fly: ['[Space] Burn the rockets · let go to fall', '[W][A][S][D] Fly where you look · [Shift] Afterburner', '[C] Cut the rockets · land hard to roll', '[M] Map · [P] Phone'],
-  indoors: ['[W][A][S][D] Move · [E] Talk / use', '[P] Phone · [Esc] Release mouse'],
-  skate: ['[W] Push · [S] Brake · [A][D] Carve', '[Space] Ollie · [Shift] Faster', '[1] Get off · [2]–[8] Switch'],
-  bike: ['[W] Pedal · [S] Brake · [A][D] Steer', '[Space] Bunny hop · [Shift] Sprint', '[1] Get off · [2]–[8] Switch'],
-  jeep: ['[W] Gas · [S] Brake / reverse · [A][D] Steer', '[Space] Handbrake · [Shift] Boost', '[1] Get out · [2]–[8] Switch'],
-  plane: ['[W][S] Throttle · [A][D] Bank / taxi', '[Space] Pull up · [C] Push down · [Shift] Thrust', 'Take off past 32 mph · [O] Autopilot to waypoint · [1] Bail out'],
-  shuttle: ['[W][S] Throttle · [A][D] Bank · [Space] Pull up · [C] Push down', '[Shift] Boosters · [O] Autopilot to waypoint (40×)', '[M] Map: pick a place, Autopilot · [1] Bail out, then [Q] wingsuit'],
-  wingsuit: ['[W] Dive · [S] Flare · [A][D] Bank · steer with the mouse', '[Space] Rockets · [Shift] Burst', '[Q] Stow the wingsuit · land fast to roll'],
-  kayak: ['[W][S] Paddle · [A][D] Turn', '[1] Get out · [7] Motorboat'],
-  boat: ['[W][S] Throttle · [A][D] Rudder · [Shift] Faster', '[1] Get out · [6] Kayak'],
-};
 const VEHICLES: { key: string; id: VehicleId; label: string; icon: string }[] = [
   { key: 'Digit1', id: 'foot', label: 'On foot', icon: '🚶' }, { key: 'Digit2', id: 'skate', label: 'Skate', icon: '🛹' },
   { key: 'Digit3', id: 'bike', label: 'Bike', icon: '🚲' }, { key: 'Digit4', id: 'jeep', label: 'Jeep', icon: '🚙' },
@@ -110,8 +101,7 @@ async function start(where: CityId | GeoPlace) {
   const earthMini = tileMap ? new EarthMinimap(tileMap) : null;
   const minimap = earth ? null : new Minimap(place.map, place.sites);
   const hud: Hud | null = earth ? installHud({
-    modes: [{ id: 'walk', label: 'On foot', icon: '🚶' }, { id: 'fly', label: 'Rockets', icon: '🚀' }, ...VEHICLES.slice(1).map((v) => ({ id: v.id, label: v.label, icon: v.icon })), { id: 'map', label: 'Map', icon: '🗺️' }, { id: 'photo', label: 'Camera', icon: '📷' }],
-    hints: HINTS,
+    modes: [{ id: 'walk', label: 'On foot', icon: '🚶' }, { id: 'fly', label: 'Thrusters', icon: '🚀' }, ...VEHICLES.slice(1).map((v) => ({ id: v.id, label: v.label, icon: v.icon })), { id: 'map', label: 'Map', icon: '🗺️' }, { id: 'photo', label: 'Camera', icon: '📷' }],
     onMode: (id) => {
       if (id === 'map') openMap();
       else if (id === 'photo') { if (!photo.active) photo.toggle(player.yaw, player.pitch); }
@@ -338,7 +328,7 @@ async function start(where: CityId | GeoPlace) {
       player.mode = 'air';
       player.vel.set(0, 0, 0);
     } else if (how === 'window' && floor > 0) {
-      // Out the window: you're in the air outside that floor. Hold Space for the rocket shoes.
+      // Out the window: you're in the air outside that floor. Hold Space for the thrusters.
       player.position.y = hit.fp.base + Math.max(yInside, floor * 3) + 0.5;
       player.mode = 'air';
       player.vel.set(hit.out.x * 3, 2, hit.out.z * 3);
@@ -430,10 +420,12 @@ async function start(where: CityId | GeoPlace) {
     travelTo: async (name) => { const s = siteByRepo.get(name); if (s) await travelTo(s); },
     placeName: () => `${place.title}${place.subtitle ? `, ${place.subtitle}` : ''}`,
     home: { address: HOME.address, go: goHome, pin: waypointHome },
+    currentRepo: () => interior?.repo.name ?? lastDoor?.repo.name ?? null,
+    openSettings: () => toggleSettings(),
   });
   const briefingHooks: BriefingHooks = {
     travelTo: (repo) => { const s = siteByRepo.get(repo); if (s) void travelTo(s); },
-    openAgent: () => phone.open('agents'),
+    openAgent: (id) => phone.openAgent(id),
     goHome: earth ? () => { void goHome().then(() => enterHome()); } : undefined,
   };
 
@@ -511,12 +503,12 @@ async function start(where: CityId | GeoPlace) {
   });
   input.onPress('KeyT', () => { dayNight.hour = (dayNight.hour + 3) % 24; });
   // Time-lapse (L): clouds race and the day flies by, like sitting down in his game.
-  input.onPress('KeyL', () => { dayNight.timelapse(!dayNight.timelapsing); toast(dayNight.timelapsing ? 'Time-lapse on (<b>L</b> to stop)' : 'Time-lapse off', 2500); });
+  input.onPress('KeyL', () => { dayNight.timelapse(!dayNight.timelapsing); toast(dayNight.timelapsing ? `Time-lapse on (<b>${keymap.label('timelapse')}</b> to stop)` : 'Time-lapse off', 2500); });
   input.onPress('KeyG', () => { if (!panelOpen() && player.mode === 'walk') robot.play('wave'); });
   // Wingsuit (Q, in the air) and autopilot (O, in the shuttle or plane, to the waypoint).
   input.onPress('KeyQ', () => {
     if (panelOpen() || busy || interior || generic) return;
-    if (!player.toggleWingsuit()) toast(player.flying ? 'Too close to the ground for the wingsuit.' : 'Jump off something high (or bail out of a plane) first, then <b>Q</b>.', 3000);
+    if (!player.toggleWingsuit()) toast(player.flying ? 'Too close to the ground for the wingsuit.' : `Jump off something high (or bail out of a plane) first, then <b>${keymap.label('wingsuit')}</b>.`, 3000);
   });
   const autopilot = new Autopilot({
     earth: earth!, player, input, dayNight,
@@ -525,7 +517,7 @@ async function start(where: CityId | GeoPlace) {
   });
   function startAutopilot() {
     if (!earth || interior || generic) return;
-    if (!waypoint) { toast('Set a destination first: <b>M</b> for the map, pick a place, <b>Autopilot</b>.', 4000); return; }
+    if (!waypoint) { toast(`Set a destination first: <b>${keymap.label('map')}</b> for the map, pick a place, <b>Autopilot</b>.`, 4000); return; }
     // Not in an aircraft? The shuttle it is (it launches from anywhere dry).
     if (player.vehicle !== 'shuttle' && player.vehicle !== 'plane') ride('shuttle');
     if (autopilot.engage(waypoint)) { toast(`Autopilot to <b>${esc(waypoint.name)}</b>: climbing out.`, 3500); track('autopilot', { km: Math.round(haversine(earth.frame.toGeo(player.position.x, player.position.z), waypoint) / 1000) }); }
@@ -540,14 +532,16 @@ async function start(where: CityId | GeoPlace) {
     if (panelOpen() || interior) return;
     openDirectory(place.sites, agentsByRepo(), place.title, { waypoint: setWaypoint, travel: travelTo, home: earth ? { address: HOME.address, waypoint: waypointHome, travel: () => { void goHome(); } } : undefined });
   });
+  installSettings({ location: () => hud?.location ?? null });
+  input.onPress('KeyK', () => { if (!busy && !photo.active) toggleSettings(); });
   window.addEventListener('pointerdown', () => ambience.start(), { once: true });
 
   // ---- HUD ----
   $('loading').classList.add('hidden');
   $('hud').classList.remove('hidden');
   toast(earth
-    ? `Welcome to <b>${esc(place.title)}</b>. Your ${repos.length} projects moved in; the tallest tower is <b>${esc(place.sites[0]?.repo.name ?? '')}</b>. Hold <b>Space</b> in the air to fly, <b>M</b> for the map of the world.`
-    : `Welcome to <b>${esc(place.title)}</b>. Your ${repos.length} projects are here; the tallest tower is <b>${esc(place.sites[0]?.repo.name ?? '')}</b>. Press <b>Tab</b> for the directory.`, 10000);
+    ? `Welcome to <b>${esc(place.title)}</b>. Your ${repos.length} projects moved in; the tallest tower is <b>${esc(place.sites[0]?.repo.name ?? '')}</b>. Hold <b>${keymap.label('jump')}</b> in the air to fly, <b>${keymap.label('map')}</b> for the map of the world, <b>${keymap.label('settings')}</b> for settings.`
+    : `Welcome to <b>${esc(place.title)}</b>. Your ${repos.length} projects are here; the tallest tower is <b>${esc(place.sites[0]?.repo.name ?? '')}</b>. Press <b>${keymap.label('directory')}</b> for the directory.`, 10000);
   const locEl = $('hud-location'), timeEl = $('hud-time'), agentEl = $('hud-agents'), lookEl = $('click-to-look');
   let hudTimer = 0;
   let exploredFar = false;
@@ -595,7 +589,7 @@ async function start(where: CityId | GeoPlace) {
       updateEntrances(dt, player.position);
       air.update(dt);
       if (minimap?.waypoint && Math.hypot(minimap.waypoint.x - player.position.x, minimap.waypoint.z - player.position.z) < 8) {
-        toast(`Arrived at <b>${esc(minimap.waypoint.name)}</b>. Press <b>E</b> at the door.`);
+        toast(`Arrived at <b>${esc(minimap.waypoint.name)}</b>. Press <b>${keymap.label('interact')}</b> at the door.`);
         minimap.waypoint = null;
       }
     }
@@ -640,7 +634,6 @@ async function start(where: CityId | GeoPlace) {
           looking: interior || generic || photo.active ? null : earth.lookingAt(),
         });
         if (!worldMapOpen() && !photo.active) hud.setMode(interior ? 'walk' : player.vehicle !== 'foot' ? player.vehicle : player.flying ? 'fly' : 'walk');
-        if (!interior && !generic) hud.setHints(player.vehicle !== 'foot' ? player.vehicle : player.wingsuit ? 'wingsuit' : player.flying ? 'fly' : 'walk');
         earthMini.setVisible(!interior && !generic);
         const veh = player.vehicleObj;
         const kind = interior || generic || photo.active ? null : player.vehicle === 'shuttle' ? 'shuttle' : player.vehicle === 'plane' ? 'plane' : player.wingsuit ? 'wingsuit' : player.flying && player.agl > 3 ? 'rockets' : null;

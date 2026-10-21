@@ -8,6 +8,7 @@ import { setOverlayOpen } from './panel.ts';
 import { haversine } from '../earth/frame.ts';
 import { ATTRIBUTION, formatDistance } from './hud.ts';
 import { Globe, type GlobeLayer } from './globe.ts';
+import { kbd, keymap } from '../keymap.ts';
 import './hud.css';
 
 export interface WorldMapOpts {
@@ -143,12 +144,12 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
           ${opts.onAutopilot ? '<button data-a="auto"><i>✈</i>Autopilot</button>' : ''}
           <button data-a="back"><i>◎</i>Back to you</button>
         </div>
-        <div class="ow-wm-help"><span><kbd>drag</kbd>Move</span><span><kbd>wheel</kbd>Zoom</span><span><kbd>click</kbd>Pick a spot</span><span><kbd>M</kbd>Close</span></div>`;
+        <div class="ow-wm-help"><span><kbd>drag</kbd>Move</span><span><kbd>wheel</kbd>Zoom</span><span><kbd>click</kbd>Pick a spot</span><span>${kbd('map')}Close</span></div>`;
     } else {
       card.innerHTML = `
         <div><h4>You are here</h4><p>${fmtCoord(h.lat, h.lon)}</p></div>
         <div class="ow-wm-acts"><button data-a="back"><i>◎</i>Back to you</button></div>
-        <div class="ow-wm-help"><span><kbd>drag</kbd>Move</span><span><kbd>wheel</kbd>Zoom</span><span><kbd>click</kbd>Pick a spot</span><span><kbd>M</kbd>Close</span></div>`;
+        <div class="ow-wm-help"><span><kbd>drag</kbd>Move</span><span><kbd>wheel</kbd>Zoom</span><span><kbd>click</kbd>Pick a spot</span><span>${kbd('map')}Close</span></div>`;
     }
   };
   card.addEventListener('click', (e) => {
@@ -277,13 +278,14 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
       return;
     }
     if (typing) return;
-    if (e.code === 'KeyM') { e.preventDefault(); e.stopImmediatePropagation(); api.close(); return; }
+    const code = e.code.startsWith('Arrow') ? e.code : keymap.translate(e.code);
+    if (code === 'KeyM') { e.preventDefault(); e.stopImmediatePropagation(); api.close(); return; }
     const step = 120 / 2 ** 0;
     const pan = (dx: number, dy: number) => { const p = map.unproject(dx, dy, lat, lon, zoom); lat = p.lat; lon = p.lon; dirty = true; };
-    if (e.code === 'KeyW' || e.code === 'ArrowUp') pan(0, -step);
-    if (e.code === 'KeyS' || e.code === 'ArrowDown') pan(0, step);
-    if (e.code === 'KeyA' || e.code === 'ArrowLeft') pan(-step, 0);
-    if (e.code === 'KeyD' || e.code === 'ArrowRight') pan(step, 0);
+    if (code === 'KeyW' || code === 'ArrowUp') pan(0, -step);
+    if (code === 'KeyS' || code === 'ArrowDown') pan(0, step);
+    if (code === 'KeyA' || code === 'ArrowLeft') pan(-step, 0);
+    if (code === 'KeyD' || code === 'ArrowRight') pan(step, 0);
     if (e.code === 'Equal' || e.code === 'NumpadAdd') { zoom = clampZ(zoom + 1); dirty = true; }
     if (e.code === 'Minus' || e.code === 'NumpadSubtract') { zoom = clampZ(zoom - 1); dirty = true; }
   };

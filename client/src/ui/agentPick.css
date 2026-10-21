@@ -1,0 +1,11 @@
+/* "Who does it" pills under task boxes (ui/agentPick.ts). Neutral colors so it sits in panels and on the phone. */
+.agent-pick { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 7px; font-size: 12px; color: inherit; }
+.agent-pick:empty { display: none; }
+.agent-pick .ap-label { opacity: .6; margin-right: 2px; }
+.agent-pick .ap-pill { padding: 4px 10px; border-radius: 999px; border: 1px solid currentColor; background: transparent; color: inherit; font: inherit; font-weight: 600; opacity: .55; cursor: pointer; }
+.agent-pick .ap-pill[aria-pressed="true"] { opacity: 1; background: rgba(127, 127, 127, .18); }
+.agent-pick .ap-one { opacity: .6; }
+.agent-pick .ap-one::before { content: 'Agent: '; }
+.agent-pick .ap-none { opacity: .75; }
+.agent-pick .ap-link { padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
+.assign-strip .agent-pick { flex-basis: 100%; order: 3; }

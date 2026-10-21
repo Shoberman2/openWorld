@@ -649,7 +649,7 @@ export function buildHomeInterior(o: HomeOpts): GenericInterior & { refreshView(
     { id: 'home:sofa', position: new THREE.Vector3(sofaX, 0, sofaZ - 0.9), radius: 1.6, label: 'Sit on the sofa', sub: 'Watch the park (time-lapse)', action: () => sitAt(new THREE.Vector3(sofaX, 0.47, sofaZ - 0.1), Math.PI, null) },
     { id: 'home:bed', position: new THREE.Vector3(bed.x + 1.5, 0, bed.z), radius: 1.6, label: 'Go to sleep', sub: 'Until morning', action: () => sitAt(new THREE.Vector3(bed.x + 0.6, 0.62, bed.z), Math.PI / 2, 7.5) },
     { id: 'home:desk', position: new THREE.Vector3(desk.x, 0, desk.z - 1.3), radius: 1.5, label: 'Read your briefing', sub: 'What your agents did while you were away', action: () => o.openBriefing() },
-    { id: 'home:window', position: new THREE.Vector3(5.2, 0, z0 + 0.9), radius: 1.4, label: 'Open the window', sub: `Jump out from floor ${o.floor} (rocket shoes!)`, action: () => api.onExit?.('window', o.floor) },
+    { id: 'home:window', position: new THREE.Vector3(5.2, 0, z0 + 0.9), radius: 1.4, label: 'Open the window', sub: `Jump out from floor ${o.floor} (thrusters ready)`, action: () => api.onExit?.('window', o.floor) },
   ];
 
   const seats = [

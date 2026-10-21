@@ -54,6 +54,34 @@ onLive((msg) => {
 /** Enabled schedules, for badges elsewhere. */
 export const enabledSchedules = () => (list ?? []).filter((s) => s.enabled);
 
+/** One project's schedules (null while loading), e.g. for its page on the phone. */
+export function schedulesFor(repo: string): Schedule[] | null {
+  if (!list) { void load(); return null; }
+  return list.filter((s) => s.repo === repo);
+}
+/** Called whenever the schedule list changes. Returns an unsubscribe. */
+export function onSchedules(fn: () => void) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+/** Turn a template on for one repo in a single tap. */
+export async function addTemplate(repo: string, tplId: string) {
+  const t = TEMPLATES.find((x) => x.id === tplId);
+  if (!t) throw new Error('Unknown template');
+  const s = await api.create({ repo, task: t.task, cadence: t.cadence, hour: t.hour, weekday: t.weekday });
+  track('schedule_created', { repo, cadence: s.cadence, template: tplId });
+  list = [...(list ?? []), s];
+  changed();
+  return s;
+}
+export async function toggleSchedule(s: Schedule) {
+  Object.assign(s, await api.update(s.id, { enabled: !s.enabled }));
+  track('schedule_toggled', { repo: s.repo, enabled: s.enabled });
+  changed();
+}
+export const runSchedule = (id: string) => api.run(id).then((a) => { void load(); return a; });
+
 type Mode = { kind: 'list' } | { kind: 'add'; tpl?: string; repo?: string };
 let mode: Mode = { kind: 'list' };
 
@@ -65,6 +93,8 @@ export interface SchedulesAppOpts {
   repos(): string[];
   /** Back button inside the add form returns to the list instead of the home screen. */
   setBackHandler(fn: (() => boolean) | null): void;
+  /** Only the add form, for one project: called after saving or cancelling instead of showing the list. */
+  onDone?(): void;
 }
 
 /** Draw the Schedules app into the phone's view. Returns an unsubscribe for live updates. */
@@ -72,6 +102,7 @@ export function renderSchedulesApp(el: HTMLElement, o: SchedulesAppOpts, opts: {
   if (opts.repo) mode = { kind: 'add', repo: opts.repo };
   const draw = () => {
     if (!el.isConnected) { listeners.delete(draw); return; }
+    if (o.onDone && mode.kind === 'list') { listeners.delete(draw); o.onDone(); return; }
     if (mode.kind === 'add') drawAdd(el, o, mode);
     else drawList(el, o);
   };

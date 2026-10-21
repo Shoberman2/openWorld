@@ -1,24 +1,32 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
-// The player: a curious little robot in an orange hoodie, with a backpack, a skateboard strapped on, and
-// rocket shoes. Built from primitives on a simple joint hierarchy and animated procedurally.
+// The player: the site engineer of your city. A little robot with a white shell head, a visor-screen face
+// and a yellow hard hat, a navy work jacket with hi-vis vest bands and the OpenWorld mark, a tool belt,
+// and work boots with heel thrusters. Built from primitives on a simple joint hierarchy and animated procedurally.
 
 export type RobotState = 'idle' | 'walk' | 'run' | 'jump' | 'fall' | 'fly' | 'land' | 'roll' | 'sit' | 'wave'
+  | 'crouch' | 'sprawl'
   | 'skate' | 'bike' | 'drive' | 'pilot' | 'paddle';
 
 export interface Robot {
   root: THREE.Group; // feet at y=0, faces +Z, ~1.6 m tall
   state: RobotState;
   speed: number; // ground speed m/s: drives stride cadence/length for walk/run
-  rockets: number; // rocket-shoe thrust: 0 off, ~0.2 pilot light, 0.75 burn, up to 1.6 afterburner + ignition
+  rockets: number; // heel-thruster thrust: 0 off, ~0.2 pilot light, 0.75 burn, up to 1.6 afterburner + ignition
   lean: { x: number; z: number }; // -1..1 lean while flying (x = bank right, z = pitch forward)
   /** Riding inputs: pedal/paddle/push cadence (cycles per second), steering -1..1, airborne 0..1. */
   ride: { cadence: number; steer: number; air: number };
-  /** The skateboard strapped to the backpack (hidden while it's under your feet). */
+  /** Not riding the skateboard (it's carried out of sight, and appears under your feet to ride). */
   boardOnBack: boolean;
-  /** Wingsuit 0..1: arms and legs spread with the orange membranes between them (while flying). */
+  /** Wingsuit 0..1: arms and legs spread with the navy membranes between them (while flying). */
   wings: number;
+  /** Falling speed through the air (m/s): the fall pose goes from flailing to a skydiver's arch. */
+  airspeed: number;
+  /** Ignition flash 0..1 (decays on its own): a burst of light and fat flames at the feet. */
+  flash: number;
+  /** Seconds of cut-off sputter left: the flames cough on and off before going out. */
+  sputter: number;
   play(state: RobotState): void;
   update(dt: number): void;
   dispose(): void;
@@ -33,30 +41,31 @@ type Key = (typeof KEYS)[number];
 type Pose = Record<Key, number>;
 const zero = (): Pose => Object.fromEntries(KEYS.map((k) => [k, 0])) as Pose;
 
-// Proportions follow the Hello World robot: about 1.6 m tall, a head roughly a sixth of that, thin
-// mannequin limbs with big dark knee joints, a long hoodie that covers the hips, knee-length shorts.
+// About 1.6 m tall to the hat brim, a head roughly a sixth of that, slim limbs in work clothes.
 const HIP_Y = 0.81;
 /** Hip height of the previous, smaller body; the seated poses below keep their old hip height above the seat. */
 const SEAT_DROP = HIP_Y - 0.71;
 
 export function makeRobot(): Robot {
   const mats = {
-    skin: new THREE.MeshStandardMaterial({ color: 0xbcae9a, roughness: 0.6 }),
-    skinDark: new THREE.MeshStandardMaterial({ color: 0x9c8f7d, roughness: 0.7 }),
-    hoodie: new THREE.MeshStandardMaterial({ color: 0xd9542a, roughness: 0.9 }),
-    hoodieDark: new THREE.MeshStandardMaterial({ color: 0xb2401c, roughness: 0.92 }),
-    zip: new THREE.MeshStandardMaterial({ color: 0xc9c6c0, roughness: 0.45, metalness: 0.3 }),
-    dark: new THREE.MeshStandardMaterial({ color: 0x2f3338, roughness: 0.6 }),
-    tee: new THREE.MeshStandardMaterial({ color: 0xb9bcc0, roughness: 0.85 }),
-    pack: new THREE.MeshStandardMaterial({ color: 0x4a5561, roughness: 0.82 }),
-    packLight: new THREE.MeshStandardMaterial({ color: 0x6b7682, roughness: 0.8 }),
-    shorts: new THREE.MeshStandardMaterial({ color: 0x41464d, roughness: 0.88 }),
-    shoe: new THREE.MeshStandardMaterial({ color: 0x3a3f46, roughness: 0.7 }),
-    sole: new THREE.MeshStandardMaterial({ color: 0x8e9399, roughness: 0.8 }),
-    eye: new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.3 }),
-    board: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6 }),
-    white: new THREE.MeshStandardMaterial({ color: 0xf2efe8, roughness: 0.55 }),
-    metal: new THREE.MeshStandardMaterial({ color: 0xa3a8ad, roughness: 0.35, metalness: 0.7 }),
+    shell: new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 0.32, metalness: 0.08 }),
+    shellDark: new THREE.MeshStandardMaterial({ color: 0xb9c2cc, roughness: 0.45, metalness: 0.2 }),
+    visor: new THREE.MeshStandardMaterial({ color: 0x0c1424, roughness: 0.12, metalness: 0.6 }),
+    eyeGlow: new THREE.MeshBasicMaterial({ color: 0x8fe0ff, toneMapped: false }),
+    hat: new THREE.MeshStandardMaterial({ color: 0xf4bf1d, roughness: 0.38 }),
+    jacket: new THREE.MeshStandardMaterial({ color: 0x1f3358, roughness: 0.82 }),
+    jacketDark: new THREE.MeshStandardMaterial({ color: 0x15233f, roughness: 0.85 }),
+    hivis: new THREE.MeshStandardMaterial({ color: 0xf6c21c, roughness: 0.5, emissive: 0x3a2a00 }),
+    pants: new THREE.MeshStandardMaterial({ color: 0x9a7a4e, roughness: 0.9 }),
+    pantsDark: new THREE.MeshStandardMaterial({ color: 0x7d6240, roughness: 0.92 }),
+    belt: new THREE.MeshStandardMaterial({ color: 0x2a2420, roughness: 0.75 }),
+    boot: new THREE.MeshStandardMaterial({ color: 0x24272d, roughness: 0.7 }),
+    sole: new THREE.MeshStandardMaterial({ color: 0x15161a, roughness: 0.9 }),
+    dark: new THREE.MeshStandardMaterial({ color: 0x23272d, roughness: 0.6 }),
+    metal: new THREE.MeshStandardMaterial({ color: 0xa3abb3, roughness: 0.3, metalness: 0.8 }),
+    thruster: new THREE.MeshBasicMaterial({ color: 0x6cc6ff, toneMapped: false }),
+    screen: new THREE.MeshBasicMaterial({ color: 0x5fd0ff }),
+    logo: new THREE.MeshStandardMaterial({ map: logoTexture(), roughness: 0.55, transparent: true }),
   };
   const geos: THREE.BufferGeometry[] = [];
   const g = <T extends THREE.BufferGeometry>(x: T) => { geos.push(x); return x; };
@@ -84,151 +93,123 @@ export function makeRobot(): Robot {
   root.name = 'robot';
   const hips = joint(root, 0, HIP_Y, 0);
 
-  // ---- Pelvis / shorts (mostly hidden under the hoodie) ----
-  part(g(new THREE.CylinderGeometry(0.135, 0.155, 0.14, 16).scale(1, 1, 0.68)), mats.shorts, hips, 0, -0.06, 0);
+  // ---- Pelvis: work trousers, with a tool belt over the jacket hem ----
+  part(g(new THREE.CylinderGeometry(0.14, 0.155, 0.16, 16).scale(1, 1, 0.7)), mats.pants, hips, 0, -0.07, 0);
+  part(g(new THREE.CylinderGeometry(0.172, 0.172, 0.045, 22).scale(1, 1, 0.72)), mats.belt, hips, 0, -0.03, 0);
+  part(g(new RoundedBoxGeometry(0.06, 0.045, 0.02, 2, 0.008)), mats.hivis, hips, 0, -0.03, 0.125); // buckle
+  for (const s of [-1, 1]) part(g(new RoundedBoxGeometry(0.075, 0.085, 0.055, 2, 0.015)), mats.belt, hips, s * 0.155, -0.075, 0.03); // pouches
+  // A tablet holstered on the right hip, its screen glowing.
+  part(g(new RoundedBoxGeometry(0.02, 0.12, 0.085, 2, 0.006)), mats.dark, hips, -0.178, -0.07, -0.04);
+  part(g(new THREE.PlaneGeometry(0.1, 0.07)), mats.screen, hips, -0.189, -0.06, -0.04, 0, -Math.PI / 2, Math.PI / 2);
 
-  // ---- Torso: a long, slightly boxy hoodie that covers the hips ----
+  // ---- Torso: a boxy navy work jacket with hi-vis vest bands and the OpenWorld mark ----
   const spine = joint(hips, 0, 0.05, 0);
-  const torsoGeo = g(new THREE.CylinderGeometry(0.158, 0.166, 0.52, 22, 10).scale(1, 1, 0.7).translate(0, 0.13, 0));
-  // A little chest, and a soft bag at the belly where the pocket sits.
-  const bulge = (y: number) => 1 + 0.08 * Math.exp(-(((y - 0.27) / 0.08) ** 2)) + 0.06 * Math.exp(-((y / 0.1) ** 2));
-  /** Distance of the hoodie's front surface from the spine at height y. */
-  const frontZ = (y: number) => (0.166 + (0.158 - 0.166) * (y + 0.13) / 0.52) * 0.7 * bulge(y);
+  const torsoGeo = g(new RoundedBoxGeometry(0.33, 0.5, 0.23, 4, 0.07));
   {
+    // Broader at the shoulders, a little chest at the front.
     const p = torsoGeo.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < p.count; i++) {
       const y = p.getY(i), z = p.getZ(i);
-      if (z > 0) p.setZ(i, z * bulge(y));
+      p.setX(i, p.getX(i) * (1 + 0.1 * y / 0.25));
+      if (z > 0) p.setZ(i, z * (1 + 0.07 * Math.exp(-(((y - 0.1) / 0.1) ** 2))));
     }
     torsoGeo.computeVertexNormals();
   }
-  part(torsoGeo, mats.hoodie, spine);
-  part(g(new THREE.SphereGeometry(0.158, 22, 8, 0, Math.PI * 2, 0, Math.PI / 2).scale(1.04, 0.42, 0.7)), mats.hoodie, spine, 0, 0.39, 0); // shoulders
-  part(g(new THREE.CylinderGeometry(0.16, 0.152, 0.06, 22).scale(1, 1, 0.72)), mats.hoodieDark, spine, 0, -0.13, 0); // ribbed hem
-  // Hood: bunched up behind the neck, open at the front in a V that shows the grey tee.
-  part(g(new THREE.SphereGeometry(0.135, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.6).scale(1.05, 0.9, 0.8)), mats.hoodie, spine, 0, 0.42, -0.08, -0.3, 0, 0);
-  // Rim of the hood around the neck, dipping at the front where the zip opens.
-  part(g(new THREE.TorusGeometry(0.088, 0.034, 10, 26)), mats.hoodie, spine, 0, 0.43, 0.0, Math.PI / 2 - 0.42, 0, 0);
-  part(g(new THREE.CylinderGeometry(0.06, 0.072, 0.05, 14)), mats.tee, spine, 0, 0.43, 0.012);
-  // Zip: full length, just right of center, with a pull at the top.
-  const zipSeg = g(new THREE.BoxGeometry(0.01, 0.042, 0.006));
-  for (let y = -0.13; y < 0.36; y += 0.04) part(zipSeg, mats.zip, spine, -0.012, y + 0.02, frontZ(y + 0.02) + 0.002, -Math.atan2(frontZ(y + 0.04) - frontZ(y), 0.04), 0, 0);
-  part(g(new THREE.BoxGeometry(0.016, 0.032, 0.008)), mats.zip, spine, -0.008, 0.35, frontZ(0.35) + 0.004);
-  // Kangaroo pocket: a raised panel with darker openings at the sides.
-  part(g(new THREE.BoxGeometry(0.22, 0.006, 0.01)), mats.hoodieDark, spine, 0, 0.0, frontZ(0) + 0.001, 0, 0, 0);
-  for (const s of [-1, 1]) part(g(new THREE.BoxGeometry(0.01, 0.13, 0.01)), mats.hoodieDark, spine, s * 0.1, -0.07, frontZ(-0.07) - 0.004, 0.25, 0, s * -0.3);
-
-  // ---- Backpack (big, slate, rounded) + skateboard ----
-  const pack = joint(spine, 0, 0.16, -0.125);
-  part(g(new RoundedBoxGeometry(0.32, 0.44, 0.16, 4, 0.07)), mats.pack, pack, 0, 0, -0.07);
-  part(g(new RoundedBoxGeometry(0.26, 0.17, 0.05, 3, 0.022)), mats.pack, pack, 0, -0.1, -0.155); // front pocket
-  part(g(new THREE.BoxGeometry(0.07, 0.035, 0.01)), mats.packLight, pack, 0, 0.17, -0.152); // label patch
-  part(g(new THREE.TorusGeometry(0.04, 0.009, 6, 14, Math.PI)), mats.dark, pack, 0, 0.235, -0.07); // carry loop
+  part(torsoGeo, mats.jacket, spine, 0, 0.13, 0);
+  const FRONT = 0.118, BACK = -0.118;
+  part(g(new THREE.BoxGeometry(0.008, 0.46, 0.006)), mats.jacketDark, spine, 0, 0.13, FRONT + 0.008); // zip
+  part(g(new THREE.CylinderGeometry(0.1, 0.112, 0.07, 20, 1, true).scale(1, 1, 0.8)), mats.jacketDark, spine, 0, 0.41, -0.005); // stand-up collar
+  // Vest bands: two straps over the shoulders, front and back, and a band right round the middle.
   for (const s of [-1, 1]) {
-    part(g(new RoundedBoxGeometry(0.05, 0.3, 0.1, 2, 0.02)), mats.pack, pack, s * 0.165, -0.04, -0.07); // side pockets
-    // Wide shoulder straps: over the top and down the chest, curving out to the sides.
-    part(g(new THREE.BoxGeometry(0.058, 0.028, 0.24)), mats.pack, spine, s * 0.112, 0.415, -0.005, 0, 0, s * 0.12);
-    part(g(new RoundedBoxGeometry(0.052, 0.24, 0.012, 2, 0.005)), mats.pack, spine, s * 0.122, 0.29, frontZ(0.29) - 0.012, -0.22, 0, s * -0.05);
+    part(g(new THREE.BoxGeometry(0.045, 0.44, 0.006)), mats.hivis, spine, s * 0.1, 0.15, FRONT + 0.01);
+    part(g(new THREE.BoxGeometry(0.045, 0.44, 0.006)), mats.hivis, spine, s * 0.1, 0.15, BACK - 0.01);
+    part(g(new THREE.BoxGeometry(0.045, 0.006, 0.25)), mats.hivis, spine, s * 0.1, 0.383, 0);
   }
-  // Skateboard strapped upright to the pack: orange deck with slate nose and tail, a round emblem, white wheels.
-  const board = joint(pack, 0, 0.11, -0.2);
-  const deckGeo = g(new THREE.CapsuleGeometry(0.1, 0.6, 6, 14, 12).scale(1, 1, 0.08));
-  {
-    const p = deckGeo.attributes.position as THREE.BufferAttribute;
-    const col = new Float32Array(p.count * 3);
-    const orange = new THREE.Color(0xe0682c), slate = new THREE.Color(0x4f6177);
-    for (let i = 0; i < p.count; i++) (Math.abs(p.getY(i)) > 0.27 ? slate : orange).toArray(col, i * 3);
-    deckGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  }
-  part(deckGeo, mats.board, board);
-  part(g(new THREE.CircleGeometry(0.068, 24)), mats.pack, board, 0, -0.08, -0.0085, 0, Math.PI, 0);
-  part(g(new THREE.TorusGeometry(0.058, 0.009, 6, 24)), mats.white, board, 0, -0.08, -0.009);
-  part(g(new THREE.BoxGeometry(0.11, 0.012, 0.004)), mats.white, board, 0, -0.08, -0.01);
-  part(g(new THREE.BoxGeometry(0.012, 0.11, 0.004)), mats.white, board, 0, -0.08, -0.01);
-  for (const ty of [-0.27, 0.27]) {
-    part(g(new THREE.BoxGeometry(0.05, 0.05, 0.02)), mats.metal, board, 0, ty, -0.018); // baseplate
-    part(g(new THREE.BoxGeometry(0.15, 0.026, 0.026)), mats.metal, board, 0, ty, -0.038); // hanger
-    for (const s of [-1, 1]) part(g(new THREE.CylinderGeometry(0.03, 0.03, 0.034, 12)), mats.white, board, s * 0.09, ty, -0.04, 0, 0, Math.PI / 2);
-  }
+  part(g(new THREE.CylinderGeometry(0.176, 0.176, 0.04, 24, 1, true).scale(1, 1, 0.74)), mats.hivis, spine, 0, 0.02, 0);
+  // The OpenWorld mark: a small badge on the chest and a big one between the straps on the back.
+  part(g(new THREE.PlaneGeometry(0.055, 0.055)), mats.logo, spine, -0.045, 0.27, FRONT + 0.012);
+  part(g(new THREE.PlaneGeometry(0.11, 0.11)), mats.logo, spine, 0, 0.24, BACK - 0.012, 0, Math.PI, 0);
 
-  // ---- Neck + head ----
+  // ---- Back: no pack, the heel thrusters do the flying (a hidden mount keeps the old riding API) ----
+  const board = joint(spine, 0, 0, 0);
+  board.visible = false;
+
+  // ---- Neck + head: a white shell head with a dark visor screen for a face, under a yellow hard hat ----
   const neck = joint(spine, 0, 0.43, 0.0);
-  part(limb(0.036, 0.042, 0.11).translate(0, 0.11, 0), mats.dark, neck);
-  part(limb(0.041, 0.041, 0.012).translate(0, 0.055, 0), mats.skinDark, neck); // collar ring between segments
+  part(limb(0.034, 0.04, 0.11).translate(0, 0.11, 0), mats.dark, neck);
+  for (const y of [0.03, 0.065]) part(limb(0.042, 0.042, 0.01).translate(0, y, 0), mats.shellDark, neck); // segment rings
   const head = joint(neck, 0, 0.1, 0.012);
-  const headGeo = g(new THREE.SphereGeometry(1, 32, 24));
-  {
-    // Egg: fuller toward the crown, narrower at the chin, a touch deeper than wide.
-    const p = headGeo.attributes.position as THREE.BufferAttribute;
-    for (let i = 0; i < p.count; i++) {
-      const y = p.getY(i);
-      const w = 1 + 0.09 * y;
-      p.setXYZ(i, p.getX(i) * 0.118 * w, y * 0.135 + 0.13, p.getZ(i) * 0.125 * w);
-    }
-    headGeo.computeVertexNormals();
-  }
-  part(headGeo, mats.skin, head);
-  for (const s of [-1, 1]) {
-    // Small dot eyes, set low and fairly wide.
-    part(sphere(0.013, 12, 8).scale(1, 1.1, 0.5), mats.eye, head, s * 0.045, 0.1, 0.118);
-    // Ear discs, like headphone cups: a beige drum with a dark center.
-    const ear = joint(head, s * 0.117, 0.152, -0.008);
-    part(g(new THREE.CylinderGeometry(0.056, 0.06, 0.04, 28)), mats.skin, ear, s * 0.004, 0, 0, 0, 0, Math.PI / 2);
-    part(g(new THREE.TorusGeometry(0.048, 0.007, 8, 28)), mats.skin, ear, s * 0.024, 0, 0, 0, Math.PI / 2, 0);
-    part(g(new THREE.CylinderGeometry(0.031, 0.031, 0.008, 22)), mats.dark, ear, s * 0.022, 0, 0, 0, 0, Math.PI / 2);
-  }
+  head.scale.setScalar(1.18); // a big, friendly head reads from behind at the follow camera
+  part(g(new RoundedBoxGeometry(0.235, 0.215, 0.225, 5, 0.08)), mats.shell, head, 0, 0.125, 0);
+  part(g(new RoundedBoxGeometry(0.2, 0.115, 0.03, 3, 0.028)), mats.visor, head, 0, 0.115, 0.1);
+  for (const s of [-1, 1]) for (const dy of [-0.02, 0.02]) part(g(new THREE.BoxGeometry(0.01, 0.012, 0.07)), mats.shellDark, head, s * 0.118, 0.12 + dy, -0.01); // side vents
+  // Eyes on the visor: rounded bars that blink, widen in a fast fall and turn into ^ ^ on a wave.
+  const eyeOpen = g(new THREE.CapsuleGeometry(0.011, 0.028, 3, 8));
+  const eyeHappy = g(new THREE.TorusGeometry(0.019, 0.0065, 6, 12, Math.PI));
+  const eyes: { open: THREE.Mesh; happy: THREE.Mesh }[] = [-1, 1].map((s) => ({
+    open: part(eyeOpen, mats.eyeGlow, head, s * 0.045, 0.118, 0.117),
+    happy: part(eyeHappy, mats.eyeGlow, head, s * 0.045, 0.108, 0.117),
+  }));
+  for (const e of eyes) { e.open.castShadow = e.happy.castShadow = false; e.happy.visible = false; }
+  // Hard hat: dome, ridge and a brim that sticks out further at the front.
+  const hat = joint(head, 0, 0.2, 0.005);
+  part(g(new THREE.SphereGeometry(0.135, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 0.72, 1.06)), mats.hat, hat, 0, 0, 0);
+  part(g(new THREE.TorusGeometry(0.135, 0.013, 6, 24, Math.PI).rotateY(Math.PI / 2).scale(1, 0.72, 1.06)), mats.hat, hat, 0, 0, 0); // ridge over the crown
+  part(g(new THREE.CylinderGeometry(0.152, 0.158, 0.014, 28).scale(1, 1, 1.12)), mats.hat, hat, 0, 0.004, 0.02);
+  part(g(new THREE.PlaneGeometry(0.06, 0.03)), mats.logo, hat, 0, 0.05, 0.14, -0.35, 0, 0);
 
-  // ---- Arms: baggy sleeves to just past the elbow, thin mannequin forearms, jointed hands ----
+  // ---- Arms: jacket sleeves to the wrist, white shell shoulder caps and gloves ----
   type Arm = { sh: THREE.Group; el: THREE.Group; wr: THREE.Group };
   const arm = (s: number): Arm => {
     const sh = joint(spine, s * 0.168, 0.355, -0.005);
-    part(sphere(0.058), mats.hoodie, sh);
-    part(limb(0.056, 0.052, 0.26), mats.hoodie, sh);
+    part(sphere(0.07, 16, 10).scale(1, 0.85, 1), mats.shell, sh, 0, 0.012, 0);
+    part(limb(0.058, 0.053, 0.26), mats.jacket, sh);
     const el = joint(sh, 0, -0.26, 0);
-    part(sphere(0.051), mats.hoodie, el);
-    part(limb(0.052, 0.05, 0.05), mats.hoodie, el);
-    part(limb(0.047, 0.047, 0.028), mats.dark, el, 0, -0.05, 0); // cuff
-    part(limb(0.035, 0.03, 0.18), mats.skin, el, 0, -0.07, 0);
-    part(g(new THREE.BoxGeometry(0.003, 0.13, 0.003)), mats.skinDark, el, 0, -0.16, 0.032); // panel seam
+    part(sphere(0.052), mats.jacket, el);
+    part(limb(0.052, 0.046, 0.21), mats.jacket, el);
+    part(limb(0.054, 0.052, 0.035), mats.hivis, el, 0, -0.1, 0); // reflective cuff band
+    part(limb(0.048, 0.048, 0.03), mats.jacketDark, el, 0, -0.205, 0); // cuff
     const wr = joint(el, 0, -0.26, 0);
-    part(limb(0.031, 0.031, 0.026).translate(0, 0.013, 0), mats.dark, wr); // wrist band
-    part(g(new THREE.BoxGeometry(0.03, 0.07, 0.062)), mats.skin, wr, 0, -0.045, 0);
+    part(limb(0.034, 0.034, 0.03).translate(0, 0.02, 0), mats.dark, wr);
+    part(g(new RoundedBoxGeometry(0.04, 0.075, 0.07, 2, 0.015)), mats.shell, wr, 0, -0.045, 0);
     for (let f = 0; f < 4; f++) {
-      const z = -0.022 + f * 0.0147;
-      part(limb(0.0075, 0.007, 0.028, 6), mats.skin, wr, 0, -0.082, z);
-      part(sphere(0.0075, 6, 4), mats.dark, wr, 0, -0.11, z);
-      part(limb(0.0068, 0.006, 0.026, 6), mats.skin, wr, 0, -0.112, z);
+      const z = -0.024 + f * 0.016;
+      part(limb(0.0085, 0.008, 0.028, 6), mats.shell, wr, 0, -0.082, z);
+      part(sphere(0.0085, 6, 4), mats.dark, wr, 0, -0.11, z);
+      part(limb(0.0078, 0.007, 0.026, 6), mats.shell, wr, 0, -0.112, z);
     }
-    part(limb(0.009, 0.008, 0.045, 6), mats.skin, wr, s * -0.012, -0.03, 0.033, -0.5, 0, s * 0.5);
+    part(limb(0.011, 0.009, 0.045, 6), mats.shell, wr, s * -0.014, -0.03, 0.036, -0.5, 0, s * 0.5);
     return { sh, el, wr };
   };
   const armL = arm(1), armR = arm(-1);
 
-  // ---- Legs: knee-length shorts, dark knee and ankle joints, chunky sneakers (with rocket nozzles) ----
+  // ---- Legs: full-length tan work trousers, knee pads, chunky boots with heel thrusters ----
   type Leg = { th: THREE.Group; kn: THREE.Group; an: THREE.Group; flame: THREE.Group };
-  const flameOuterMat = new THREE.MeshBasicMaterial({ color: 0xff7a1f, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
-  const flameInnerMat = new THREE.MeshBasicMaterial({ color: 0xfff1b0, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  const flameOuterMat = new THREE.MeshBasicMaterial({ color: 0x4fb4ff, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  const flameInnerMat = new THREE.MeshBasicMaterial({ color: 0xeaf7ff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
   // Wide at the sole, tip trailing 1 m (scaled) below it.
   const flameOuterGeo = g(new THREE.ConeGeometry(0.055, 1, 12, 1, true).rotateX(Math.PI).translate(0, -0.5, 0));
   const flameInnerGeo = g(new THREE.ConeGeometry(0.03, 0.6, 10, 1, true).rotateX(Math.PI).translate(0, -0.3, 0));
   // Afterburner plume: a wide, faint sheath that only shows on a hard burn.
-  const plumeMat = new THREE.MeshBasicMaterial({ color: 0xff4d12, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  const plumeMat = new THREE.MeshBasicMaterial({ color: 0x3d6dff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
   const plumeGeo = g(new THREE.ConeGeometry(0.09, 1, 14, 1, true).rotateX(Math.PI).translate(0, -0.5, 0));
   const leg = (s: number): Leg => {
     const th = joint(hips, s * 0.085, -0.04, 0);
-    part(limb(0.09, 0.086, 0.27, 14), mats.shorts, th, 0, 0.02, 0);
-    part(g(new THREE.BoxGeometry(0.03, 0.09, 0.08)), mats.shorts, th, s * 0.088, -0.15, 0); // cargo pocket
-    part(limb(0.05, 0.047, 0.1), mats.skin, th, 0, -0.24, 0);
+    part(limb(0.09, 0.08, 0.36, 14), mats.pants, th, 0, 0.02, 0);
+    part(g(new RoundedBoxGeometry(0.03, 0.1, 0.085, 2, 0.01)), mats.pantsDark, th, s * 0.085, -0.16, 0); // cargo pocket
     const kn = joint(th, 0, -0.34, 0);
-    part(sphere(0.056, 14, 10), mats.dark, kn);
-    part(limb(0.047, 0.037, 0.31), mats.skin, kn, 0, -0.01, 0);
-    part(g(new THREE.BoxGeometry(0.003, 0.18, 0.003)), mats.skinDark, kn, 0, -0.15, 0.042); // panel seam
+    part(sphere(0.07, 14, 10), mats.pants, kn);
+    part(g(new RoundedBoxGeometry(0.1, 0.11, 0.045, 3, 0.02)), mats.dark, kn, 0, 0, 0.055); // knee pad
+    part(limb(0.074, 0.066, 0.31), mats.pants, kn, 0, -0.01, 0);
     const an = joint(kn, 0, -0.34, 0);
-    part(sphere(0.034, 10, 8), mats.dark, an);
-    // Chunky sneaker, toe toward +Z, on a pale sole.
-    part(g(new THREE.CapsuleGeometry(0.056, 0.13, 4, 12).rotateX(Math.PI / 2).scale(1.05, 0.82, 1)), mats.shoe, an, 0, -0.035, 0.04);
-    part(g(new RoundedBoxGeometry(0.105, 0.03, 0.25, 2, 0.012)), mats.sole, an, 0, -0.07, 0.04);
-    part(g(new THREE.BoxGeometry(0.11, 0.012, 0.06)), mats.sole, an, 0, -0.012, 0.075); // laces strip
+    part(sphere(0.045, 10, 8), mats.boot, an);
+    // Chunky work boot, toe toward +Z: a padded collar, a rubber sole with a yellow welt, a metal heel thruster.
+    part(limb(0.06, 0.062, 0.06), mats.boot, an, 0, 0.03, 0);
+    part(g(new RoundedBoxGeometry(0.125, 0.1, 0.25, 3, 0.04)), mats.boot, an, 0, -0.035, 0.04);
+    part(g(new RoundedBoxGeometry(0.13, 0.03, 0.26, 2, 0.012)), mats.sole, an, 0, -0.078, 0.04);
+    part(g(new THREE.BoxGeometry(0.134, 0.01, 0.22)), mats.hivis, an, 0, -0.06, 0.04);
+    part(g(new THREE.TorusGeometry(0.034, 0.01, 8, 18)), mats.metal, an, 0, -0.092, 0, Math.PI / 2, 0, 0);
+    part(g(new THREE.CircleGeometry(0.026, 16)), mats.thruster, an, 0, -0.094, 0, Math.PI / 2, 0, 0);
     const flame = joint(an, 0, -0.088, 0.0);
     const outer = new THREE.Mesh(flameOuterGeo, flameOuterMat);
     const inner = new THREE.Mesh(flameInnerGeo, flameInnerMat);
@@ -238,7 +219,7 @@ export function makeRobot(): Robot {
   };
   const legL = leg(1), legR = leg(-1);
 
-  const glow = new THREE.PointLight(0xff8a3a, 0, 5, 2);
+  const glow = new THREE.PointLight(0x7cc4ff, 0, 5, 2);
   glow.castShadow = false;
   glow.position.set(0, 0.05, 0);
   root.add(glow);
@@ -246,7 +227,7 @@ export function makeRobot(): Robot {
 
   // Wingsuit membranes: arm wings (shoulder–wrist–knee–hip) and a tail wing between the legs. Their
   // corners follow the joints every frame, so they stretch and fold with the pose.
-  const wingMat = new THREE.MeshStandardMaterial({ color: 0xd9542a, roughness: 0.75, side: THREE.DoubleSide });
+  const wingMat = new THREE.MeshStandardMaterial({ color: 0x1f3358, roughness: 0.75, side: THREE.DoubleSide });
   const wingGeo = g(new THREE.BufferGeometry());
   const WING_TRIS = 7;
   wingGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(WING_TRIS * 9), 3));
@@ -285,7 +266,7 @@ export function makeRobot(): Robot {
 
   const robot: Robot = {
     root, state: 'idle', speed: 0, rockets: 0, lean: { x: 0, z: 0 },
-    ride: { cadence: 0, steer: 0, air: 0 }, boardOnBack: true, wings: 0,
+    ride: { cadence: 0, steer: 0, air: 0 }, boardOnBack: true, wings: 0, airspeed: 0, flash: 0, sputter: 0,
     play(state) {
       if (state === robot.state && state !== 'land' && state !== 'wave') return;
       if (state === robot.state) { stateT = 0; return; }
@@ -302,42 +283,57 @@ export function makeRobot(): Robot {
       const step = Math.min(1.85, 0.56 + 0.18 * sp); // stride length (m)
       if (robot.state === 'walk' || robot.state === 'run') phase += (Math.PI * sp / step) * dt;
       else phase += Math.PI * 2 * robot.ride.cadence * dt;
-      board.visible = robot.boardOnBack;
       sl.x = THREE.MathUtils.damp(sl.x, THREE.MathUtils.clamp(robot.lean.x, -1, 1), 5, dt);
       sl.z = THREE.MathUtils.damp(sl.z, THREE.MathUtils.clamp(robot.lean.z, -1, 1), 5, dt);
 
       // One-shots return to the ground loop.
-      if ((robot.state === 'land' && stateT > 0.35) || (robot.state === 'roll' && stateT > 0.7)) robot.play(sp > 3.6 ? 'run' : sp > 0.4 ? 'walk' : 'idle');
+      if ((robot.state === 'land' && stateT > 0.35) || (robot.state === 'roll' && stateT > 0.7) || (robot.state === 'sprawl' && stateT > SPRAWL_T)) robot.play(sp > 3.6 ? 'run' : sp > 0.4 ? 'walk' : 'idle');
       if (robot.state === 'wave' && stateT > 1.8) robot.play(sp > 0.4 ? 'walk' : 'idle');
 
-      const target = pose(robot.state, time, stateT, phase, sp, sl, robot.ride, robot.state === 'fly' || robot.state === 'fall' ? robot.wings : 0);
+      const target = pose(robot.state, time, stateT, phase, sp, sl, robot.ride, robot.state === 'fly' || robot.state === 'fall' ? robot.wings : 0, robot.airspeed);
       const w = blendT >= 0.2 ? 1 : smooth(blendT / 0.2);
       for (const k of KEYS) out[k] = from[k] + (target[k] - from[k]) * w;
       apply(out);
+      // Face: a blink every few seconds, wide eyes in a fast fall, ^ ^ while waving.
+      const happy = robot.state === 'wave';
+      const blink = (time % 3.7) < 0.12 ? 0.15 : 1;
+      const wide = 1 + 0.45 * THREE.MathUtils.clamp((robot.airspeed - 18) / 30, 0, 1);
+      for (const e of eyes) {
+        e.open.visible = !happy;
+        e.happy.visible = happy;
+        e.open.scale.set(wide, blink * wide, 1);
+      }
       wing.visible = robot.wings > 0.25 && (robot.state === 'fly' || robot.state === 'fall');
       if (wing.visible) updateWings();
 
       // Rocket flames: short and blue-white on a pilot light, a long roaring jet on a burn,
       // a wide plume on the afterburner. Exhaust streams out behind in world space.
-      const r = THREE.MathUtils.clamp(robot.rockets, 0, 1.6);
+      robot.flash = Math.max(0, robot.flash - dt * 3.2);
+      robot.sputter = Math.max(0, robot.sputter - dt);
+      // Cut-off: the jet coughs out (on/off in ~60 ms beats) instead of just shrinking away.
+      const cough = robot.sputter > 0 ? (Math.sin(time * 97) * Math.sin(time * 41) > 0.1 ? 0.55 * Math.min(1, robot.sputter * 3) : 0) : 0;
+      const r = Math.max(THREE.MathUtils.clamp(robot.rockets, 0, 1.6), cough) + robot.flash * 0.9;
       const hot = THREE.MathUtils.clamp(r - 0.9, 0, 0.7) / 0.7;
       for (const l of [legL, legR]) {
         l.flame.visible = r > 0.02;
         if (!l.flame.visible) continue;
         const flick = 0.82 + 0.36 * Math.sin(time * 47 + (l === legL ? 0 : 2)) * Math.sin(time * 31);
         const len = (0.2 + 0.95 * r) * flick;
-        l.flame.scale.set(0.75 + 0.55 * Math.min(r, 1.2), len, 0.75 + 0.55 * Math.min(r, 1.2));
+        const fat = 0.75 + 0.55 * Math.min(r, 1.2) + robot.flash * 1.4;
+        l.flame.scale.set(fat, len, fat);
       }
       flameOuterMat.opacity = 0.45 + 0.45 * Math.min(r, 1);
-      flameOuterMat.color.setRGB(1, 0.42 + 0.12 * hot, 0.1 + 0.6 * (1 - Math.min(1, r * 2)));
+      flameOuterMat.color.setRGB(0.28 + 0.4 * (1 - Math.min(1, r * 2)) + 0.25 * hot, 0.62 + 0.2 * hot, 1);
       plumeMat.opacity = 0.35 * hot * (0.8 + 0.2 * Math.sin(time * 53));
-      glow.intensity = r * 6 * (0.85 + 0.15 * Math.sin(time * 40));
+      glow.intensity = r * 6 * (0.85 + 0.15 * Math.sin(time * 40)) + robot.flash * 60;
+      glow.distance = 5 + robot.flash * 14;
       const scene = root.parent;
       if (scene && exhaust.group.parent !== scene) scene.add(exhaust.group);
       exhaust.update(time, dt, r, [legL.flame, legR.flame]);
     },
     dispose() {
       geos.forEach((x) => x.dispose());
+      mats.logo.map?.dispose();
       Object.values(mats).forEach((m) => m.dispose());
       flameOuterMat.dispose(); flameInnerMat.dispose(); plumeMat.dispose(); wingMat.dispose();
       exhaust.dispose();
@@ -367,14 +363,16 @@ export function makeRobot(): Robot {
 }
 
 const smooth = (t: number) => t * t * (3 - 2 * t);
+/** How long a sprawl (face-down after a too-fast landing) lasts before you're back up. */
+export const SPRAWL_T = 1.9;
 
 /**
  * Joint angles for a state. Conventions: rotation.x < 0 swings a limb forward (+Z); a positive knee
  * angle folds the shin back; a positive ankle angle points the toe down; positive spineX leans forward;
  * shoulder Z > 0 raises the left arm out to the side (mirrored for the right).
  */
-function pose(state: RobotState, t: number, st: number, ph: number, sp: number, lean: { x: number; z: number }, ride: { cadence: number; steer: number; air: number }, wings = 0): Pose {
-  const p = basePose(wings > 0 && state === 'fall' ? 'fly' : state, t, st, ph, sp, lean, ride);
+function pose(state: RobotState, t: number, st: number, ph: number, sp: number, lean: { x: number; z: number }, ride: { cadence: number; steer: number; air: number }, wings = 0, air = 0): Pose {
+  const p = basePose(wings > 0 && state === 'fall' ? 'fly' : state, t, st, ph, sp, lean, ride, air);
   if (wings <= 0) return p;
   // Wingsuit: flat to the wind, arms out to the sides, legs apart, banking with the turn.
   const w = smooth(Math.min(1, wings));
@@ -387,7 +385,7 @@ function pose(state: RobotState, t: number, st: number, ph: number, sp: number, 
   return p;
 }
 
-function basePose(state: RobotState, t: number, st: number, ph: number, sp: number, lean: { x: number; z: number }, ride: { cadence: number; steer: number; air: number }): Pose {
+function basePose(state: RobotState, t: number, st: number, ph: number, sp: number, lean: { x: number; z: number }, ride: { cadence: number; steer: number; air: number }, air = 0): Pose {
   const p = zero();
   // Arms rest slightly away from the body, elbows soft.
   p.shLZ = 0.09; p.shRZ = -0.09; p.elL = p.elR = -0.18;
@@ -430,7 +428,9 @@ function basePose(state: RobotState, t: number, st: number, ph: number, sp: numb
       p.spineX = L(0.04, 0.2);
       p.pitch = L(0.0, 0.08);
       p.headX = -p.spineX * 0.7;
-      p.roll = L(0.02, 0.03) * s;
+      // Lean into turns (lean.x from the turn rate), more the faster you go.
+      p.roll = L(0.02, 0.03) * s - lean.x * L(0.12, 0.3);
+      p.spineZ = lean.x * 0.08;
       break;
     }
     case 'jump': {
@@ -440,12 +440,69 @@ function basePose(state: RobotState, t: number, st: number, ph: number, sp: numb
       break;
     }
     case 'fall': {
+      // Three falls blended by airspeed: off a curb (still the jump tuck), a flailing drop (arms
+      // windmilling), and at skydiving speed a stable belly arch, limbs spread and fluttering in the
+      // wind. lean.z > 0 tucks into a head-down dive; lean.x banks the arch to steer.
+      const settle = smooth(Math.min(1, st / 0.45));
+      const k = THREE.MathUtils.clamp((air - 9) / 26, 0, 1);
+      const arch = smooth(k);
+      const flail = settle * (1 - arch);
       const f = Math.sin(t * 9), f2 = Math.sin(t * 7.3 + 1);
-      p.shLZ = 2.3 + 0.25 * f; p.shRZ = -2.3 + 0.25 * f2;
-      p.shLX = -0.2 + 0.2 * f2; p.shRX = -0.2 + 0.2 * f;
-      p.elL = -0.4 + 0.2 * f; p.elR = -0.4 + 0.2 * f2;
-      p.thLX = -0.35 + 0.35 * f; p.thRX = -0.2 - 0.35 * f; p.knL = 0.6 + 0.3 * f2; p.knR = 0.7 - 0.3 * f;
-      p.spineX = -0.1; p.headX = 0.15;
+      const flut = (a: number, b: number) => (0.04 + 0.1 * arch) * Math.sin(t * a + b) * Math.sin(t * (a * 0.61) + b * 2);
+      // Short drop: the jump tuck.
+      const tuck = 1 - settle;
+      p.thLX = -0.9 * tuck; p.thRX = -0.6 * tuck; p.knL = 1.35 * tuck; p.knR = 1.0 * tuck; p.anL = p.anR = 0.4 * tuck;
+      p.shLX = -0.7 * tuck; p.shRX = -0.5 * tuck; p.shLZ = 0.5 * tuck; p.shRZ = -0.5 * tuck; p.elL = p.elR = -0.8 * tuck;
+      p.spineX = 0.15 * tuck; p.headX = -0.1 * tuck;
+      // Flailing.
+      p.shLZ += flail * (2.3 + 0.25 * f); p.shRZ += flail * (-2.3 + 0.25 * f2);
+      p.shLX += flail * (-0.2 + 0.2 * f2); p.shRX += flail * (-0.2 + 0.2 * f);
+      p.elL += flail * (-0.4 + 0.2 * f); p.elR += flail * (-0.4 + 0.2 * f2);
+      p.thLX += flail * (-0.35 + 0.35 * f); p.thRX += flail * (-0.2 - 0.35 * f); p.knL += flail * (0.6 + 0.3 * f2); p.knR += flail * (0.7 - 0.3 * f);
+      p.spineX += flail * -0.1; p.headX += flail * 0.15;
+      // Belly arch, face to the ground, head up; or (lean.z) tucked head-down.
+      const dive = THREE.MathUtils.clamp(lean.z, 0, 1) * arch;
+      const belly = arch * (1 - dive);
+      const a = settle * belly;
+      p.pitch += a * 1.45 + dive * 2.55;
+      p.roll += -lean.x * 0.5 * arch;
+      p.spineX += a * -0.32 + dive * 0.05; p.neckX += a * -0.35; p.headX += a * -0.75 + dive * -0.3;
+      p.shLZ += a * (1.55 + flut(13, 0)); p.shRZ += a * (-1.55 + flut(12, 1));
+      p.shLX += a * (0.55 + flut(17, 2)); p.shRX += a * (0.55 + flut(15, 3));
+      p.elL += a * (-1.1 + flut(19, 4)); p.elR += a * (-1.1 + flut(18, 5));
+      p.thLZ += a * 0.32; p.thRZ += a * -0.32;
+      p.thLX += a * (0.25 + flut(11, 6)); p.thRX += a * (0.25 + flut(10, 7));
+      p.knL += a * (1.0 + flut(14, 8)); p.knR += a * (1.0 + flut(16, 9)); p.anL += a * 0.5; p.anR += a * 0.5;
+      // Head-down dive: arms swept back along the body, legs together and straight.
+      p.shLX += dive * 0.6; p.shRX += dive * 0.6; p.shLZ += dive * 0.25; p.shRZ += dive * -0.25;
+      p.elL += dive * -0.1; p.elR += dive * -0.1; p.anL += dive * 0.7; p.anR += dive * 0.7;
+      p.wrL = p.wrR = 0.3 * arch;
+      p.headY = flut(9, 10) * arch; p.headZ = flut(8, 11) * arch * 0.6;
+      break;
+    }
+    case 'crouch': {
+      // Anticipation before a launch or a big jump: sink, arms swing back, chin down.
+      const k = smooth(Math.min(1, st / 0.16));
+      p.bodyY = -0.24 * k; p.thLX = p.thRX = -1.05 * k; p.knL = p.knR = 1.85 * k; p.anL = p.anR = -0.78 * k;
+      p.spineX = 0.5 * k; p.headX = -0.25 * k;
+      p.shLX = p.shRX = 0.95 * k; p.shLZ = 0.22; p.shRZ = -0.22; p.elL = p.elR = -0.35;
+      p.thLZ = 0.06 * k; p.thRZ = -0.06 * k;
+      break;
+    }
+    case 'sprawl': {
+      // Came in far too fast: pitch forward onto the ground, lie there a beat, push back up.
+      const down = smooth(Math.min(1, st / 0.28));
+      const up = smooth(THREE.MathUtils.clamp((st - 0.95) / (SPRAWL_T - 0.95), 0, 1));
+      const flat = down * (1 - up);
+      const kneel = Math.sin(Math.PI * up); // hands and knees on the way up
+      p.pitch = 1.42 * flat + 0.5 * kneel;
+      p.bodyY = -(HIP_Y - 0.14) * flat - 0.42 * kneel;
+      p.shLX = p.shRX = -1.55 * flat - 1.0 * kneel; p.shLZ = 0.35 + 0.25 * flat; p.shRZ = -0.35 - 0.25 * flat;
+      p.elL = p.elR = -0.5 * flat - 0.3 * kneel;
+      p.thLX = p.thRX = 0.12 * flat - 1.1 * kneel; p.knL = p.knR = 0.15 * flat + 1.5 * kneel;
+      p.anL = p.anR = 0.6 * flat;
+      p.thLZ = 0.15 * flat; p.thRZ = -0.15 * flat;
+      p.headX = -0.6 * flat; p.headY = 0.4 * flat * Math.sin(Math.min(1, st / 0.9) * Math.PI);
       break;
     }
     case 'fly': {
@@ -552,7 +609,7 @@ function basePose(state: RobotState, t: number, st: number, ph: number, sp: numb
  */
 function makeExhaust() {
   const group = new THREE.Group();
-  group.name = 'rocket-exhaust';
+  group.name = 'thruster-exhaust';
   const layer = (n: number, life: number, frag: string, blending: THREE.Blending) => {
     const pos = new Float32Array(n * 3), born = new Float32Array(n).fill(-1e3), seed = new Float32Array(n);
     for (let i = 0; i < n; i++) seed[i] = Math.random();
@@ -601,7 +658,7 @@ function makeExhaust() {
     void main() {
       vec2 c = gl_PointCoord - 0.5; float d = length(c);
       if (d > 0.5) discard;
-      vec3 col = mix(vec3(1.0, 0.95, 0.7), vec3(1.0, 0.35, 0.05), clamp(vAge * 1.6, 0.0, 1.0));
+      vec3 col = mix(vec3(0.85, 0.95, 1.0), vec3(0.15, 0.45, 1.0), clamp(vAge * 1.6, 0.0, 1.0));
       float a = smoothstep(0.5, 0.0, d) * (1.0 - vAge);
       gl_FragColor = vec4(col * a * 1.6, a);
     }`, THREE.AdditiveBlending);
@@ -612,7 +669,7 @@ function makeExhaust() {
       vec2 c = gl_PointCoord - 0.5; float d = length(c);
       if (d > 0.5) discard;
       float a = smoothstep(0.5, 0.1, d) * 0.32 * (1.0 - vAge) * smoothstep(0.0, 0.06, vAge);
-      vec3 col = mix(vec3(1.0, 0.72, 0.45), vec3(0.78, 0.78, 0.8), smoothstep(0.0, 0.12, vAge));
+      vec3 col = mix(vec3(0.7, 0.84, 1.0), vec3(0.8, 0.81, 0.83), smoothstep(0.0, 0.12, vAge));
       gl_FragColor = vec4(col, a);
     }`, THREE.NormalBlending);
   const last: (THREE.Vector3 | null)[] = [null, null];
@@ -644,4 +701,24 @@ function makeExhaust() {
     },
     dispose() { fire.dispose(); smoke.dispose(); group.removeFromParent(); },
   };
+}
+
+/** The OpenWorld mark: "OW" in navy on a rounded yellow tile, for the chest, back and hat. */
+function logoTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const x = c.getContext('2d')!;
+  x.fillStyle = '#f6c21c';
+  x.beginPath();
+  x.roundRect(6, 6, 116, 116, 26);
+  x.fill();
+  x.fillStyle = '#1f3358';
+  x.font = '800 62px system-ui, -apple-system, Helvetica, Arial, sans-serif';
+  x.textAlign = 'center';
+  x.textBaseline = 'middle';
+  x.fillText('OW', 64, 68);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
 }

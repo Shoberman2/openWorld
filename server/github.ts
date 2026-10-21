@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
-import type { CiState, Me, PulseCommit, PulseIssue, PulsePr, Repo, Tier, Worker } from '../shared/types.ts';
-import { PATHS, readConfig, run, hasClaude } from './config.ts';
+import type { CiState, IssueDetail, Me, PrDetail, PulseCommit, PulseIssue, PulsePr, Repo, Tier, Worker } from '../shared/types.ts';
+import { PATHS, readConfig, run, hasClaude, logEvent } from './config.ts';
 
 // ---------- token ----------
 
@@ -573,4 +573,101 @@ export async function repoPulses(repos: Repo[]): Promise<Map<string, RawPulse>> 
     });
   }
   return out;
+}
+
+// ---------- project control: PRs, issues and CI from the phone ----------
+
+/** Writes are logged and faked, never sent (tests, demos). OPENWORLD_DRY_PR implies it. */
+export const DRY_GITHUB = process.env.OPENWORLD_DRY_GITHUB === '1' || process.env.OPENWORLD_DRY_PR === '1';
+
+/** One GitHub write. In dry mode, logs the exact request it would have made and returns `fake`. */
+async function ghWrite<T = any>(method: string, path: string, body: unknown, fake: T): Promise<{ data: T; dry: boolean }> {
+  if (DRY_GITHUB) {
+    console.log(`[dry-github] ${method} ${path}${body ? ` ${JSON.stringify(body)}` : ''}`);
+    logEvent('dry_github_write', { method, path, body });
+    return { data: fake, dry: true };
+  }
+  const res = await gh(path, { method, body });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text.slice(0, 200);
+    try { msg = JSON.parse(text).message || msg; } catch { /* not JSON */ }
+    throw new GitHubError(`GitHub said no: ${msg}`, res.status === 404 ? 404 : res.status === 405 || res.status === 409 || res.status === 422 ? 409 : 502);
+  }
+  return { data: (text ? JSON.parse(text) : {}) as T, dry: false };
+}
+
+const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $n) {
+      number title body url isDraft createdAt headRefName baseRefName additions deletions changedFiles mergeable reviewDecision
+      author { login }
+      comments { totalCount }
+      files(first: 40) { nodes { path additions deletions } }
+      commits(last: 1) { nodes { commit { message statusCheckRollup { state } } } }
+    }
+  }
+}`;
+
+export async function prDetail(repo: Repo, n: number): Promise<PrDetail> {
+  const data = await gql(PR_QUERY, { owner: repo.owner, name: repo.name, n });
+  const p = data.repository?.pullRequest;
+  if (!p) throw new GitHubError(`No PR #${n} in ${repo.name}`, 404);
+  const last = p.commits?.nodes?.[0]?.commit;
+  const login = p.author?.login ?? 'ghost';
+  return {
+    number: p.number, title: p.title, body: (p.body || '').slice(0, 6000), author: login,
+    isAgent: !!detectAgent(login, p.body || '', last?.message || ''),
+    url: p.url, isDraft: !!p.isDraft, createdAt: p.createdAt, headRef: p.headRefName, baseRef: p.baseRefName,
+    additions: p.additions, deletions: p.deletions, changedFiles: p.changedFiles,
+    files: (p.files?.nodes ?? []).map((f: any) => ({ path: f.path, additions: f.additions, deletions: f.deletions })),
+    ci: CI[last?.statusCheckRollup?.state] ?? 'none',
+    mergeable: p.mergeable === 'MERGEABLE' ? true : p.mergeable === 'CONFLICTING' ? false : null,
+    reviewDecision: p.reviewDecision ?? null,
+    comments: p.comments?.totalCount ?? 0,
+  };
+}
+
+export async function issueDetail(repo: Repo, n: number): Promise<IssueDetail> {
+  const i = await ghJson(`/repos/${repo.owner}/${repo.name}/issues/${n}`);
+  return {
+    number: i.number, title: i.title, body: (i.body || '').slice(0, 6000), author: i.user?.login ?? 'ghost', url: i.html_url,
+    labels: (i.labels ?? []).map((l: any) => (typeof l === 'string' ? l : l.name)), createdAt: i.created_at, comments: i.comments ?? 0,
+  };
+}
+
+export async function mergePr(repo: Repo, n: number) {
+  const { dry } = await ghWrite('PUT', `/repos/${repo.owner}/${repo.name}/pulls/${n}/merge`, { merge_method: 'squash' }, { merged: true });
+  return { dry, message: `Merged #${n} into ${getDefaultBranch(repo.name)}` };
+}
+
+export async function closePr(repo: Repo, n: number) {
+  const { dry } = await ghWrite('PATCH', `/repos/${repo.owner}/${repo.name}/pulls/${n}`, { state: 'closed' }, {});
+  return { dry, message: `Closed #${n}` };
+}
+
+/** PRs and issues share GitHub's comment thread. */
+export async function commentOn(repo: Repo, n: number, body: string) {
+  const { dry, data } = await ghWrite('POST', `/repos/${repo.owner}/${repo.name}/issues/${n}/comments`, { body }, { html_url: `https://github.com/${repo.fullName}/issues/${n}` });
+  return { dry, message: `Commented on #${n}`, url: data.html_url as string };
+}
+
+export async function createIssue(repo: Repo, title: string, body: string) {
+  const { dry, data } = await ghWrite('POST', `/repos/${repo.owner}/${repo.name}/issues`, { title, body }, { number: 0, html_url: `https://github.com/${repo.fullName}/issues` });
+  return { dry, number: data.number as number, url: data.html_url as string, message: dry ? 'Issue created (dry run)' : `Opened issue #${data.number}` };
+}
+
+export async function closeIssue(repo: Repo, n: number) {
+  const { dry } = await ghWrite('PATCH', `/repos/${repo.owner}/${repo.name}/issues/${n}`, { state: 'closed', state_reason: 'completed' }, {});
+  return { dry, message: `Closed issue #${n}` };
+}
+
+/** Re-run the failed jobs of the newest failed GitHub Actions run on the default branch. */
+export async function rerunFailedCi(repo: Repo) {
+  const branch = getDefaultBranch(repo.name);
+  const runs = await ghJson(`/repos/${repo.owner}/${repo.name}/actions/runs?branch=${encodeURIComponent(branch)}&status=failure&per_page=1`);
+  const r = runs.workflow_runs?.[0];
+  if (!r) throw new GitHubError(`No failed GitHub Actions run on ${branch} to re-run (CI may come from another service)`, 404);
+  const { dry } = await ghWrite('POST', `/repos/${repo.owner}/${repo.name}/actions/runs/${r.id}/rerun-failed-jobs`, null, {});
+  return { dry, message: `Re-running “${r.name}” on ${branch}`, url: r.html_url as string };
 }

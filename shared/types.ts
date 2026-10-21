@@ -45,6 +45,8 @@ export interface Repo {
 
 export interface Me {
   connected: boolean;
+  /** True when at least one coding agent (Claude Code, Codex, Gemini) is ready to take tasks. */
+  agentsReady?: boolean;
   login: string | null;
   name: string | null;
   avatarUrl: string | null;
@@ -113,6 +115,8 @@ export interface AgentInfo {
   scheduleId?: string | null;
   /** Claude Code session, so answers and change requests resume the same conversation. */
   sessionId?: string | null;
+  /** Which coding agent runs this (claude | codex | gemini). Older runs have none and were Claude. */
+  provider?: AgentProviderId;
 }
 
 export type AgentEvent =
@@ -352,3 +356,100 @@ export interface MasterThreadSummary {
   unread: number;
   last: MasterMessage | null;
 }
+
+// ---------- Project control (phone project page): act on a repo's PRs, issues and CI ----------
+// GET  /api/projects/:repo/prs/:n                 -> PrDetail
+// POST /api/projects/:repo/prs/:n/merge           -> ControlResult   (squash merge)
+// POST /api/projects/:repo/prs/:n/close           -> ControlResult
+// POST /api/projects/:repo/prs/:n/comment {body}  -> ControlResult
+// GET  /api/projects/:repo/issues/:n              -> IssueDetail
+// POST /api/projects/:repo/issues {title, body?}  -> ControlResult  (number/url of the new issue)
+// POST /api/projects/:repo/issues/:n/close        -> ControlResult
+// POST /api/projects/:repo/issues/:n/comment {body} -> ControlResult
+// POST /api/projects/:repo/issues/:n/agent        -> AgentInfo      (an agent takes the issue as its task)
+// POST /api/projects/:repo/ci/rerun               -> ControlResult  (re-runs the failed jobs of the latest failed Actions run)
+// Every write refreshes that repo's pulse. Env OPENWORLD_DRY_GITHUB=1 (implied by OPENWORLD_DRY_PR=1): writes are
+// logged, never sent, and answered with a fake success.
+
+export interface PrDetail {
+  number: number;
+  title: string;
+  body: string;
+  author: string;
+  isAgent: boolean;
+  url: string;
+  isDraft: boolean;
+  createdAt: string;
+  headRef: string;
+  baseRef: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  files: { path: string; additions: number; deletions: number }[];
+  ci: CiState;
+  /** GitHub's mergeability: false = conflicts, null = still computing. */
+  mergeable: boolean | null;
+  reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
+  comments: number;
+}
+
+export interface IssueDetail {
+  number: number;
+  title: string;
+  body: string;
+  author: string;
+  url: string;
+  labels: string[];
+  createdAt: string;
+  comments: number;
+}
+
+export interface ControlResult {
+  ok: true;
+  message: string;
+  number?: number;
+  url?: string;
+  /** True when OPENWORLD_DRY_GITHUB kept the write from reaching GitHub. */
+  dry?: boolean;
+}
+
+// ---------- Agent providers + your own keys (Settings → Agents & keys) ----------
+// Keys live only on this machine, in ~/.openworld/config.json (mode 0600). The API never returns a key, only its last 4.
+// GET    /api/providers                      -> ProvidersState
+// POST   /api/providers/:id/key {key}        -> ProvidersState   (validated with a cheap API call; loopback only)
+// DELETE /api/providers/:id/key              -> ProvidersState   (loopback only)
+// POST   /api/providers/default {provider}   -> ProvidersState   (default agent for new tasks)
+// POST   /api/providers/chat {provider, model} -> ProvidersState (who voices HQ, the leads and the desks)
+// POST /api/agents accepts an optional {provider}.
+
+export type AgentProviderId = 'claude' | 'codex' | 'gemini';
+
+export interface ProviderStatus {
+  id: AgentProviderId;
+  label: string; // "Claude Code"
+  vendor: string; // "Anthropic"
+  /** CLI found on PATH (and new enough). */
+  installed: boolean;
+  version: string | null;
+  /** Signed in through the CLI's own login (no key needed). */
+  signedIn: boolean;
+  /** A key is stored in config (or set by env). */
+  key: { set: boolean; last4: string | null; fromEnv: boolean };
+  /** Can take a task right now. */
+  ready: boolean;
+  /** What to do when not ready, e.g. "Install Codex CLI: npm i -g @openai/codex". */
+  hint: string | null;
+  installCmd: string;
+  keyUrl: string; // where to create a key
+  keyPrefix: string; // "sk-ant-", "sk-", "AIza"
+}
+
+export interface ProvidersState {
+  providers: ProviderStatus[];
+  defaultProvider: AgentProviderId | null;
+  chat: { provider: ChatProviderId | null; model: string | null; models: string[]; options: ChatProviderId[] };
+  /** Keys can only be changed from this computer (not from a headset on the network). */
+  canEdit: boolean;
+}
+
+export type ChatProviderId = 'anthropic' | 'claude-cli' | 'openai' | 'gemini';

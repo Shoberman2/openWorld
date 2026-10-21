@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentInfo, ReviewAction, Me, Repo, RepoDetail, ServerMsg, TalkRequest, BoardroomRequest, OfficeChannel, OfficeMessage, OfficeRequest, MasterMessage, MasterThreadSummary, Schedule, Briefing, RepoPulse } from '../../shared/types.ts';
+import type { ProvidersState, AgentEvent, AgentInfo, ReviewAction, Me, Repo, RepoDetail, ServerMsg, TalkRequest, BoardroomRequest, OfficeChannel, OfficeMessage, OfficeRequest, MasterMessage, MasterThreadSummary, Schedule, Briefing, RepoPulse, PrDetail, IssueDetail, ControlResult } from '../../shared/types.ts';
 
 async function json<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}));
@@ -14,8 +14,9 @@ export const api = {
   repo: (name: string) => fetch(`/api/repos/${encodeURIComponent(name)}`).then((r) => json<RepoDetail>(r)),
   logoUrl: (name: string) => `/api/repos/${encodeURIComponent(name)}/logo`,
   agents: () => fetch('/api/agents').then((r) => json<AgentInfo[]>(r)),
-  startAgent: (repo: string, task: string) =>
-    fetch('/api/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repo, task }) }).then((r) => json<AgentInfo>(r)),
+  /** provider: which coding agent (claude | codex | gemini); the server falls back to the user's default. */
+  startAgent: (repo: string, task: string, provider?: string | null) =>
+    fetch('/api/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repo, task, provider: provider || undefined }) }).then((r) => json<AgentInfo>(r)),
   agentLog: (id: string) => fetch(`/api/agents/${id}/log`).then((r) => json<{ events: { event: AgentEvent; ts: number }[] }>(r)),
   stopAgent: (id: string) => fetch(`/api/agents/${id}/stop`, { method: 'POST' }).then((r) => json<AgentInfo>(r)),
   openPr: (id: string) => fetch(`/api/agents/${id}/pr`, { method: 'POST' }).then((r) => json<AgentInfo>(r)),
@@ -132,4 +133,32 @@ export const briefing = {
 export const pulse = {
   all: () => fetch('/api/pulse').then((r) => json<RepoPulse[]>(r)),
   repo: (name: string) => fetch(`/api/pulse/${encodeURIComponent(name)}`).then((r) => json<RepoPulse>(r)),
+};
+
+// ---------- Project control (phone project page) ----------
+const repoUrl = (repo: string) => `/api/projects/${encodeURIComponent(repo)}`;
+const postJson = <T>(url: string, body: unknown = {}) =>
+  fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => json<T>(r));
+export const projects = {
+  pr: (repo: string, n: number) => fetch(`${repoUrl(repo)}/prs/${n}`).then((r) => json<PrDetail>(r)),
+  issue: (repo: string, n: number) => fetch(`${repoUrl(repo)}/issues/${n}`).then((r) => json<IssueDetail>(r)),
+  merge: (repo: string, n: number) => postJson<ControlResult>(`${repoUrl(repo)}/prs/${n}/merge`),
+  closePr: (repo: string, n: number) => postJson<ControlResult>(`${repoUrl(repo)}/prs/${n}/close`),
+  commentPr: (repo: string, n: number, body: string) => postJson<ControlResult>(`${repoUrl(repo)}/prs/${n}/comment`, { body }),
+  createIssue: (repo: string, title: string, body: string) => postJson<ControlResult>(`${repoUrl(repo)}/issues`, { title, body }),
+  closeIssue: (repo: string, n: number) => postJson<ControlResult>(`${repoUrl(repo)}/issues/${n}/close`),
+  commentIssue: (repo: string, n: number, body: string) => postJson<ControlResult>(`${repoUrl(repo)}/issues/${n}/comment`, { body }),
+  issueToAgent: (repo: string, n: number, provider?: string | null) => postJson<AgentInfo>(`${repoUrl(repo)}/issues/${n}/agent`, { provider: provider || undefined }),
+  rerunCi: (repo: string) => postJson<ControlResult>(`${repoUrl(repo)}/ci/rerun`),
+};
+
+// ---------- Agents & keys (Settings): the user's own keys stay on the server; only the last 4 come back ----------
+const sendJson = <T>(method: string, url: string, body?: unknown) =>
+  fetch(url, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => json<T>(r));
+export const providers = {
+  state: () => fetch('/api/providers').then((r) => json<ProvidersState>(r)),
+  saveKey: (id: string, key: string) => sendJson<ProvidersState>('POST', `/api/providers/${encodeURIComponent(id)}/key`, { key }),
+  removeKey: (id: string) => sendJson<ProvidersState>('DELETE', `/api/providers/${encodeURIComponent(id)}/key`),
+  setDefault: (provider: string) => sendJson<ProvidersState>('POST', '/api/providers/default', { provider }),
+  setChat: (provider: string, model?: string) => sendJson<ProvidersState>('POST', '/api/providers/chat', { provider, model }),
 };

@@ -6,6 +6,7 @@ import type { Engine, DayNight } from '../engine.ts';
 import type { Input } from '../input.ts';
 import { esc } from '../interact.ts';
 import { toast } from './panel.ts';
+import { kbd, keymap } from '../keymap.ts';
 
 export interface PhotoDeps {
   engine: Engine;
@@ -118,7 +119,9 @@ export class PhotoMode {
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
     const stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
-    switch (e.code) {
+    // Arrows, Enter and Esc drive the photo menu; everything else follows the player's bindings.
+    const fixed = e.code.startsWith('Arrow') || e.code === 'Enter' || e.code === 'Escape';
+    switch (fixed ? e.code : keymap.translate(e.code)) {
       case 'ArrowUp': this.sel = (this.sel + this.rows.length - 1) % this.rows.length; stop(); break;
       case 'ArrowDown': this.sel = (this.sel + 1) % this.rows.length; stop(); break;
       case 'ArrowLeft': this.rows[this.sel].step(-1); stop(); break;
@@ -176,7 +179,7 @@ export class PhotoMode {
     this.el.innerHTML = `
       <div class="ow-photo-title">📷 Photo mode</div>
       ${this.rows.map((r, i) => `<div class="ow-photo-row${i === this.sel ? ' on' : ''}"><span>${esc(r.label)}</span><b>‹ ${esc(r.value())} ›</b></div>`).join('')}
-      <div class="ow-photo-keys"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>←</kbd><kbd>→</kbd> change · <kbd>Space</kbd> take the picture · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><kbd>Q</kbd><kbd>E</kbd> move · drag/mouse look · wheel distance · <kbd>H</kbd> hide · <kbd>F</kbd> done</div>
+      <div class="ow-photo-keys"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>←</kbd><kbd>→</kbd> change · ${kbd('jump')} take the picture · ${kbd('forward', 'left', 'back', 'right', 'wingsuit', 'interact')} move · drag/mouse look · wheel distance · <kbd>H</kbd> hide · ${kbd('photo')} done</div>
       <div class="ow-photo-gallery"></div>`;
     this.renderGallery();
   }

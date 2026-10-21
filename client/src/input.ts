@@ -1,4 +1,9 @@
-/** Keyboard + pointer-lock mouse input. `enabled=false` while a UI panel has focus. */
+import { keymap } from './keymap.ts';
+
+/**
+ * Keyboard + pointer-lock mouse input. `enabled=false` while a UI panel has focus.
+ * Codes are canonical (see keymap.ts): a player who rebinds "forward" to I still reads as 'KeyW' here.
+ */
 export class Input {
   keys = new Set<string>();
   mouseDX = 0;
@@ -12,12 +17,18 @@ export class Input {
   constructor(private canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', (e) => {
       if (isTyping(e)) return;
-      if (e.code === 'Tab') e.preventDefault();
-      if (!e.repeat) this.pressHandlers.get(e.code)?.forEach((h) => h());
-      if (this.enabled) this.keys.add(e.code);
+      const code = keymap.translate(e.code);
+      if (e.code === 'Tab' || code === 'Tab') e.preventDefault();
+      if (!code) return;
+      if (!e.repeat) this.pressHandlers.get(code)?.forEach((h) => h());
+      if (this.enabled) this.keys.add(code);
     });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    window.addEventListener('keyup', (e) => {
+      const code = keymap.translate(e.code);
+      if (code) this.keys.delete(code);
+    });
     window.addEventListener('blur', () => this.keys.clear());
+    keymap.onChange(() => this.keys.clear());
     canvas.addEventListener('click', () => {
       if (this.enabled && !this.locked) canvas.requestPointerLock();
     });
@@ -31,7 +42,7 @@ export class Input {
     });
   }
 
-  /** Register a handler for a key press (KeyboardEvent.code, e.g. 'KeyE'). */
+  /** Register a handler for an action, named by its canonical code (e.g. 'KeyE' = interact). */
   onPress(code: string, handler: () => void) {
     const list = this.pressHandlers.get(code) ?? [];
     list.push(handler);
@@ -50,10 +61,10 @@ export class Input {
   /** Movement axes: x = strafe right, y = forward. */
   axes() {
     let x = 0, y = 0;
-    if (this.down('KeyW') || this.down('ArrowUp')) y += 1;
-    if (this.down('KeyS') || this.down('ArrowDown')) y -= 1;
-    if (this.down('KeyD') || this.down('ArrowRight')) x += 1;
-    if (this.down('KeyA') || this.down('ArrowLeft')) x -= 1;
+    if (this.down('KeyW')) y += 1;
+    if (this.down('KeyS')) y -= 1;
+    if (this.down('KeyD')) x += 1;
+    if (this.down('KeyA')) x -= 1;
     if (this.enabled) { x = Math.max(-1, Math.min(1, x + this.virtual.x)); y = Math.max(-1, Math.min(1, y + this.virtual.y)); }
     return { x, y };
   }

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { AgentInfo, BoardDecision, Repo, Worker } from '../../shared/types.ts';
+import { keymap } from './keymap.ts';
 
 // Canvas-drawn textures for the office interior: screens, signs, logo wall, floors, skyline.
 
@@ -302,7 +303,7 @@ export function drawDecisions(c: HTMLCanvasElement, decisions: BoardDecision[]) 
   if (!decisions.length) {
     g.fillStyle = '#8b949e';
     g.font = `500 24px ${FONT}`;
-    g.fillText('No decisions yet — stand at the head of the table and press E.', 30, y);
+    g.fillText(`No decisions yet — stand at the head of the table and press ${keymap.label('interact')}.`, 30, y);
     return;
   }
   for (const d of [...decisions].reverse().slice(0, 5)) {

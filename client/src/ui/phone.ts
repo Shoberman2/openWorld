@@ -1,10 +1,14 @@
 import type { AgentEvent, AgentInfo, MasterMessage, MasterThreadSummary, OfficeChannel, OfficeMessage, Repo } from '../../../shared/types.ts';
 import { api, office, masters, onLive, track } from '../api.ts';
 import { esc } from '../interact.ts';
+import { kbd, keymap } from '../keymap.ts';
 import { openReview } from './review.ts';
 import { installRing } from './ring.ts';
-import { briefingHtml, bindBriefing, currentBriefing, loadBriefing, waiting } from './briefing.ts';
-import { renderSchedulesApp } from './schedules.ts';
+import { currentBriefing, loadBriefing, openBriefingPanel } from './briefing.ts';
+import { onSchedules } from './schedules.ts';
+import { ago, renderProject, projectStatusHtml, type ProjectDeps, type ProjectView } from './phoneProject.ts';
+import { pulse } from '../pulse.ts';
+import { agentPicker, pickedAgent } from './agentPick.ts';
 import type { GameCtx } from '../ctx.ts';
 
 /** What the phone needs from the game world (main.ts provides these). */
@@ -17,6 +21,10 @@ export interface PhoneHooks {
   placeName?(): string;
   /** Your apartment: Maps' first row, reachable from anywhere. */
   home?: { address: string; go(): void | Promise<void>; pin(): void };
+  /** The project whose building you're in (or last walked into), to preselect it for new tasks. */
+  currentRepo?(): string | null;
+  /** Opens the game's settings, if there is a settings screen. */
+  openSettings?(): void;
 }
 
 /**
@@ -42,9 +50,14 @@ export interface PhoneMessage {
 }
 
 export interface Phone {
-  open(app?: AppId): void;
+  /** Open on a tab ('home' | 'projects' | 'chat' | 'map'); older app names still work. */
+  open(app?: string): void;
   /** Open one project lead's thread. */
   openThread(repo: string): void;
+  /** Open a project's control page. */
+  openProject(repo: string): void;
+  /** Open one agent's live log. */
+  openAgent(id: string): void;
   close(): void;
   toggle(): void;
   isOpen(): boolean;
@@ -66,18 +79,23 @@ export interface Phone {
   openPr(id: string): Promise<AgentInfo>;
 }
 
-type AppId = 'home' | 'messages' | 'mail' | 'team' | 'agents' | 'maps' | 'hire' | 'today' | 'schedules' | 'review';
+/** Four tabs; everything else is a screen pushed on top of one. */
+type Tab = 'home' | 'projects' | 'chat' | 'map';
 type View =
   | { app: 'home' }
-  | { app: 'hire'; repo?: string }
-  | { app: 'messages' }
+  | { app: 'projects' }
+  | ProjectView
+  | { app: 'agent'; id: string }
+  | { app: 'chat' }
+  | { app: 'thread'; id: string } // 'hq' or a repo name (its lead)
   | { app: 'mail'; open?: string; compose?: boolean }
-  | { app: 'team'; open?: string }
-  | { app: 'agents'; open?: string }
-  | { app: 'maps' }
-  | { app: 'today' }
-  | { app: 'schedules'; repo?: string }
-  | { app: 'review' };
+  | { app: 'map' };
+const TAB_OF: Record<View['app'], Tab> = { home: 'home', projects: 'projects', project: 'projects', agent: 'home', chat: 'chat', thread: 'chat', mail: 'chat', map: 'map' };
+/** Session restore and older callers used app names from before the four tabs. */
+const LEGACY: Record<string, View> = {
+  messages: { app: 'thread', id: 'hq' }, team: { app: 'projects' }, agents: { app: 'home' }, review: { app: 'home' },
+  today: { app: 'home' }, hire: { app: 'home' }, schedules: { app: 'projects' }, maps: { app: 'map' },
+};
 
 const LIVE = new Set(['running', 'preparing']);
 const STATUS_LABEL: Record<string, string> = { preparing: 'Setting up', running: 'Working', needs_input: 'Needs you', done: 'Done', error: 'Error', stopped: 'Stopped' };
@@ -119,8 +137,9 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
   btn.id = 'phone-tab';
   btn.title = 'Phone (P) · click or swipe right';
   btn.innerHTML = `<span class="pt-grip"></span>${ICON.phone}<span class="phone-badge hidden"></span>
-    <span class="pt-live hidden"><i></i><b>0</b></span><kbd>P</kbd>`;
+    <span class="pt-live hidden"><i></i><b>0</b></span>${kbd('phone')}`;
   document.body.appendChild(btn);
+  keymap.onChange(() => { btn.querySelector('kbd')!.textContent = keymap.label('phone'); });
   const liveEl = btn.querySelector<HTMLSpanElement>('.pt-live')!;
 
   const root = document.createElement('div');
@@ -135,6 +154,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
         <div class="phone-status"><span class="ps-time"></span><span class="ps-island"></span><span class="ps-right">${ICON.signal}<b>5G</b>${ICON.battery}</span></div>
         <div class="phone-banner"></div>
         <div class="phone-view"></div>
+        <nav class="phone-tabs"></nav>
         <div class="phone-homebar" title="Home"></div>
       </div>
     </div>`;
@@ -143,6 +163,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
   const timeEl = root.querySelector<HTMLSpanElement>('.ps-time')!;
   const bannerIn = root.querySelector<HTMLDivElement>('.phone-banner')!;
   const badge = btn.querySelector<HTMLSpanElement>('.phone-badge')!;
+  const tabsEl = root.querySelector<HTMLElement>('.phone-tabs')!;
 
   const bannerOut = document.createElement('div');
   bannerOut.className = 'phone-notif';
@@ -204,7 +225,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
       close();
       return;
     }
-    if (e.code === 'KeyP' && !typingInField && !e.repeat && !e.metaKey && !e.ctrlKey) {
+    if (keymap.translate(e.code) === 'KeyP' && !typingInField && !e.repeat && !e.metaKey && !e.ctrlKey) {
       // Don't open over the title / loading screens.
       if (document.getElementById('hud')?.classList.contains('hidden')) return;
       e.preventDefault();
@@ -299,7 +320,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     if (msg.type === 'office:message') {
       const known = messages.some((m) => m.id === msg.message.id);
       upsert(msg.message);
-      const viewing = isOpen && (view.app === 'messages' ? msg.message.channel === 'text' : view.app === 'mail' && msg.message.channel === 'email');
+      const viewing = isOpen && (view.app === 'thread' && view.id === 'hq' ? msg.message.channel === 'text' : view.app === 'mail' && msg.message.channel === 'email');
       if (msg.message.from === 'hq' && viewing) markSeen(msg.message.channel);
       if (msg.message.from === 'hq' && !known && !viewing && !msg.message.read) notify(msg.message);
       updateBadge();
@@ -313,29 +334,29 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
       const m = msg.message;
       const known = (leadMsgs.get(msg.repo) ?? []).some((x) => x.id === m.id) || leadSummary.get(msg.repo)?.last?.id === m.id;
       upsertLead(msg.repo, m);
-      const viewing = isOpen && view.app === 'team' && view.open === msg.repo;
+      const viewing = isOpen && view.app === 'thread' && view.id === msg.repo;
       if (m.from === 'master' && viewing) markLeadSeen(msg.repo);
       if (m.from === 'master' && !known && !viewing && !m.read) notifyLead(msg.repo, m);
       updateBadge();
-      if (isOpen && view.app !== 'agents') refresh();
+      if (isOpen && view.app !== 'agent') refresh();
     } else if (msg.type === 'master:typing') {
       if (msg.on) leadTyping.add(msg.repo); else leadTyping.delete(msg.repo);
       changed();
-      if (isOpen && view.app === 'team') refresh();
+      if (isOpen && (view.app === 'thread' || view.app === 'chat')) refresh();
     } else if (msg.type === 'agent:update') {
       ctx.agents.set(msg.agent.id, msg.agent);
       tick();
       changed();
-      if (isOpen && (view.app === 'agents' || view.app === 'messages' || view.app === 'home' || view.app === 'review')) refresh();
+      if (isOpen && view.app !== 'mail' && !(view.app === 'project' && view.sub)) refresh();
     } else if (msg.type === 'agent:event') {
-      if (isOpen && view.app === 'agents' && view.open === msg.agentId) appendLog(msg.event, msg.ts);
+      if (isOpen && view.app === 'agent' && view.id === msg.agentId) appendLog(msg.event, msg.ts);
     }
   });
 
   // ---------------------------------------------------------------- open / close
   // The phone doesn't pause the game: keys still drive the robot (except while typing in a field), it
   // only frees the mouse so you can tap. Click the world to look around again; the phone stays out.
-  function open(app?: AppId) {
+  function open(app?: string) {
     if (!isOpen) {
       isOpen = true;
       root.classList.add('open');
@@ -345,7 +366,8 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
       if (document.pointerLockElement) document.exitPointerLock();
       track('phone_opened', { app: app ?? view.app });
     }
-    if (app && (app !== view.app || app === 'home')) go(app === 'home' ? { app: 'home' } : ({ app } as View));
+    const target: View | undefined = !app ? undefined : LEGACY[app] ?? (app in TAB_OF ? ({ app } as View) : undefined);
+    if (target && (target.app !== view.app || target.app === 'home')) tab(target);
     else render(false);
   }
   function close() {
@@ -359,15 +381,47 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
   }
   function toggle() { if (isOpen) close(); else open(); }
 
+  // Screens stack within a tab: back pops, switching tabs starts over.
+  const stack: View[] = [];
+  let subBack: (() => boolean) | null = null;
   function go(v: View) {
     if (v.app !== view.app && v.app !== 'home') track('phone_app', { app: v.app });
+    if (TAB_OF[v.app] === TAB_OF[view.app] && JSON.stringify(v) !== JSON.stringify(view)) stack.push(view);
+    else if (TAB_OF[v.app] !== TAB_OF[view.app]) stack.length = 0;
+    subBack = null;
     view = v;
+    render();
+  }
+  function tab(v: View) {
+    stack.length = 0;
+    subBack = null;
+    if (v.app !== view.app) track('phone_app', { app: v.app });
+    view = v;
+    render();
+  }
+  function back() {
+    if (subBack?.()) return;
+    const prev = stack.pop();
+    subBack = null;
+    view = prev ?? { app: TAB_OF[view.app] } as View;
+    if (view.app === 'project' && !prev) view = { app: 'projects' };
     render();
   }
 
   function openThread(repo: string) {
-    open('team');
-    go({ app: 'team', open: repo });
+    open();
+    tab({ app: 'chat' });
+    go({ app: 'thread', id: repo });
+  }
+  function openProject(repo: string) {
+    open();
+    tab({ app: 'projects' });
+    go({ app: 'project', repo });
+  }
+  function openAgent(id: string) {
+    open();
+    tab({ app: 'home' });
+    go({ app: 'agent', id });
   }
 
   // ---------------------------------------------------------------- notifications
@@ -383,7 +437,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     bannerTimer = window.setTimeout(() => { bannerIn.classList.remove('show'); bannerOut.classList.remove('show'); }, 7000);
   }
   function notify(m: OfficeMessage) {
-    const app: AppId = m.channel === 'email' ? 'mail' : 'messages';
+    const app = m.channel === 'email' ? 'mail' : 'messages';
     const html = `<div class="pn-app ${m.channel}">${m.channel === 'email' ? ICON.mail : ICON.messages}<span>${m.channel === 'email' ? 'MAIL' : 'MESSAGES'}</span><time>now</time></div>
       <b>HQ${m.subject ? ` · ${esc(m.subject)}` : ''}</b><p>${esc(m.text.slice(0, 160))}</p>`;
     const el = isOpen ? bannerIn : bannerOut;
@@ -401,132 +455,178 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
   // ---------------------------------------------------------------- render
   /** Re-render while keeping whatever the user is typing. */
   function refresh() {
-    const field = viewEl.querySelector<HTMLInputElement | HTMLTextAreaElement>('[data-keep]');
-    const keep = field ? { key: field.dataset.keep!, value: field.value, focused: document.activeElement === field } : null;
+    const fields = [...viewEl.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-keep]')].map((f) => ({ key: f.dataset.keep!, value: f.value, focused: document.activeElement === f }));
+    const sel = viewEl.querySelector<HTMLSelectElement>('select[data-keep-sel]');
+    const selValue = sel?.value;
     const scroller = viewEl.querySelector<HTMLElement>('.pv-scroll');
     const atBottom = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
     const prevTop = scroller?.scrollTop ?? 0;
     render(false);
-    if (keep) {
-      const f = viewEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-keep="${keep.key}"]`);
-      if (f) { f.value = keep.value; if (keep.focused) f.focus(); }
+    for (const k of fields) {
+      const f = viewEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-keep="${k.key}"]`);
+      if (f) { f.value = k.value; if (k.focused) f.focus(); }
     }
+    const sel2 = viewEl.querySelector<HTMLSelectElement>('select[data-keep-sel]');
+    if (sel2 && selValue) sel2.value = selValue;
     const s = viewEl.querySelector<HTMLElement>('.pv-scroll');
-    const chat = view.app === 'messages' || (view.app === 'team' && !!view.open);
+    const chat = view.app === 'thread';
     if (s) s.scrollTop = atBottom && chat ? s.scrollHeight : prevTop;
   }
 
   function render(fresh = true) {
     viewEl.className = `phone-view app-${view.app}`;
-    if (view.app === 'home') renderHome();
-    else if (view.app === 'hire') renderHire(fresh);
-    else if (view.app === 'messages') renderMessages(fresh);
+    if (view.app === 'home') renderHome(fresh);
+    else if (view.app === 'projects') renderProjects(fresh);
+    else if (view.app === 'project') renderProject(projectDeps, view, fresh);
+    else if (view.app === 'agent') { const a = ctx.agents.get(view.id); if (a) renderAgent(a); else back(); }
+    else if (view.app === 'chat') renderChats(fresh);
+    else if (view.app === 'thread') { if (view.id === 'hq') renderMessages(fresh); else renderLead(view.id, fresh); }
     else if (view.app === 'mail') renderMail();
-    else if (view.app === 'team') renderTeam(fresh);
-    else if (view.app === 'agents') renderAgents();
-    else if (view.app === 'today') renderToday();
-    else if (view.app === 'schedules') renderSchedules();
-    else if (view.app === 'review') renderReview();
     else renderMaps();
+    renderTabs();
   }
 
   const header = (title: string, sub = '', right = '') => `
-    <div class="pv-head"><button class="pv-back" data-home>‹</button><div class="pv-title"><b>${title}</b>${sub ? `<small>${sub}</small>` : ''}</div><div class="pv-right">${right}</div></div>`;
+    <div class="pv-head"><button class="pv-back" data-back>‹</button><div class="pv-title"><b>${title}</b>${sub ? `<small>${sub}</small>` : ''}</div><div class="pv-right">${right}</div></div>`;
+  /** Top of a tab's first screen: a big title instead of a back button. */
+  const tabHeader = (title: string, right = '') => `<div class="pv-tabhead"><h3>${title}</h3><div class="pv-right">${right}</div></div>`;
 
   function bindCommon() {
-    viewEl.querySelectorAll<HTMLElement>('[data-home]').forEach((b) => b.addEventListener('click', () => {
-      if (view.app === 'schedules' && schedulesBack?.()) return;
-      if (view.app === 'mail' && (view.open || view.compose)) go({ app: 'mail' });
-      else if (view.app === 'agents' && view.open) go({ app: 'agents' });
-      else if (view.app === 'team' && view.open) go({ app: 'team' });
-      else if (view.app === 'hire' && view.repo && hireFrom === 'team') go({ app: 'team', open: view.repo });
-      else go({ app: 'home' });
-    }));
+    viewEl.querySelectorAll<HTMLElement>('[data-back]').forEach((b) => b.addEventListener('click', back));
   }
 
-  // ---- Home: agent control at a glance ----
-  const DOCK: { id: AppId; name: string; icon: string; bg: string }[] = [
-    { id: 'messages', name: 'Messages', icon: ICON.messages, bg: 'linear-gradient(180deg,#5af07a,#18c24a)' },
-    { id: 'mail', name: 'Mail', icon: ICON.mail, bg: 'linear-gradient(180deg,#4fb2ff,#1a6dff)' },
-    { id: 'team', name: 'Projects', icon: ICON.team, bg: 'linear-gradient(180deg,#c48bff,#7a3dff)' },
-    { id: 'agents', name: 'Agents', icon: ICON.gear, bg: 'linear-gradient(180deg,#ffb347,#ff7a18)' },
-    { id: 'maps', name: 'Maps', icon: ICON.map, bg: 'linear-gradient(180deg,#9be7a0,#3fb6a8)' },
-    { id: 'schedules', name: 'Schedules', icon: ICON.clock, bg: 'linear-gradient(180deg,#7fb2ff,#3a5bd9)' },
-    { id: 'review', name: 'Review', icon: ICON.check, bg: 'linear-gradient(180deg,#5af0b4,#16a874)' },
+  // ---- Tab bar ----
+  const TABS: { id: Tab; name: string; icon: string }[] = [
+    { id: 'home', name: 'Home', icon: ICON.home },
+    { id: 'projects', name: 'Projects', icon: ICON.grid },
+    { id: 'chat', name: 'Chat', icon: ICON.messages },
+    { id: 'map', name: 'Map', icon: ICON.map },
   ];
+  function renderTabs() {
+    const cur = TAB_OF[view.app];
+    const badgeOf = (t: Tab) => t === 'home' ? inbox().length : t === 'chat' ? unread() + leadUnread() : 0;
+    tabsEl.innerHTML = TABS.map((t) => { const n = badgeOf(t.id); return `<button class="${t.id === cur ? 'on' : ''}" data-tab="${t.id}">${t.icon}<span>${t.name}</span>${n ? `<i>${n}</i>` : ''}</button>`; }).join('');
+    tabsEl.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) => b.addEventListener('click', () => tab({ app: b.dataset.tab as Tab } as View)));
+  }
+
   /** Finished with changes and no PR yet: waiting on the user at the review station. */
   const needsReview = (a: AgentInfo) => a.review === 'pending' || (a.review == null && a.status === 'done' && a.filesChanged.length > 0 && !a.prUrl);
   const needsInput = (a: AgentInfo) => a.status === 'needs_input';
   /** Everything waiting on you: questions first, then finished work to review. */
   const inbox = () => sortedAgents().filter((a) => needsInput(a) || needsReview(a)).sort((a, b) => Number(needsInput(b)) - Number(needsInput(a)));
-  const dockBadge = (id: AppId) => id === 'messages' ? unread('text') : id === 'mail' ? unread('email') : id === 'team' ? leadUnread() : id === 'review' ? inbox().length : 0;
 
-  function renderHome() {
+  // ---- Home: what needs you, a task box, what's happening ----
+  let taskRepo = '';
+  function renderHome(fresh: boolean) {
     const agents = sortedAgents();
     const live = agents.filter((a) => LIVE.has(a.status));
-    const review = agents.filter(needsReview);
-    const recent = agents.filter((a) => !LIVE.has(a.status) && !needsReview(a) && !needsInput(a)).slice(0, 4);
-    const spent = agents.reduce((n, a) => n + (a.costUsd ?? 0), 0);
-    const files = live.reduce((n, a) => n + a.filesChanged.length, 0);
-    const last = [...messages].reverse().find((m) => m.from === 'hq');
+    const waitingOnYou = inbox();
+    // Red CI on a project nobody has touched in a month isn't news; on an active one it is.
+    const red = pulse.all().filter((p) => p.ci === 'failing' && !p.stale).sort((a, b) => (b.ciSince ?? '').localeCompare(a.ciSince ?? ''));
+    const agentPrs = pulse.all().flatMap((p) => p.openPrs.filter((x) => x.isAgent && !x.isDraft).map((x) => ({ ...x, repo: p.repo }))).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const today = currentBriefing();
-    let html = `<div class="pv-scroll home-scroll">
-      <button class="today-widget" data-app="today"><div class="tw-top">☀ Today${today && waiting(today) ? `<i>${waiting(today)}</i>` : ''}</div><p>${esc(today?.headline ?? 'What happened while you were away.')}</p></button>
-      <div class="home-widget">
-        <div class="hw-top"><span class="hw-logo">HQ</span><b>Agents</b><span class="hw-dot ${live.length ? 'on' : ''}"></span><small>${esc(ctx.repos.length + ' projects')}</small></div>
-        <div class="hw-stats">
-          <div><b>${live.length}</b><small>working</small></div>
-          <div class="hw-review" data-app="review"><b>${review.length}</b><small>to review</small></div>
-          <div><b>${files}</b><small>files</small></div>
-          <div><b>$${spent.toFixed(2)}</b><small>spent</small></div>
-        </div>
-        <button class="hw-hire" data-hire>${ICON.plus}<span>Hire an agent</span></button>
-      </div>`;
-    const asking = agents.filter(needsInput);
-    if (asking.length) html += `<h5 class="home-h">Needs you</h5>${asking.map(agentCard).join('')}`;
-    if (live.length) html += `<h5 class="home-h">Working now</h5>${live.map(agentCard).join('')}`;
-    if (review.length) html += `<h5 class="home-h">Ready for you</h5>${review.map(agentCard).join('')}`;
-    if (!live.length && !review.length && !asking.length) {
-      html += `<div class="home-idle"><b>No one's working right now.</b><p>Hire an agent in any project, or text HQ and it'll send people into the right buildings.</p></div>`;
-    }
-    if (recent.length) html += `<h5 class="home-h">Recent</h5><div class="home-recent">${recent.map((a) => `<button class="hr-row" data-open="${esc(a.id)}"><span class="ar-av ${a.status}">${esc(initials(a.name))}</span><div><b>${esc(a.name)}</b><small>${esc(a.repo)} · ${STATUS_LABEL[a.status]}${a.costUsd != null ? ` · $${a.costUsd.toFixed(2)}` : ''}</small></div><time>${esc(shortTime(a.endedAt ?? a.startedAt))}</time></button>`).join('')}</div>`;
-    html += `<button class="home-hq" data-app="messages"><span class="pv-avatar">HQ</span><div><b>HQ</b><p>${last ? esc(last.text.replace(/\s+/g, ' ').slice(0, 90)) : 'Text the office what you need.'}</p></div>${unread('text') ? `<i class="lead-badge">${unread('text')}</i>` : ''}</button>`;
-    html += `</div>
-      <div class="home-dock">${DOCK.map((a) => { const n = dockBadge(a.id); return `<button class="app-icon" data-app="${a.id}" title="${a.name}"><span class="ai-tile" style="background:${a.bg}">${a.icon}${n ? `<i>${n}</i>` : ''}</span><span class="ai-name">${a.name}</span></button>`; }).join('')}</div>`;
+    const repos = projectOrder();
+    const here = hooks.currentRepo?.() ?? null;
+    if (!taskRepo || !ctx.repos.some((r) => r.name === taskRepo)) taskRepo = here ?? repos[0]?.name ?? '';
+    const hour = ctx.dayNight?.hour ?? new Date().getHours();
+    const hello = hour < 5 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+
+    let html = tabHeader(hello, hooks.openSettings ? `<button class="pv-icon" data-settings title="Settings">${ICON.gear}</button>` : '');
+    html += `<div class="pv-scroll home-scroll">`;
+    if (today) html += `<button class="hm-brief" data-brief><b>☀ Briefing</b><span>${esc(today.headline)}</span></button>`;
+
+    html += `<form class="hm-task" data-task>
+      <label>Give a task</label>
+      <select data-keep-sel>${repos.map((r) => `<option value="${esc(r.name)}" ${r.name === taskRepo ? 'selected' : ''}>${esc(r.name)}${r.name === here ? ' (here)' : ''}</option>`).join('')}</select>
+      <div class="hm-row"><input data-keep="home-task" placeholder="What should get done?" autocomplete="off" /><button class="pbtn" type="submit">Start</button></div>
+    </form>`;
+
+    const needs = waitingOnYou.length + red.length + agentPrs.length;
+    html += `<h5 class="home-h">Needs you${needs ? ` · ${needs}` : ''}</h5>`;
+    if (!needs) html += `<div class="home-idle"><b>You're all caught up.</b><p>Questions from agents, work to review, red CI and PRs from agents show up here.</p></div>`;
+    html += waitingOnYou.map(agentCard).join('');
+    if (red.length) html += `<div class="pj-list">${red.slice(0, 4).map((p) => `<button class="pj-row" data-project="${esc(p.repo)}"><span class="pj-ci failing"></span><div><b>${esc(p.repo)}: CI is red</b><small>Failing${p.ciSince ? ` since ${esc(ago(p.ciSince))}` : ''} · tap to re-run or fix</small></div><span class="pj-chev">›</span></button>`).join('')}${red.length > 4 ? `<button class="pj-row more" data-tab-projects><div><small>+${red.length - 4} more red projects</small></div><span class="pj-chev">›</span></button>` : ''}</div>`;
+    if (agentPrs.length) html += `<div class="pj-list">${agentPrs.slice(0, 3).map((x) => `<button class="pj-row" data-pr-repo="${esc(x.repo)}" data-pr-n="${x.number}"><span class="pj-num">#${x.number}</span><div><b>${esc(x.title)}</b><small>${esc(x.repo)} · PR by ${esc(x.author)} (agent) · ${esc(ago(x.createdAt))}</small></div><span class="pj-chev">›</span></button>`).join('')}</div>`;
+
+    html += `<h5 class="home-h">Working now${live.length ? ` · ${live.length}` : ''}</h5>`;
+    html += live.length ? live.filter((a) => !needsInput(a)).map(agentCard).join('') : `<p class="pj-empty">No agents are working. Give one a task above.</p>`;
+
+    const recent = agents.filter((a) => !LIVE.has(a.status) && !needsReview(a) && !needsInput(a)).slice(0, 3);
+    if (recent.length) html += `<h5 class="home-h">Recently finished</h5><div class="home-recent">${recent.map((a) => `<button class="hr-row" data-open="${esc(a.id)}"><span class="ar-av ${a.status}">${esc(initials(a.name))}</span><div><b>${esc(a.name)}</b><small>${esc(a.repo)} · ${STATUS_LABEL[a.status]}${a.prUrl ? ' · PR opened' : ''}</small></div><time>${esc(shortTime(a.endedAt ?? a.startedAt))}</time></button>`).join('')}</div>`;
+    html += `</div>`;
     viewEl.innerHTML = html;
-    viewEl.querySelectorAll<HTMLElement>('[data-app]').forEach((b) => b.addEventListener('click', () => go({ app: b.dataset.app as 'messages' })));
-    viewEl.querySelector('[data-hire]')!.addEventListener('click', () => { hireFrom = 'home'; go({ app: 'hire' }); });
+
+    viewEl.querySelector('[data-settings]')?.addEventListener('click', () => { close(); hooks.openSettings?.(); });
+    viewEl.querySelector('[data-brief]')?.addEventListener('click', () => {
+      openBriefingPanel({ travelTo: (r) => { close(); void hooks.travelTo(r); }, openAgent: (id) => openAgent(id) }, 'phone');
+    });
+    viewEl.querySelector('[data-tab-projects]')?.addEventListener('click', () => tab({ app: 'projects' }));
+    viewEl.querySelectorAll<HTMLElement>('[data-project]').forEach((b) => b.addEventListener('click', () => { tab({ app: 'projects' }); go({ app: 'project', repo: b.dataset.project! }); }));
+    viewEl.querySelectorAll<HTMLElement>('[data-pr-repo]').forEach((b) => b.addEventListener('click', () => {
+      tab({ app: 'projects' });
+      go({ app: 'project', repo: b.dataset.prRepo! });
+      go({ app: 'project', repo: b.dataset.prRepo!, sub: 'pr', n: Number(b.dataset.prN) });
+    }));
+    const form = viewEl.querySelector<HTMLFormElement>('[data-task]')!;
+    form.append(agentPicker({ onSettings: () => { close(); hooks.openSettings?.(); } }));
+    const sel = form.querySelector('select')!;
+    sel.addEventListener('change', () => { taskRepo = sel.value; });
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = form.querySelector('input')!;
+      const text = input.value.trim();
+      if (!text || !sel.value) { input.focus(); return; }
+      const b = form.querySelector<HTMLButtonElement>('button')!;
+      b.disabled = true;
+      b.textContent = 'Starting…';
+      try {
+        const a = await hire(sel.value, text);
+        input.value = '';
+        track('agent_assigned', { from: 'phone_home' });
+        toastIn(`${a.name} is on it in ${a.repo}`);
+      } catch (err) { toastIn(`Couldn't start an agent: ${(err as Error).message}`); }
+      if (b.isConnected) { b.disabled = false; b.textContent = 'Start'; }
+      refresh();
+    });
     bindAgentCards();
+    if (fresh && !currentBriefing()) loadBriefing().then(() => { if (isOpen && view.app === 'home') refresh(); }).catch(() => {});
   }
 
   function sortedAgents() {
     return [...ctx.agents.values()].sort((a, b) => (LIVE.has(b.status) ? 1 : 0) - (LIVE.has(a.status) ? 1 : 0) || b.startedAt.localeCompare(a.startedAt));
   }
 
-  /** One agent with its controls: Stop while working, Open PR once it has changes (two taps), Log, Go. */
+  /** One agent with its controls: Answer / Review when it needs you, Stop while working, Log, Go. */
   function agentCard(a: AgentInfo) {
-    const working = LIVE.has(a.status);
+    const working = LIVE.has(a.status) && !needsInput(a);
     const here = hooks.sites().some((s) => s.repo.name === a.repo);
     return `<div class="agent-card ${a.status}" data-card="${esc(a.id)}">
       <button class="ac-top" data-open="${esc(a.id)}"><span class="ar-av ${a.status}">${esc(initials(a.name))}</span>
-        <div><b>${esc(a.name)}</b><small>${esc(a.repo)} · ${esc(since(a.startedAt, a.endedAt))}</small></div><em class="chip ${a.status}">${STATUS_LABEL[a.status] ?? a.status}</em></button>
-      ${needsInput(a) ? `<p class="ac-doing ac-ask"><b>Asks:</b> ${esc((a.question ?? '').slice(0, 160))}</p>` : `<p class="ac-doing">${working ? '<i class="ac-pulse"></i>' : ''}${esc((working ? a.lastAction : a.task.split('\n')[0]).slice(0, 120))}</p>`}
-      <div class="ac-meta"><span>${a.filesChanged.length} file${a.filesChanged.length === 1 ? '' : 's'}</span>${a.costUsd != null ? `<span>$${a.costUsd.toFixed(2)}</span>` : ''}${a.prUrl ? `<a href="${esc(a.prUrl)}" target="_blank" rel="noopener">PR ↗</a>` : ''}</div>
+        <div><b>${esc(a.name)}</b><small>${esc(a.repo)} · ${esc(since(a.startedAt, a.endedAt))}</small></div><em class="chip ${a.status}">${needsReview(a) ? 'Review' : STATUS_LABEL[a.status] ?? a.status}</em></button>
+      ${needsInput(a) ? `<p class="ac-doing ac-ask"><b>Asks:</b> ${esc((a.question ?? '').slice(0, 160))}</p>` : `<p class="ac-doing">${working ? '<i class="ac-pulse"></i>' : ''}${esc((working ? a.lastAction : a.summary || a.task.split('\n')[0]).slice(0, 120))}</p>`}
       <div class="ac-actions">
-        ${working ? `<button class="pbtn sm danger" data-stop="${esc(a.id)}">Stop</button>` : ''}
         ${needsInput(a) ? `<button class="pbtn sm" data-review="${esc(a.id)}">Answer</button>` : ''}
-        ${needsReview(a) ? `<button class="pbtn sm" data-review="${esc(a.id)}">Review</button>` : ''}
+        ${needsReview(a) ? `<button class="pbtn sm" data-review="${esc(a.id)}">Review${a.diffStat ? ` · ${esc(a.diffStat.replace(/ files? changed,?/, ' files'))}` : ''}</button>` : ''}
+        ${working ? `<button class="pbtn sm danger" data-stop="${esc(a.id)}">Stop</button>` : ''}
         <button class="pbtn sm ghost" data-open="${esc(a.id)}">Log</button>
-        <button class="pbtn sm ghost" data-go="${esc(a.repo)}" title="${here ? 'Walk me there' : 'Fly home to the building'}">Go</button>
+        ${here ? `<button class="pbtn sm ghost" data-go="${esc(a.repo)}" title="Walk me there">Go</button>` : ''}
+        ${a.prUrl ? `<a class="pbtn sm ghost" href="${esc(a.prUrl)}" target="_blank" rel="noopener">PR ↗</a>` : ''}
       </div>
     </div>`;
   }
 
-  const prArmed = new Map<string, number>();
   function bindAgentCards() {
-    viewEl.querySelectorAll<HTMLElement>('[data-open]').forEach((b) => b.addEventListener('click', () => go({ app: 'agents', open: b.dataset.open })));
+    viewEl.querySelectorAll<HTMLElement>('[data-open]').forEach((b) => b.addEventListener('click', () => go({ app: 'agent', id: b.dataset.open! })));
     viewEl.querySelectorAll<HTMLElement>('[data-go]').forEach((b) => b.addEventListener('click', () => { close(); void hooks.travelTo(b.dataset.go!); }));
     viewEl.querySelectorAll<HTMLButtonElement>('[data-stop]').forEach((b) => b.addEventListener('click', async () => {
+      // Stopping throws away work in progress: a second tap makes sure.
+      if (!b.dataset.armed) {
+        b.dataset.armed = '1';
+        b.textContent = 'Tap to stop';
+        b.classList.add('armed');
+        setTimeout(() => { if (b.isConnected && b.dataset.armed) { delete b.dataset.armed; b.textContent = 'Stop'; b.classList.remove('armed'); } }, 4000);
+        return;
+      }
       b.disabled = true;
       b.textContent = 'Stopping…';
       await stopAgent(b.dataset.stop!);
@@ -535,26 +635,6 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
       track('phone_review', { agent: b.dataset.review });
       openReview(b.dataset.review!);
     }));
-    viewEl.querySelectorAll<HTMLButtonElement>('[data-pr]').forEach((b) => {
-      const id = b.dataset.pr!;
-      if ((prArmed.get(id) ?? 0) > Date.now()) { b.textContent = 'Tap to confirm'; b.classList.add('armed'); }
-      b.addEventListener('click', async () => {
-        // Opening a PR is public: it takes a second, deliberate tap.
-        if ((prArmed.get(id) ?? 0) < Date.now()) {
-          prArmed.set(id, Date.now() + 4000);
-          b.textContent = 'Tap to confirm';
-          b.classList.add('armed');
-          setTimeout(() => { if (b.isConnected && b.classList.contains('armed')) { b.textContent = 'Open PR'; b.classList.remove('armed'); } }, 4000);
-          return;
-        }
-        prArmed.delete(id);
-        b.disabled = true;
-        b.textContent = 'Opening…';
-        try { await openPr(id); toastIn('Pull request opened'); }
-        catch (e) { toastIn(`Couldn't open the PR: ${(e as Error).message}`); }
-        refresh();
-      });
-    });
   }
 
   async function stopAgent(id: string) {
@@ -570,9 +650,9 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     return a;
   }
   async function hire(repo: string, task: string) {
-    const a = await api.startAgent(repo, task);
+    const a = await api.startAgent(repo, task, pickedAgent());
     ctx.agents.set(a.id, a);
-    track('agent_started', { repo, via: 'phone' });
+    track('agent_started', { repo, via: 'phone', provider: a.provider });
     tick();
     changed();
     return a;
@@ -580,68 +660,118 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
 
   /** A small in-phone banner for results of taps. */
   function toastIn(text: string) {
-    bannerIn.innerHTML = `<div class="pn-app">${ICON.gear}<span>AGENTS</span><time>now</time></div><p>${esc(text)}</p>`;
+    bannerIn.innerHTML = `<div class="pn-app">${ICON.check}<span>OPENWORLD</span><time>now</time></div><p>${esc(text)}</p>`;
     bannerIn.onclick = () => bannerIn.classList.remove('show');
     bannerIn.classList.add('show');
     clearTimeout(bannerTimer);
-    bannerTimer = window.setTimeout(() => bannerIn.classList.remove('show'), 4000);
+    bannerTimer = window.setTimeout(() => bannerIn.classList.remove('show'), /^Couldn't/.test(text) ? 5000 : 2800);
   }
 
-  // ---- Hire: pick a project, describe the task ----
-  let hireFrom: 'home' | 'agents' | 'team' = 'home';
-  let hireQuery = '';
-  let hiring = false;
-  function renderHire(fresh: boolean) {
-    const v = view as Extract<View, { app: 'hire' }>;
-    const picked = v.repo ? ctx.repos.find((r) => r.name === v.repo) : undefined;
-    viewEl.innerHTML = `${header('Hire an agent', picked ? `in ${esc(picked.name)}` : 'Pick a project')}
-      <div class="pv-scroll hire">
-        ${picked ? `<button class="hire-picked" data-repick>${leadAvatar(picked, picked.name)}<div><b>${esc(picked.name)}</b><small>${esc(picked.description || TIER[picked.tier])}</small></div><span>Change</span></button>`
-          : `<div class="maps-search"><input data-keep="hire-q" placeholder="Search projects" autocomplete="off" value="${esc(hireQuery)}" /></div><div class="hire-list"></div>`}
-        <label class="hire-task"><span>Task</span><textarea data-keep="hire-task" placeholder="e.g. Add tests for the date parser. Don't open a PR." ${picked ? '' : 'disabled'}></textarea></label>
-        <p class="hire-note">The agent works in its own copy of the repo. Nothing is pushed and no PR is opened until you tap Open PR.</p>
-        <button class="pbtn hire-go" data-go-hire ${picked && !hiring ? '' : 'disabled'}>${hiring ? 'Hiring…' : 'Hire'}</button>
-      </div>`;
-    bindCommon();
-    const task = viewEl.querySelector<HTMLTextAreaElement>('textarea')!;
-    const goBtn = viewEl.querySelector<HTMLButtonElement>('[data-go-hire]')!;
-    viewEl.querySelector('[data-repick]')?.addEventListener('click', () => go({ app: 'hire' }));
-    const list = viewEl.querySelector<HTMLElement>('.hire-list');
-    const q = viewEl.querySelector<HTMLInputElement>('[data-keep="hire-q"]');
-    if (list && q) {
+  // ---- Projects: every repo, what's going on in it; tap for its control page ----
+  let projectQuery = '';
+  /** Projects that need you first, then busy ones, then red CI, then most recently pushed. */
+  function projectOrder(): Repo[] {
+    const busy = liveByRepo();
+    const waitingIn = new Map<string, number>();
+    for (const a of inbox()) waitingIn.set(a.repo, (waitingIn.get(a.repo) ?? 0) + 1);
+    const pushed = (r: Repo) => pulse.get(r.name)?.pushedAt ?? r.pushedAt;
+    return [...ctx.repos].sort((a, b) =>
+      (waitingIn.get(b.name) ?? 0) - (waitingIn.get(a.name) ?? 0)
+      || (busy.get(b.name) ?? 0) - (busy.get(a.name) ?? 0)
+      || Number(pulse.get(b.name)?.ci === 'failing') - Number(pulse.get(a.name)?.ci === 'failing')
+      || pushed(b).localeCompare(pushed(a)));
+  }
+  function renderProjects(fresh: boolean) {
+    viewEl.innerHTML = `${tabHeader('Projects')}
+      <div class="maps-search"><input data-keep="projects" placeholder="Search ${ctx.repos.length} projects" autocomplete="off" value="${esc(projectQuery)}" /></div>
+      <div class="pv-scroll lead-list"></div>`;
+    const list = viewEl.querySelector<HTMLElement>('.lead-list')!;
+    const q = viewEl.querySelector<HTMLInputElement>('input')!;
+    const draw = () => {
+      projectQuery = q.value;
+      const s = q.value.toLowerCase();
       const busy = liveByRepo();
-      const draw = () => {
-        hireQuery = q.value;
-        const s = q.value.toLowerCase();
-        const rows = [...ctx.repos].sort((a, b) => b.score - a.score).filter((r) => !s || `${r.name} ${r.description}`.toLowerCase().includes(s)).slice(0, 40);
-        list.innerHTML = rows.map((r) => `<button class="lead-row" data-pick="${esc(r.name)}">${leadAvatar(r, r.name)}<div><div class="mi-row"><b>${esc(r.name)}</b></div><span class="mi-subj">${TIER[r.tier]}${busy.get(r.name) ? ` · <span class="good">${busy.get(r.name)} working</span>` : ''}</span><p>${esc(r.description || '')}</p></div></button>`).join('')
-          || '<div class="msg-empty"><b>No projects</b><p>Connect GitHub to hire agents.</p></div>';
-        list.querySelectorAll<HTMLElement>('[data-pick]').forEach((b) => b.addEventListener('click', () => go({ app: 'hire', repo: b.dataset.pick })));
-      };
-      q.addEventListener('input', draw);
-      draw();
-      if (fresh) setTimeout(() => q.focus(), 30);
-    } else if (fresh) setTimeout(() => task.focus(), 30);
-    const submit = async () => {
-      const text = task.value.trim();
-      if (!picked || !text || hiring) { task.focus(); return; }
-      hiring = true;
-      goBtn.disabled = true;
-      goBtn.textContent = 'Hiring…';
-      try {
-        const a = await hire(picked.name, text);
-        hiring = false;
-        go({ app: 'agents', open: a.id });
-      } catch (e) {
-        hiring = false;
-        goBtn.disabled = false;
-        goBtn.textContent = 'Hire';
-        toastIn(`Couldn't hire: ${(e as Error).message}`);
-      }
+      const rows = projectOrder().filter((r) => !s || `${r.name} ${r.description}`.toLowerCase().includes(s));
+      list.innerHTML = rows.length ? rows.map((r) => `<button class="lead-row pj-proj" data-repo="${esc(r.name)}">
+          ${leadAvatar(r, r.name)}
+          <div><div class="mi-row"><b>${esc(r.name)}</b></div><span class="mi-subj">${projectStatusHtml(pulse.get(r.name), busy.get(r.name) ?? 0)}</span>
+          ${r.description ? `<p>${esc(r.description)}</p>` : ''}</div><span class="pj-chev">›</span></button>`).join('')
+        : `<div class="msg-empty"><b>${ctx.repos.length ? 'No matches' : 'No projects'}</b><p>${ctx.repos.length ? 'Try another name.' : 'Connect GitHub to see your projects.'}</p></div>`;
+      list.querySelectorAll<HTMLElement>('[data-repo]').forEach((b) => b.addEventListener('click', () => go({ app: 'project', repo: b.dataset.repo! })));
     };
-    goBtn.addEventListener('click', () => void submit());
-    // One step: type the task, press Enter (Shift+Enter for a new line).
-    task.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } });
+    q.addEventListener('input', draw);
+    draw();
+    if (fresh) pulse.start();
+  }
+
+  const projectDeps: ProjectDeps = {
+    el: viewEl,
+    header,
+    bindCommon,
+    go: (v) => go(v as View),
+    showing: (v) => isOpen && view.app === 'project' && view.repo === v.repo && view.sub === v.sub && view.n === v.n,
+    repo: (name) => ctx.repos.find((r) => r.name === name),
+    agents: sortedAgents,
+    agentCard,
+    bindAgentCards,
+    hire,
+    travelTo: (repo) => { close(); void hooks.travelTo(repo); },
+    canTravel: (repo) => hooks.sites().some((s) => s.repo.name === repo),
+    leadAvatar: (r, name) => leadAvatar(r, name),
+    toast: toastIn,
+    setBack: (fn) => { subBack = fn; },
+  };
+  // The project page and the lists follow the live pulse and schedules.
+  let pulseTimer = 0;
+  pulse.onChange(() => {
+    clearTimeout(pulseTimer);
+    pulseTimer = window.setTimeout(() => { if (isOpen && (view.app === 'home' || view.app === 'projects' || (view.app === 'project' && !view.sub))) refresh(); }, 400);
+  });
+  onSchedules(() => { if (isOpen && view.app === 'project' && !view.sub) refresh(); });
+
+  // ---- Chat: HQ, mail, and every project's lead ----
+  let chatQuery = '';
+  function renderChats(fresh: boolean) {
+    const hqText = messages.filter((m) => m.channel === 'text');
+    const last = hqText[hqText.length - 1];
+    const lastMail = [...messages].reverse().find((m) => m.channel === 'email');
+    viewEl.innerHTML = `${tabHeader('Chat')}
+      <div class="maps-search"><input data-keep="chat" placeholder="Text any project's lead…" autocomplete="off" value="${esc(chatQuery)}" /></div>
+      <div class="pv-scroll lead-list"></div>`;
+    const list = viewEl.querySelector<HTMLElement>('.lead-list')!;
+    const q = viewEl.querySelector<HTMLInputElement>('input')!;
+    const draw = () => {
+      chatQuery = q.value;
+      const s = q.value.toLowerCase();
+      let html = '';
+      if (!s) {
+        html += `<button class="lead-row ${unread('text') ? 'unread' : ''}" data-thread="hq"><span class="lead-av hq">HQ</span>
+          <div><div class="mi-row"><b>HQ</b><time>${last ? esc(shortTime(last.ts)) : ''}</time></div><span class="mi-subj">The office · sends agents anywhere</span>
+          <p>${typing.text || sending.text ? '<span class="good">typing…</span>' : esc(last ? `${last.from === 'me' ? 'You: ' : ''}${last.text.replace(/\s+/g, ' ')}`.slice(0, 110) : 'Text the office what you need.')}</p></div>${unread('text') ? `<i class="lead-badge">${unread('text')}</i>` : ''}</button>
+          <button class="lead-row ${unread('email') ? 'unread' : ''}" data-mail><span class="lead-av mail">${ICON.mail}</span>
+          <div><div class="mi-row"><b>Mail</b><time>${lastMail ? esc(shortTime(lastMail.ts)) : ''}</time></div><span class="mi-subj">${esc(lastMail?.subject || 'Email HQ for bigger asks')}</span>
+          <p>${lastMail ? esc(lastMail.text.replace(/\s+/g, ' ').slice(0, 110)) : 'Reports from finished agents arrive here.'}</p></div>${unread('email') ? `<i class="lead-badge">${unread('email')}</i>` : ''}</button>`;
+      }
+      const talked = leadOrder().filter((r) => leadSummary.get(r.name)?.last);
+      const rows = s ? leadOrder().filter((r) => `${r.name} ${r.description}`.toLowerCase().includes(s)) : talked;
+      if (!s && talked.length) html += `<h5 class="home-h chat-h">Project leads</h5>`;
+      html += rows.map((r) => {
+        const t = leadSummary.get(r.name);
+        const preview = leadTyping.has(r.name) ? '<span class="good">typing…</span>'
+          : t?.last ? esc(`${t.last.from === 'me' ? 'You: ' : t.last.from === 'hq' ? 'HQ: ' : ''}${t.last.text.replace(/\s+/g, ' ')}`.slice(0, 110))
+          : esc(r.description || 'Text the lead about this project.');
+        return `<button class="lead-row ${t?.unread ? 'unread' : ''}" data-thread="${esc(r.name)}">${leadAvatar(r, r.name)}
+          <div><div class="mi-row"><b>${esc(r.name)}</b><time>${t?.last ? esc(shortTime(t.last.ts)) : ''}</time></div>
+          <p>${preview}</p></div>${t?.unread ? `<i class="lead-badge">${t.unread}</i>` : ''}</button>`;
+      }).join('');
+      if (!s && !talked.length) html += `<p class="pj-empty chat-tip">Every project has a lead agent who knows its code. Search above to text one.</p>`;
+      list.innerHTML = html;
+      list.querySelectorAll<HTMLElement>('[data-thread]').forEach((b) => b.addEventListener('click', () => go({ app: 'thread', id: b.dataset.thread! })));
+      list.querySelector('[data-mail]')?.addEventListener('click', () => go({ app: 'mail' }));
+    };
+    q.addEventListener('input', draw);
+    draw();
+    if (fresh && !leadSummary.size) masters.list().then((t) => { for (const x of t.threads) leadSummary.set(x.repo, x); if (view.app === 'chat') draw(); }).catch(() => {});
   }
 
   // ---- Messages (texts with HQ) ----
@@ -697,8 +827,8 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     </button>`;
   }
   function bindDispatchCards() {
-    viewEl.querySelectorAll<HTMLElement>('[data-agent]').forEach((b) => b.addEventListener('click', () => go({ app: 'agents', open: b.dataset.agent })));
-    viewEl.querySelectorAll<HTMLElement>('[data-lead]').forEach((b) => b.addEventListener('click', () => go({ app: 'team', open: b.dataset.lead })));
+    viewEl.querySelectorAll<HTMLElement>('[data-agent]').forEach((b) => b.addEventListener('click', () => go({ app: 'agent', id: b.dataset.agent! })));
+    viewEl.querySelectorAll<HTMLElement>('[data-lead]').forEach((b) => b.addEventListener('click', () => go({ app: 'thread', id: b.dataset.lead! })));
   }
 
   async function send(channel: OfficeChannel, text: string, subject?: string) {
@@ -712,7 +842,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
           drafts[channel] = (drafts[channel] ?? '') + d.delta;
           changed();
           const el = viewEl.querySelector<HTMLElement>('.bubble.streaming, .mail-writing p');
-          if (el && view.app === (channel === 'text' ? 'messages' : 'mail')) {
+          if (el && (channel === 'text' ? view.app === 'thread' && view.id === 'hq' : view.app === 'mail')) {
             el.innerHTML = fmt(drafts[channel]!);
             const s = viewEl.querySelector<HTMLElement>('.pv-scroll');
             if (s && channel === 'text') s.scrollTop = s.scrollHeight;
@@ -746,7 +876,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
           leadDraft.set(repo, (leadDraft.get(repo) ?? '') + d.delta);
           changed();
           const el = viewEl.querySelector<HTMLElement>('.bubble.streaming');
-          if (el && view.app === 'team' && view.open === repo) {
+          if (el && view.app === 'thread' && view.id === repo) {
             el.innerHTML = fmt(leadDraft.get(repo)!);
             const s = viewEl.querySelector<HTMLElement>('.pv-scroll');
             if (s) s.scrollTop = s.scrollHeight;
@@ -765,8 +895,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     if (isOpen) refresh();
   }
 
-  // ---- Projects (each repo's lead agent) ----
-  let teamQuery = '';
+  // ---- Project leads ----
   function leadOrder(): Repo[] {
     const busy = liveByRepo();
     return [...ctx.repos].sort((a, b) =>
@@ -783,48 +912,15 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     ? `<span class="lead-av" style="background:${esc(r.brandColor)}"><img src="/api/repos/${encodeURIComponent(name)}/logo" alt="" /></span>`
     : `<span class="lead-av" style="background:${esc(r?.brandColor || '#7a3dff')}">${esc(name.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '?')}</span>`;
 
-  function renderTeam(fresh: boolean) {
-    const v = view as Extract<View, { app: 'team' }>;
-    if (v.open) return renderLead(v.open, fresh);
-    const busy = liveByRepo();
-    viewEl.innerHTML = `${header('Projects', `${ctx.repos.length} leads · text any of them, anywhere`)}
-      <div class="maps-search"><input data-keep="team" placeholder="Search projects" autocomplete="off" value="${esc(teamQuery)}" /></div>
-      <div class="pv-scroll lead-list"></div>`;
-    bindCommon();
-    const list = viewEl.querySelector<HTMLElement>('.lead-list')!;
-    const q = viewEl.querySelector<HTMLInputElement>('input')!;
-    const draw = () => {
-      teamQuery = q.value;
-      const s = q.value.toLowerCase();
-      const rows = leadOrder().filter((r) => !s || `${r.name} ${r.description}`.toLowerCase().includes(s));
-      list.innerHTML = rows.length ? rows.map((r) => {
-        const t = leadSummary.get(r.name);
-        const n = busy.get(r.name) ?? 0;
-        const preview = leadTyping.has(r.name) ? '<span class="good">typing…</span>'
-          : t?.last ? esc(`${t.last.from === 'me' ? 'You: ' : t.last.from === 'hq' ? 'HQ: ' : ''}${t.last.text.replace(/\s+/g, ' ')}`.slice(0, 110))
-          : esc(r.description || 'Text the lead about this project.');
-        return `<button class="lead-row ${t?.unread ? 'unread' : ''}" data-repo="${esc(r.name)}">
-          ${leadAvatar(r, r.name)}
-          <div><div class="mi-row"><b>${esc(r.name)}</b><time>${t?.last ? esc(shortTime(t.last.ts)) : ''}</time></div>
-          <span class="mi-subj">Lead${n ? ` · <span class="good">${n} working</span>` : ''}</span>
-          <p>${preview}</p></div>${t?.unread ? `<i class="lead-badge">${t.unread}</i>` : ''}</button>`;
-      }).join('') : '<div class="msg-empty"><b>No projects</b><p>Connect GitHub to meet your project leads.</p></div>';
-      list.querySelectorAll<HTMLElement>('[data-repo]').forEach((b) => b.addEventListener('click', () => go({ app: 'team', open: b.dataset.repo })));
-    };
-    q.addEventListener('input', draw);
-    draw();
-    if (fresh && !leadSummary.size) masters.list().then((t) => { for (const x of t.threads) leadSummary.set(x.repo, x); if (view.app === 'team' && !view.open) draw(); }).catch(() => {});
-  }
-
   function renderLead(repo: string, fresh: boolean) {
     const r = ctx.repos.find((x) => x.name === repo);
     const list = leadMsgs.get(repo);
     if (!list) {
       viewEl.innerHTML = `${header(esc(repo), 'Project lead')}<div class="pv-scroll msgs"><div class="msg-empty"><small>Loading…</small></div></div>`;
       bindCommon();
-      loadLead(repo).then(() => { if (view.app === 'team' && view.open === repo) render(); }).catch(() => {
+      loadLead(repo).then(() => { if (view.app === 'thread' && view.id === repo) render(); }).catch(() => {
         leadMsgs.set(repo, []);
-        if (view.app === 'team' && view.open === repo) render();
+        if (view.app === 'thread' && view.id === repo) render();
       });
       return;
     }
@@ -832,7 +928,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     const n = liveByRepo().get(repo) ?? 0;
     const here = hooks.sites().some((s) => s.repo.name === repo);
     let html = header(esc(repo), n ? `Lead · ${n} agent${n === 1 ? '' : 's'} working` : 'Project lead',
-      `<button class="pv-icon" data-hire title="Hire an agent here">${ICON.plus}</button>${here ? `<button class="pv-icon" data-go-building title="Go to the building">${ICON.map}</button>` : ''}`);
+      `<button class="pbtn sm ghost" data-project-page title="Open the project">Project</button>${here ? `<button class="pv-icon" data-go-building title="Go to the building">${ICON.map}</button>` : ''}`);
     html += `<div class="pv-scroll msgs">`;
     if (!list.length) {
       html += `<div class="msg-empty">${leadAvatar(r, repo).replace('lead-av', 'lead-av big')}<b>${esc(repo)} lead</b><p>The master agent for this project. It knows the code, the recent PRs and who's working in the building, and can send agents in. Text it from anywhere.</p></div>`;
@@ -857,7 +953,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     bindCommon();
     bindDispatchCards();
     viewEl.querySelector('[data-go-building]')?.addEventListener('click', () => { close(); void hooks.travelTo(repo); });
-    viewEl.querySelector('[data-hire]')!.addEventListener('click', () => { hireFrom = 'team'; go({ app: 'hire', repo }); });
+    viewEl.querySelector('[data-project-page]')!.addEventListener('click', () => { tab({ app: 'projects' }); go({ app: 'project', repo }); });
     const form = viewEl.querySelector('form')!;
     const input = form.querySelector('input')!;
     form.addEventListener('submit', (e) => {
@@ -934,7 +1030,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
       const text = body.value.trim();
       if (!text || sending.email) { body.focus(); return; }
       const subject = subj.value.trim() || 'Note from the field';
-      go({ app: 'mail' });
+      back();
       void send('email', text, subject);
     };
     viewEl.querySelector('[data-send]')!.addEventListener('click', submit);
@@ -942,54 +1038,8 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     setTimeout(() => (replySubject ? body : subj).focus(), 30);
   }
 
-  // ---- Review: everything waiting on you (questions, then finished work) ----
-  function renderReview() {
-    const list = inbox();
-    let html = header('Review', list.length ? `${list.length} waiting on you` : 'All caught up');
-    html += `<div class="pv-scroll review-inbox">`;
-    if (!list.length) html += `<div class="msg-empty"><b>Nothing to review</b><p>When an agent finishes, its work lands here and in the lobby of its building. Agents with a question will call you.</p></div>`;
-    for (const a of list) {
-      const asking = needsInput(a);
-      html += `<button class="lead-row rv-row-item" data-review="${esc(a.id)}">
-        <span class="ar-av ${a.status}">${esc(initials(a.name))}</span>
-        <div><div class="mi-row"><b>${esc(a.name)}</b><em class="chip ${asking ? 'needs_input' : 'done'}">${asking ? 'Question' : 'Review'}</em></div>
-        <span class="mi-subj">${esc(a.repo)}${a.diffStat ? ` · ${esc(a.diffStat)}` : ''}</span>
-        <p>${esc((asking ? a.question ?? '' : a.summary || a.task.split('\n')[0]).slice(0, 140))}</p></div></button>`;
-    }
-    html += `</div>`;
-    viewEl.innerHTML = html;
-    bindCommon();
-    viewEl.querySelectorAll<HTMLElement>('[data-review]').forEach((b) => b.addEventListener('click', () => {
-      track('phone_review', { agent: b.dataset.review });
-      openReview(b.dataset.review!);
-    }));
-  }
-
-  // ---- Agents ----
+  // ---- One agent: what it's doing, its live log, and its controls ----
   let logEl: HTMLElement | null = null;
-  function renderAgents() {
-    const v = view as Extract<View, { app: 'agents' }>;
-    const all = sortedAgents();
-    const a = v.open ? ctx.agents.get(v.open) : undefined;
-    if (a) return renderAgent(a);
-    const live = all.filter((x) => LIVE.has(x.status)).length;
-    let html = header('Agents', `${live} working · ${all.length} total`, `<button class="pv-icon" data-hire title="Hire an agent">${ICON.plus}</button>`);
-    html += `<div class="pv-scroll agent-list">`;
-    if (!all.length) html += `<div class="msg-empty"><b>No agents yet</b><p>Tap + to hire one in any project, or text HQ a task.</p></div>`;
-    for (const x of all) {
-      html += `<button class="agent-row" data-open="${esc(x.id)}">
-        <span class="ar-av ${x.status}">${esc(x.name.replace(/^Agent\s+/, '').slice(0, 2))}</span>
-        <div><div class="mi-row"><b>${esc(x.name)}</b><em class="chip ${x.status}">${STATUS_LABEL[x.status]}</em></div>
-        <span class="mi-subj">${esc(x.repo)}</span>
-        <p>${esc(LIVE.has(x.status) ? x.lastAction : x.task).slice(0, 90)}</p></div></button>`;
-    }
-    html += `</div>`;
-    viewEl.innerHTML = html;
-    bindCommon();
-    viewEl.querySelectorAll<HTMLElement>('[data-open]').forEach((b) => b.addEventListener('click', () => go({ app: 'agents', open: b.dataset.open })));
-    viewEl.querySelector('[data-hire]')!.addEventListener('click', () => { hireFrom = 'agents'; go({ app: 'hire' }); });
-  }
-
   function renderAgent(a: AgentInfo) {
     const working = LIVE.has(a.status);
     viewEl.innerHTML = `${header(esc(a.name), esc(a.repo))}
@@ -1007,8 +1057,8 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
           </dl>
         </div>
         <div class="ad-actions">
-          <button class="pbtn" data-go="${esc(a.repo)}">Go to building</button>
-          <button class="pbtn ghost" data-wp>Waypoint</button>
+          <button class="pbtn ghost" data-project-page>Project ›</button>
+          ${hooks.sites().some((s) => s.repo.name === a.repo) ? `<button class="pbtn ghost" data-go="${esc(a.repo)}">Go there</button>` : ''}
           ${working ? `<button class="pbtn danger" data-stop="${esc(a.id)}">Stop</button>` : ''}
           ${needsReview(a) ? `<button class="pbtn" data-review="${esc(a.id)}">Review changes</button>` : ''}
           ${needsInput(a) ? `<button class="pbtn" data-review="${esc(a.id)}">Answer</button>` : ''}
@@ -1017,12 +1067,12 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
         <div class="ad-log"><small>Loading…</small></div>
       </div>`;
     bindCommon();
-    viewEl.querySelector('[data-wp]')!.addEventListener('click', () => { hooks.setWaypoint(a.repo); close(); });
+    viewEl.querySelector('[data-project-page]')!.addEventListener('click', () => { tab({ app: 'projects' }); go({ app: 'project', repo: a.repo }); });
     bindAgentCards();
     logEl = viewEl.querySelector('.ad-log');
     const id = a.id;
     api.agentLog(id).then(({ events }) => {
-      if (!(view.app === 'agents' && view.open === id) || !logEl) return;
+      if (!(view.app === 'agent' && view.id === id) || !logEl) return;
       logEl.innerHTML = '';
       const shown = events.filter((e) => e.event.kind !== 'diff').slice(-40);
       if (!shown.length) logEl.innerHTML = '<small>No activity recorded (the log resets when the server restarts).</small>';
@@ -1053,42 +1103,12 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     }
   }
 
-  // ---- Maps ----
-  // ---------------------------------------------------------------- Today (the briefing) & Schedules
-  let schedulesBack: (() => boolean) | null = null;
-  let schedulesOff: (() => void) | null = null;
-  function renderToday() {
-    const b = currentBriefing();
-    viewEl.innerHTML = `${header('Today', 'While you were away', `<button class="pbtn sm ghost" data-sched>Schedules</button>`)}
-      <div class="pv-scroll"><div class="bf">${b ? briefingHtml(b) : '<p class="bf-since">Loading…</p>'}</div></div>`;
-    bindCommon();
-    viewEl.querySelector('[data-sched]')!.addEventListener('click', () => go({ app: 'schedules' }));
-    if (b) bindBriefing(viewEl, {
-      travelTo: (repo) => { close(); void hooks.travelTo(repo); },
-      openAgent: (id) => go({ app: 'agents', open: id }),
-    });
-  }
-  function renderSchedules() {
-    schedulesOff?.();
-    schedulesOff = renderSchedulesApp(viewEl, {
-      header: (t, sub) => header(esc(t), sub ? esc(sub) : ''),
-      bindCommon,
-      repos: () => ctx.repos.map((r) => r.name),
-      setBackHandler: (fn) => { schedulesBack = fn; },
-    }, { repo: view.app === 'schedules' ? view.repo : undefined });
-  }
-  // The briefing changes as agents finish and schedules run: keep Today and the home widget current.
-  loadBriefing().then(() => { if (isOpen && (view.app === 'home' || view.app === 'today')) refresh(); }).catch(() => {});
-  onLive((msg) => {
-    if (msg.type !== 'agent:update' && msg.type !== 'pulse:update' && msg.type !== 'schedule:update') return;
-    setTimeout(() => { if (isOpen && (view.app === 'home' || view.app === 'today')) refresh(); }, 2200);
-  });
-
+  // ---- Map: your apartment and every project building here ----
   function renderMaps() {
     const sites = hooks.sites();
     const busy = new Map<string, number>();
     for (const a of ctx.agents.values()) if (LIVE.has(a.status)) busy.set(a.repo, (busy.get(a.repo) ?? 0) + 1);
-    viewEl.innerHTML = `${header('Maps', esc(hooks.placeName?.() ?? `${sites.length} buildings`))}
+    viewEl.innerHTML = `${tabHeader('Map')}<p class="pv-tabsub">${esc(hooks.placeName?.() ?? `${sites.length} buildings`)}</p>
       <div class="maps-search"><input data-keep="maps" placeholder="Search projects" autocomplete="off" /></div>
       <div class="pv-scroll maps-list"></div>`;
     bindCommon();
@@ -1157,7 +1177,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
 
   updateBadge();
   return {
-    open, openThread, close, toggle, isOpen: () => isOpen, app: () => (isOpen ? view.app : null),
+    open, openThread, openProject, openAgent, close, toggle, isOpen: () => isOpen, app: () => (isOpen ? view.app : null),
     threads,
     messages: threadMessages,
     send: (id, text) => (id === 'hq' ? send('text', text) : sendLead(id.replace(/^repo:/, ''), text)),
@@ -1205,6 +1225,8 @@ function since(start: string, end: string | null) {
 
 const svg = (d: string, fill = false) => `<svg viewBox="0 0 24 24" ${fill ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'}>${d}</svg>`;
 const ICON = {
+  home: svg('<path d="M3 11l9-7 9 7"/><path d="M5 10v10h5v-6h4v6h5V10"/>'),
+  grid: svg('<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>'),
   check: svg('<path d="M4 12.5l5 5L20 6.5"/>'),
   phone: svg('<rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10.5 18.5h3"/>'),
   messages: svg('<path d="M12 3C6.5 3 2 6.7 2 11.2c0 2.6 1.5 4.9 3.8 6.4L5 21l4-2.2c1 .3 2 .4 3 .4 5.5 0 10-3.7 10-8.2S17.5 3 12 3z"/>', true),

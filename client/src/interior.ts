@@ -23,6 +23,7 @@ import { openReview } from './ui/review.ts';
 import { pulse } from './pulse.ts';
 import { drawIssueBoard, drawShelfSign, makeCarryBox, makeCrate, openPrShelf } from './rooms/work.ts';
 import { BOARD, openBoardroomPanel } from './ui/boardroomPanel.ts';
+import { keymap } from './keymap.ts';
 
 export interface Interior extends Scene3D {
   world: PlayerWorld;
@@ -717,7 +718,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
     b.box(mat.metal, w, 0.02, 0.02, [x, 1.5, z + 0.27]);
     solid(x - w / 2, z - 0.3, x + w / 2, z + 0.3, 2);
     const { c } = canvas(640, 128);
-    drawShelfSign(c, 'Pull requests', 'Open on GitHub · press E on a parcel', '#4fd1ff');
+    drawShelfSign(c, 'Pull requests', `Open on GitHub · press ${keymap.label('interact')} on a parcel`, '#4fd1ff');
     const g = new THREE.PlaneGeometry(1.6, 0.32);
     geos.push(g);
     const m = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: T(texFrom(c)), toneMapped: false })));
@@ -735,7 +736,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
     b.box(mat.light, w - 0.2, 0.02, 0.02, [x, 0.05, z - 0.38]);
     solid(x - w / 2, z - 0.42, x + w / 2, z + 0.42, 1.2);
     const { c } = canvas(640, 128);
-    drawShelfSign(c, 'Ready for review', 'Finished agent runs · press E', '#2ee6c9');
+    drawShelfSign(c, 'Ready for review', `Finished agent runs · press ${keymap.label('interact')}`, '#2ee6c9');
     const g = new THREE.PlaneGeometry(1.6, 0.32);
     geos.push(g);
     const m = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: T(texFrom(c)), toneMapped: false })));
@@ -862,7 +863,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
     const { c, g } = canvas(400, 300);
     g.fillStyle = '#071a14'; g.fillRect(0, 0, 400, 300);
     g.fillStyle = '#3ddc97'; g.font = '800 44px Inter, sans-serif'; g.fillText('Hire an', 30, 110); g.fillText('agent', 30, 160);
-    g.fillStyle = '#9aa6b8'; g.font = '500 24px Inter, sans-serif'; g.fillText('Claude Code · press E', 30, 220);
+    g.fillStyle = '#9aa6b8'; g.font = '500 24px Inter, sans-serif'; g.fillText(`Claude Code · press ${keymap.label('interact')}`, 30, 220);
     const geo = new THREE.PlaneGeometry(0.7, 0.52);
     geos.push(geo);
     const m = new THREE.Mesh(geo, M(new THREE.MeshBasicMaterial({ map: T(texFrom(c)), toneMapped: false })));

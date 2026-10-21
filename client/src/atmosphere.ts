@@ -83,7 +83,9 @@ const RAYMASK = /* glsl */ `
   varying vec2 vUv;
   void main() {
     float sky = step(0.99999, texture2D(tDepth, vUv).x);
-    vec3 c = texture2D(tColor, vUv).rgb;
+    // Same HDR cap as the composite: a lone sun glint off glass at a sky edge (thousands of times
+    // brighter than the sky) would otherwise be smeared into a long white bar across the screen.
+    vec3 c = min(texture2D(tColor, vUv).rgb, vec3(3.0));
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
     vec2 d = (vUv - uSun) * vec2(uAspect, 1.0);
     float fall = pow(clamp(1.0 - length(d) / 0.55, 0.0, 1.0), 2.0);

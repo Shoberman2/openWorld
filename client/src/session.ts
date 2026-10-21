@@ -23,7 +23,7 @@ export interface SavedSession {
   inside: { kind: 'hq'; repo: string; floor: number } | { kind: 'home' } | null;
   hour: number;
   phoneApp: string | null;
-  /** For the landing page: "Inside your HQ, floor 2" / "Times Square, New York". */
+  /** For the landing page: "Inside my-app HQ, floor 2" / "Times Square, New York". */
   label: string;
   savedAt: number;
 }

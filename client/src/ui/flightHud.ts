@@ -53,7 +53,7 @@ export function installFlightHud() {
         const mach = f.kind === 'shuttle' || f.speed > 150 ? `<div class="col"><span>M ${(f.speed / 340).toFixed(2)}</span><small>Mach</small></div>` : '';
         const thr = f.throttle != null ? `<div class="col"><div class="thr"><i style="width:${Math.round(f.throttle * 100)}%"></i></div><small>Throttle ${Math.round(f.throttle * 100)}%</small></div>` : '';
         const g = f.g != null ? `<div class="col"><span>${f.g.toFixed(1)} g</span><small>Load</small></div>` : '';
-        const label = f.kind === 'wingsuit' ? (f.burning ? 'WINGSUIT · ROCKETS' : 'WINGSUIT') : f.kind === 'shuttle' ? 'ROCKET' : f.kind === 'rockets' ? 'ROCKETS' : 'PROP';
+        const label = f.kind === 'wingsuit' ? (f.burning ? 'WINGSUIT · THRUSTERS' : 'WINGSUIT') : f.kind === 'shuttle' ? 'ROCKET' : f.kind === 'rockets' ? 'THRUSTERS' : 'PROP';
         const tag = `<span class="tag ${f.kind === 'shuttle' ? 'rocket' : ''}">${label}</span>${f.burst ? '<span class="tag hot">BURST</span>' : ''}`;
         html = `<div class="spd">${spd}</div>${mach}<div class="col"><span>${alt}</span><small>${climb}</small></div>${thr}${g}${tag}`;
       }

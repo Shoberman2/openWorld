@@ -168,7 +168,7 @@ export class WristPhone {
     p.button('exit', 16, LIST_TOP + 10 + 4 * 84 + 10, W - 32, 64, 'Exit VR', () => this.h.exitVr(), { size: 24, fill: 'rgba(255,77,94,0.45)' });
     p.text('Left stick move · click or grip: run', W / 2, 560, 18, '#aab', 400, 'center');
     p.text('Right stick turn · down: dive · click: view', W / 2, 588, 18, '#aab', 400, 'center');
-    p.text('A jump, hold for rocket shoes · B / trigger: use', W / 2, 616, 18, '#aab', 400, 'center');
+    p.text('A jump, hold for thrusters · B / trigger: use', W / 2, 616, 18, '#aab', 400, 'center');
     p.text('X this phone · Y next vehicle', W / 2, 644, 18, '#aab', 400, 'center');
   }
 }

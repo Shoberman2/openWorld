@@ -409,6 +409,8 @@ export function buildingMaterial() {
             shopLit = shopfront(u, v, W, base0, gH, seed, gk > 0.5 ? gk : 2.0, vec3(0.5, 0.5, 0.5), px, cb, spu, sDepth, sKind);
             diffuseColor.rgb = mix(diffuseColor.rgb, cb, base0);
             win *= 1.0 - base0; metal *= 1.0 - base0; lit *= 1.0 - base0;
+            // Plate glass at street level mirrors the street by day (the shop behind is darker than outside).
+            metal += shopLit * base0 * 0.3 * day;
             rough = mix(rough, mix(0.5, 0.88, 1.0 - shopLit), base0);
             if (win > 0.01 && near > 0.0) {
               vec2 pu = vec2(fract(fu), (fract(fv) - spH) / (1.0 - spH));
@@ -419,7 +421,7 @@ export function buildingMaterial() {
             }
             if (shopLit > 0.01) {
               float nearS = (1.0 - smoothstep(0.03, 0.08, px)) * uRooms;
-              roomE += owRoom(spu, vec3(R.x / 1.6, R.y / 3.0, R.z / 1.6), vec2(0.4, 0.1), sDepth, seed + floor(u / 7.5), sKind, mix(0.45, 0.85, uNight), day) * shopLit * nearS;
+              roomE += owRoom(spu, vec3(R.x / 1.6, R.y / 3.0, R.z / 1.6), vec2(0.4, 0.1), sDepth, seed + floor(u / 7.5), sKind, mix(0.45, 0.85, uNight), day) * shopLit * nearS * mix(0.6, 1.0, uNight);
               shopLit *= 1.0 - nearS;
             }
           } else {
@@ -604,6 +606,7 @@ export function buildingMaterial() {
             lit = paneG * on * (1.0 - blind * 0.5) * (0.75 + 0.35 * fr.y);
             litTint = fract(hs * 31.7);
             shopLit = shop;
+            metal = shop * 0.3 * day;
             // Up close: rooms behind the glass, with parallax.
             float near = (1.0 - smoothstep(0.025, 0.06, px / min(bayW, floorH))) * uRooms;
             if (paneG > 0.01 && near > 0.0) {
@@ -615,7 +618,7 @@ export function buildingMaterial() {
             }
             if (shop > 0.01) {
               float nearS = (1.0 - smoothstep(0.03, 0.08, px)) * uRooms;
-              roomE += owRoom(spu, vec3(R.x / 1.6, R.y / 3.0, R.z / 1.6), vec2(0.4, 0.1), sDepth, seed + floor(u / 7.5), sKind, mix(0.45, 0.85, uNight), day) * shop * nearS;
+              roomE += owRoom(spu, vec3(R.x / 1.6, R.y / 3.0, R.z / 1.6), vec2(0.4, 0.1), sDepth, seed + floor(u / 7.5), sKind, mix(0.45, 0.85, uNight), day) * shop * nearS * mix(0.6, 1.0, uNight);
               shopLit *= 1.0 - nearS;
             }
             // The lobby behind the entrance door.
@@ -673,7 +676,7 @@ export function buildingMaterial() {
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
         ${NEUTRAL_SHADE}`);
   };
-  mat.customProgramCacheKey = () => 'earth-building-v6';
+  mat.customProgramCacheKey = () => 'earth-building-v7';
   mat.userData.quality = facadeQuality;
   buildingMat = mat;
   return mat;
@@ -922,8 +925,11 @@ function street<T extends THREE.MeshStandardMaterial>(m: T, kind: 'road' | 'walk
               sRough = 0.92;
             }
           ` : kind === 'paint' ? `
-            // Fresh paint.
-            sRough = 0.6;
+            // Road paint: bright but scuffed by tires, worn thin in patches where the asphalt shows through.
+            float wear = smoothstep(0.42, 0.8, evn(sp * 1.1) * 0.55 + evn(sp * 5.0) * 0.3 + grit * 0.15 * sfine);
+            c *= 0.88 + 0.06 * mid;
+            c = mix(c, vec3(0.2, 0.205, 0.21), wear * 0.55);
+            sRough = 0.6 + 0.25 * wear;
           ` : `
             // Concrete deck and piers: weathered, streaky.
             c *= 0.8 + 0.25 * big + 0.1 * mid;
@@ -937,7 +943,7 @@ function street<T extends THREE.MeshStandardMaterial>(m: T, kind: 'road' | 'walk
         ${NEUTRAL_SHADE}
         ${NIGHT_GLOW}`);
   };
-  m.customProgramCacheKey = () => `earth-street-${kind}-v5`;
+  m.customProgramCacheKey = () => `earth-street-${kind}-v6`;
   return m;
 }
 
@@ -1180,6 +1186,25 @@ export function palmTree() {
 export const treeMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, side: THREE.DoubleSide, alphaTest: 0.5, alphaToCoverage: !quality.low });
 treeMat.map = leafAtlas();
 treeMat.onBeforeCompile = (sh) => {
+  // Wind: the crown sways (more toward the top, each tree out of step) and the leaves flutter.
+  sh.uniforms.uTime = shared.uTime;
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', `#include <common>
+      uniform float uTime;`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+      {
+        float hh = max(0.0, position.y - 2.4);
+        #ifdef USE_INSTANCING
+          vec3 ip = instanceMatrix[3].xyz;
+        #else
+          vec3 ip = vec3(0.0);
+        #endif
+        float ph = dot(ip.xz, vec2(0.131, 0.173));
+        float sway = sin(uTime * 1.05 + ph) * 0.65 + sin(uTime * 2.2 + ph * 1.7) * 0.3;
+        transformed.x += sway * hh * 0.035;
+        transformed.z += sway * hh * 0.02;
+        transformed += normal * sin(uTime * 5.5 + dot(position, vec3(3.1, 1.7, 2.3)) + ph) * 0.025 * step(2.4, position.y);
+      }`);
   sh.fragmentShader = sh.fragmentShader
     .replace('#include <color_fragment>', `#include <color_fragment>
       float leafy = smoothstep(0.0, 0.03, diffuseColor.g - diffuseColor.r);
@@ -1202,7 +1227,7 @@ treeMat.onBeforeCompile = (sh) => {
       #endif
       ${NEUTRAL_SHADE}`);
 };
-treeMat.customProgramCacheKey = () => 'earth-tree-v4';
+treeMat.customProgramCacheKey = () => 'earth-tree-v5';
 
 export function lampGeometries() {
   const pole = mergeGeometries([

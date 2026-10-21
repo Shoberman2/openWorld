@@ -2,7 +2,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeTypes, pickType, type CarType, type TypeId } from '../traffic.ts';
-import { shared } from '../engine.ts';
+import { quality, shared } from '../engine.ts';
+import { carPaintMaterial } from '../carPaint.ts';
 import { Crowd, type CrowdMember } from './crowd.ts';
 import { along, approachGroup, signalState, type NEdge, type NNode, type RoadNet } from './net.ts';
 
@@ -110,7 +111,7 @@ export class EarthTraffic {
     for (let i = 0; i < bikes; i++) plan.splice(Math.floor(((i + 0.5) / bikes) * plan.length), 0, 'bike');
     plan.forEach((t) => want[t]++);
     // Glossy automotive paint: metallic flake under a clear coat, reflecting the sky.
-    const bodyMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.28, metalness: 0.45, envMapIntensity: 1.2 });
+    const bodyMat = carPaintMaterial(quality.low);
     for (const t of this.types) {
       const n = Math.max(1, want[t.id]);
       const b = new THREE.InstancedMesh(t.body, bodyMat, n), li = new THREE.InstancedMesh(t.lights, this.lightMat, n);

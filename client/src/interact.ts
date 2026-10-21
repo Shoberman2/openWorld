@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { kbd } from './keymap.ts';
 
 export interface Interactable {
   id: string;
@@ -33,7 +34,7 @@ export class Interactions {
     }
     this.current = best;
     if (best && show) {
-      this.promptEl.innerHTML = `<kbd>E</kbd>${esc(best.label)}${best.sub ? `<small>${esc(best.sub)}</small>` : ''}`;
+      this.promptEl.innerHTML = `${kbd('interact')}${esc(best.label)}${best.sub ? `<small>${esc(best.sub)}</small>` : ''}`;
       this.promptEl.classList.remove('hidden');
     } else {
       this.promptEl.classList.add('hidden');

@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import type { Robot } from './robot.ts';
+import { SPRAWL_T, type Robot } from './robot.ts';
+import { BodySounds } from './audio.ts';
+import { Bursts, SpeedVignette, WindStreaks } from './fx/air.ts';
 import type { Input } from './input.ts';
 import { makeVehicle, Plane, Shuttle, type Vehicle, type VehicleId, type VehicleWorld } from './vehicles/index.ts';
 
@@ -165,8 +167,17 @@ export interface PlayerWorld {
 
 export type MoveMode = 'walk' | 'air' | 'fly' | 'swim';
 
-const GRAVITY = 24;
-const JUMP = 7.2;
+// Real gravity. A standing jump clears ~0.9 m; skydiving terminal velocity is ~55 m/s belly-down,
+// ~85 m/s head-down (C), from quadratic drag (a = k·v², terminal where k·v² = g).
+const GRAVITY = 9.81;
+const JUMP = 4.2;
+const FALL_DRAG = GRAVITY / (55 * 55);
+const DIVE_DRAG = GRAVITY / (85 * 85);
+/** Seconds of crouch before a held Space blasts off from the ground (a tap jumps after JUMP_CROUCH). */
+const LAUNCH_CROUCH = 0.24;
+const JUMP_CROUCH = 0.09;
+const DUST: [number, number, number] = [0.66, 0.61, 0.54];
+const SMOKE: [number, number, number] = [0.9, 0.9, 0.92];
 // Rocket shoes (m/s²). Thrust against quadratic drag gives the top speeds: ~38 m/s (85 mph)
 // cruising, ~95 m/s (210 mph) on the afterburner, ~28 m/s straight up.
 const LAUNCH_KICK = 13; // m/s added on ignition
@@ -186,7 +197,7 @@ export class Player {
   yaw = 0; // camera yaw
   pitch = 0.18;
   facing = 0; // character yaw
-  distance = 4.4;
+  distance = 3.2;
   speed = 0; // horizontal speed, m/s
   mode: MoveMode = 'walk';
   camCollide = true;
@@ -210,6 +221,29 @@ export class Player {
   private fovKick = 0;
   private shake = 0;
   private spaceWas = false;
+  /** Seconds into the pre-launch crouch (-1 when not crouching). */
+  private crouchT = -1;
+  /** Tumbling: seconds of forced tumble left, spin rates (rad/s), the body's current tumble angles. */
+  private tumbleT = 0;
+  private loose = 0;
+  private spin = new THREE.Vector2();
+  private tumbleRot = new THREE.Vector2();
+  private wasBurn = false;
+  /** Seconds since the rockets last burned (in 'fly'). */
+  private coast = 0;
+  /** Camera spring: landing dip (m) and its velocity; the camera's collision-limited distance. */
+  private dipY = 0;
+  private dipV = 0;
+  private camDist = -1;
+  private frameDt = 1 / 60;
+  /** Air rushing past: speed lines, edge vignette, smoke and dust bursts, and the sound of it. */
+  readonly sfx = new BodySounds();
+  private streaks = new WindStreaks();
+  private vignette = new SpeedVignette();
+  private bursts = new Bursts();
+  private fxPos = new THREE.Vector3();
+  private airVel = new THREE.Vector3();
+  private haveFxPos = false;
   /** What you're riding ('foot' when walking). */
   vehicle: VehicleId = 'foot';
   /** Wingsuit out (Q in the air): glide, steer with the camera and A/D, rockets still burn. */
@@ -243,8 +277,10 @@ export class Player {
   constructor(public ch: Robot, private input: Input, private camera: THREE.PerspectiveCamera) {
     window.addEventListener('wheel', (e) => {
       if (!this.input.enabled) return;
-      this.zoom = THREE.MathUtils.clamp(this.zoom + e.deltaY * 0.004, -2, 10);
+      this.zoom = THREE.MathUtils.clamp(this.zoom + e.deltaY * 0.004, -1.4, 10);
     }, { passive: true });
+    // Tumbling turns the body about the hips: yaw first, then pitch and roll.
+    ch.root.rotation.order = 'YXZ';
   }
 
   setWorld(world: PlayerWorld, pos: THREE.Vector3, facing = 0) {
@@ -260,6 +296,9 @@ export class Player {
     this.ch.root.rotation.set(0, facing, 0);
     this.ch.rockets = 0;
     this.kick = 0; this.boost = 0; this.stun = 0;
+    this.crouchT = -1; this.tumbleT = 0; this.loose = 0; this.tumbleRot.set(0, 0);
+    this.haveFxPos = false;
+    this.ch.root.rotation.x = this.ch.root.rotation.z = 0;
     this.ch.play('idle');
     this.snapCamera();
   }
@@ -270,6 +309,7 @@ export class Player {
     map(this.camPos);
     map(this.lastHead);
     map(this.camera.position);
+    map(this.fxPos);
     if (this.ride) { map(this.ride.pos); this.ride.sync(0); this.ride.robotRoot(this.ch.root.position); }
     else this.ch.root.position.copy(this.position);
   }
@@ -293,6 +333,7 @@ export class Player {
   get flying() { return this.mode === 'fly' || this.mode === 'air'; }
 
   update(dt: number) {
+    this.frameDt = dt;
     const m = this.input.consumeMouse();
     this.yaw -= m.x * 0.0024;
     this.pitch = THREE.MathUtils.clamp(this.pitch + m.y * 0.0022, -0.7, 1.35);
@@ -324,20 +365,22 @@ export class Player {
     if (this.mode === 'walk' || this.mode === 'swim') {
       const swim = this.mode === 'swim';
       if (this.stun > 0) {
-        // Rolling or stumbling out of a hard landing: momentum, no control.
+        // Rolling or stumbling out of a hard landing: momentum, no control (a sprawl stops dead).
         this.stun -= dt;
-        this.speed = THREE.MathUtils.damp(this.speed, 0, 2.2, dt);
+        this.speed = THREE.MathUtils.damp(this.speed, 0, this.ch.state === 'sprawl' ? 7 : 2.2, dt);
         v.x = Math.sin(this.facing) * this.speed; v.z = Math.cos(this.facing) * this.speed;
         p.x += v.x * dt; p.z += v.z * dt;
         ground = this.surface(p.x, p.z, p.y);
         if (ground < p.y - 1.2) { this.mode = 'air'; v.y = 0; } else p.y = ground;
       } else {
-        const target = moving ? (swim ? (shift ? 3.4 : 2.1) : shift ? 7.2 : 3.2) : 0;
-        this.speed = THREE.MathUtils.damp(this.speed, target, swim ? 3 : 10, dt);
+        const crouching = this.crouchT >= 0;
+        const target = moving ? (swim ? (shift ? 3.4 : 2.1) : shift ? 7.2 : 3.2) * (crouching ? 0.35 : 1) : 0;
+        // A body has weight: it takes a moment to get up to speed and a little longer to stop.
+        this.speed = THREE.MathUtils.damp(this.speed, target, swim ? 3 : target > this.speed ? 6.5 : 8.5, dt);
         if (moving) {
           this.turnToward(Math.atan2(dir.x, dir.z), dt, 12);
-          v.x = dir.x * this.speed; v.z = dir.z * this.speed;
-        } else { v.x *= Math.exp(-dt * 10); v.z *= Math.exp(-dt * 10); }
+          v.x = THREE.MathUtils.damp(v.x, dir.x * this.speed, 14, dt); v.z = THREE.MathUtils.damp(v.z, dir.z * this.speed, 14, dt);
+        } else { v.x *= Math.exp(-dt * 8.5); v.z *= Math.exp(-dt * 8.5); this.speed = Math.hypot(v.x, v.z); }
         p.x += v.x * dt; p.z += v.z * dt;
         ground = this.surface(p.x, p.z, p.y);
         const wy = this.world.water ? this.world.water(p.x, p.z) : NaN;
@@ -348,9 +391,22 @@ export class Player {
           if (ground < p.y - 1.2) { this.mode = 'air'; v.y = 0; } // walked off a ledge
           else p.y = ground;
         }
-        if (pressed) {
-          if (this.mode === 'swim' && canFly) { this.mode = 'fly'; v.y = LAUNCH_KICK; this.kick = 1; } // blast out of the water
-          else if (this.mode === 'walk') { this.mode = 'air'; v.y = JUMP; this.ch.play('jump'); this.rocketHold = 0; }
+        if (pressed && this.mode === 'swim' && canFly) { this.mode = 'fly'; v.y = LAUNCH_KICK; this.ignite(false); } // blast out of the water
+        else if (pressed && this.mode === 'walk' && !crouching) {
+          // Anticipation: sink into a crouch first. Let go quickly for a jump; keep holding to launch.
+          if (canFly) { this.crouchT = 0; this.ch.play('crouch'); }
+          else this.jump();
+        } else if (crouching) {
+          this.crouchT += dt;
+          if (this.mode !== 'walk') this.crouchT = -1;
+          else if (space && this.crouchT >= LAUNCH_CROUCH) {
+            // Lift-off: thrown off the ground on the ignition kick, then the burn carries you.
+            this.crouchT = -1;
+            this.mode = 'fly';
+            v.y = LAUNCH_KICK * 1.25;
+            this.rocketHold = 0;
+            this.ignite(true);
+          } else if (!space && this.crouchT >= JUMP_CROUCH) { this.crouchT = -1; this.jump(); }
         }
       }
     } else {
@@ -370,31 +426,40 @@ export class Player {
         if (canFly && this.mode === 'air' && space && (pressed || this.rocketHold > 0.22)) {
           this.mode = 'fly';
           v.y = Math.max(v.y, 0) + LAUNCH_KICK; // ignition: you get thrown up, not lifted
-          this.kick = 1; this.shake = Math.max(this.shake, 0.35);
+          this.ignite(false);
         }
         if (this.mode === 'fly' && dive) this.mode = 'air';
         const fly = canFly && this.mode === 'fly';
         const burn = fly && space;
-        const boost = fly && shift && (space || moving);
+        // Letting go of a burn: the flames cough out.
+        if (this.wasBurn && !burn && this.ch.rockets > 0.45) {
+          this.ch.sputter = 0.42;
+          this.sfx.sputter();
+          this.bursts.puff(this.feet(), new THREE.Vector3(0, -1, 0), 6, 2.5, 0.35, 0.9, SMOKE);
+        }
+        this.wasBurn = burn;
+        this.updateTumble(dt, moving || space || dive || shift);
+        // Space is the only thrust. Shift is the afterburner on top of a burn; W/A/S/D only steer.
+        const boost = burn && shift;
         this.boost = THREE.MathUtils.damp(this.boost, boost ? 1 : 0, boost ? 4 : 1.5, dt);
-        const acc = new THREE.Vector3(0, -GRAVITY * (dive ? 1.8 : 1), 0);
+        const acc = new THREE.Vector3(0, -GRAVITY, 0);
         if (fly) {
           // Fly where you look: camera pitch aims the climb while you're moving.
           const aim = moving ? THREE.MathUtils.clamp(0.1 - (this.pitch - 0.18) * 2.4, -1, 1) : 1;
-          if (burn) acc.y += GRAVITY + CLIMB * (1 + this.boost * 0.8) * aim;
-          if (moving) acc.addScaledVector(dir, THRUST * (1 + this.boost * (BOOST - 1)));
-          else if (burn) { v.x *= Math.exp(-dt * 1.2); v.z *= Math.exp(-dt * 1.2); } // hold to brake into a hover-climb
-          // A body in a fast dive/glide makes a little lift, so a released burn is an arc, not a brick.
-          const hs0 = Math.hypot(v.x, v.z);
-          if (!burn) acc.y += Math.min(GRAVITY * 0.45, hs0 * hs0 * 0.008);
+          if (burn) {
+            acc.y += GRAVITY + CLIMB * (1 + this.boost * 0.8) * aim;
+            if (moving) acc.addScaledVector(dir, THRUST * (1 + this.boost * (BOOST - 1)));
+            else { v.x *= Math.exp(-dt * 1.2); v.z *= Math.exp(-dt * 1.2); } // hold to brake into a hover-climb
+          } else if (moving) acc.addScaledVector(dir, 6); // rockets off: only body steering, no lift
         } else if (moving) acc.addScaledVector(dir, 6); // air control on a jump
-        // Quadratic air drag: speed builds and tops out instead of snapping to a fixed rate.
-        const k = fly ? THREE.MathUtils.lerp(DRAG, DRAG_BOOST, this.boost) : 0.004;
+        // Quadratic air drag: speed builds and tops out instead of snapping to a fixed rate. Falling,
+        // your body is the brake: spread belly-down (~55 m/s) or tucked head-down on C (~85 m/s).
+        const k = fly ? THREE.MathUtils.lerp(DRAG, DRAG_BOOST, this.boost) : dive && this.tumbleT <= 0 ? DIVE_DRAG : FALL_DRAG * (this.tumbling ? 1.15 : 1);
         const vs = v.length();
         acc.addScaledVector(v, -k * vs);
         v.addScaledVector(acc, dt);
         if (moving && this.speed > 1) this.turnToward(Math.atan2(v.x, v.z), dt, fly ? 3.5 : 5);
-        v.y = Math.max(v.y, -75);
+        v.y = Math.max(v.y, -110);
         p.addScaledVector(v, dt);
         this.speed = Math.hypot(v.x, v.z);
         ground = this.surface(p.x, p.z, p.y);
@@ -405,8 +470,11 @@ export class Player {
         } else if (p.y <= ground) this.touchDown(ground);
         // Flames: idle pilot light when coasting, full burn on Space, long afterburner on boost.
         this.kick = Math.max(0, this.kick - dt * 2.5);
-        const want = fly ? (burn || moving ? 0.75 + 0.75 * this.boost : 0.18) + this.kick * 0.6 : 0;
+        const want = fly ? (burn ? 0.75 + 0.75 * this.boost : 0.18) + this.kick * 0.6 : 0;
         this.ch.rockets = THREE.MathUtils.damp(this.ch.rockets, want, 12, dt);
+        // Off the burn for a moment you're just falling (pose and drag), until Space lights them again.
+        this.coast = burn ? 0 : this.coast + dt;
+        if (this.mode === 'fly' && this.coast > 0.8) this.mode = 'air';
         // Pose: pitch toward the velocity (Iron-Man flat at speed, upright on a vertical climb),
         // bank by how hard you're turning.
         const hs = this.speed, vy = v.y;
@@ -416,9 +484,20 @@ export class Player {
         this.ch.lean.x = fly ? THREE.MathUtils.clamp((-turnRate * hs) / 18, -1, 1) : 0;
       }
     }
-    if (!this.flying) this.wingsuit = false;
+    if (!this.flying) { this.wingsuit = false; this.wasBurn = false; }
+    if (this.mode !== 'air' || this.wingsuit) { this.tumbleT = 0; this.loose = 0; }
     this.ch.wings = THREE.MathUtils.damp(this.ch.wings, this.wingsuit ? 1 : 0, 6, dt);
-    if (this.mode === 'walk' || this.mode === 'swim') { this.ch.rockets = THREE.MathUtils.damp(this.ch.rockets, 0, 12, dt); this.ch.lean.x = 0; this.ch.lean.z = 0; }
+    if (this.mode === 'walk' || this.mode === 'swim') {
+      this.ch.rockets = THREE.MathUtils.damp(this.ch.rockets, 0, 12, dt);
+      // Lean into turns on foot, harder the faster you're going.
+      const tr = this.turnRate(this.facing, this.speed, dt);
+      this.ch.lean.x = this.mode === 'walk' ? THREE.MathUtils.clamp((-tr * this.speed) / 10, -1, 1) : 0;
+      this.ch.lean.z = 0;
+    } else if (this.mode === 'air' && !this.wingsuit) {
+      // Falling: C tucks head-down; strafing banks the arch.
+      this.ch.lean.z = dive ? 1 : 0;
+      this.ch.lean.x = THREE.MathUtils.clamp(-ax.x * 0.8, -1, 1);
+    }
     void inWater; void swimY;
 
     const before = p.clone();
@@ -443,13 +522,121 @@ export class Player {
     ch.speed = this.speed;
     if (this.mode === 'fly' || (this.wingsuit && this.mode === 'air')) ch.play('fly');
     else if (this.mode === 'air') ch.play(this.vel.y > 1 ? 'jump' : 'fall');
-    else if (ch.state !== 'land' && ch.state !== 'roll' && ch.state !== 'wave' && ch.state !== 'sit') ch.play(this.speed > 3.6 ? 'run' : this.speed > 0.4 ? 'walk' : 'idle');
+    else if (this.crouchT >= 0) ch.play('crouch');
+    else if (ch.state !== 'land' && ch.state !== 'roll' && ch.state !== 'sprawl' && ch.state !== 'wave' && ch.state !== 'sit') ch.play(this.speed > 3.6 ? 'run' : this.speed > 0.4 ? 'walk' : 'idle');
     else if (ch.state === 'sit' && moving) ch.play('walk');
-    ch.root.position.copy(p);
-    ch.root.rotation.y = this.facing;
+    // A long fall: unless you're steering the view, the camera tips down to show the ground coming.
+    if (this.mode === 'air' && !this.wingsuit && this.vel.y < -15 && this.clock - this.lastMouse > 1) {
+      this.pitch = THREE.MathUtils.damp(this.pitch, 0.8, 0.8, dt);
+    }
+    // A tumble flails (the arch needs control to hold); otherwise the pose follows the airspeed.
+    ch.airspeed = this.mode === 'air' ? (this.tumbling ? Math.min(6, this.vel.length()) : this.vel.length()) : 0;
+    this.placeBody(p, dt);
     ch.update(dt);
 
     this.updateCamera(dt);
+    this.updateFx(dt);
+  }
+
+  private jump() {
+    this.mode = 'air';
+    this.vel.y = JUMP;
+    this.ch.play('jump');
+    this.rocketHold = 0;
+  }
+
+  /** Where the heel thrusters are (world), for smoke. */
+  private feet() {
+    return this.position.clone().add(new THREE.Vector3(0, 0.05, 0));
+  }
+
+  /**
+   * Ignition, the readable beat of a launch: a flash and fat flames at the feet, a smoke ring blown
+   * out around you, a dust ring along the ground if it's close, a whump, camera shake and a lens kick.
+   */
+  private ignite(fromGround: boolean) {
+    this.kick = 1;
+    this.shake = Math.max(this.shake, fromGround ? 0.6 : 0.35);
+    this.ch.flash = 1;
+    this.ch.sputter = 0;
+    this.sfx.ignite(fromGround ? 1 : 0.7);
+    const at = this.feet();
+    this.bursts.ring(at, fromGround ? 30 : 20, fromGround ? 6 : 4.5, fromGround ? 0.8 : 0.6, 1.5, SMOKE, fromGround ? 0.9 : 0);
+    this.bursts.puff(at, new THREE.Vector3(0, -1, 0), 10, 9, 0.45, 0.7, [0.72, 0.86, 1]);
+    const g = this.world.support ? this.world.support(at.x, at.z, at.y + 0.5) : this.world.groundY(at.x, at.z);
+    const h = at.y - g;
+    if (h < 6) {
+      const gp = new THREE.Vector3(at.x, g + 0.1, at.z);
+      const k = 1 - h / 6;
+      this.bursts.ring(gp, Math.round(26 + 20 * k), 9 + 6 * k, 1.1, 2.2, DUST, 0.25);
+    }
+  }
+
+  get tumbling() { return this.tumbleT > 0 || this.spin.lengthSq() > 0.01; }
+
+  /**
+   * Out of control in free fall you tumble: knocked into it (a wall slam, bailing out at speed), or
+   * just by falling fast with your hands off the controls for a while. Any input stabilizes you.
+   */
+  private updateTumble(dt: number, control: boolean) {
+    const falling = this.mode === 'air' && !this.wingsuit;
+    if (this.tumbleT > 0) this.tumbleT -= dt;
+    if (falling && !control && -this.vel.y > 22 && this.agl > 20) this.loose += dt; else this.loose = 0;
+    if (falling && this.loose > 1.4 && this.spin.lengthSq() < 0.01) this.spin.set(1.4 + Math.random() * 0.8, (Math.random() - 0.5) * 1.6);
+    const keep = this.tumbleT > 0 || (falling && !control && this.loose > 1.4);
+    if (!keep) this.spin.multiplyScalar(Math.exp(-dt * 5));
+    if (this.spin.lengthSq() < 0.01) this.spin.set(0, 0);
+    this.tumbleRot.x += this.spin.x * dt;
+    this.tumbleRot.y += this.spin.y * dt;
+  }
+
+  /** Knocked into a spin for `secs`, harder with `force` (0..1). */
+  private knock(secs: number, force: number) {
+    this.tumbleT = Math.max(this.tumbleT, secs);
+    const s = 3 + 5 * force;
+    this.spin.set((Math.random() < 0.5 ? -1 : 1) * s * (0.6 + Math.random() * 0.4), (Math.random() - 0.5) * s);
+  }
+
+  /** Put the body at p, facing; a tumble turns it about the hips rather than the feet. */
+  private placeBody(p: THREE.Vector3, dt: number) {
+    const ch = this.ch, r = this.tumbleRot;
+    if (!this.tumbling) {
+      // Unwind to upright along the short way round.
+      r.x = Math.atan2(Math.sin(r.x), Math.cos(r.x)); r.y = Math.atan2(Math.sin(r.y), Math.cos(r.y));
+      const d = this.mode === 'air' ? 4 : 30;
+      r.x *= Math.exp(-d * dt); r.y *= Math.exp(-d * dt);
+      if (Math.abs(r.x) < 1e-3) r.x = 0;
+      if (Math.abs(r.y) < 1e-3) r.y = 0;
+    }
+    ch.root.rotation.set(r.x, this.facing, r.y);
+    ch.root.position.copy(p);
+    if (r.x || r.y) {
+      const pivot = new THREE.Vector3(0, 0.9, 0);
+      const off = pivot.clone().applyEuler(ch.root.rotation);
+      ch.root.position.add(pivot.sub(off));
+    }
+  }
+
+  /** Speed lines, edge vignette, smoke and dust, wind and rocket sound: everything the air does. */
+  private updateFx(dt: number) {
+    const scene = this.ch.root.parent;
+    if (scene && this.bursts.group.parent !== scene) scene.add(this.bursts.group, this.streaks.group);
+    // Velocity through the air, measured (so it's right on foot, flying and riding alike).
+    const at = this.ride ? this.ride.pos : this.position;
+    if (this.haveFxPos && dt > 0) {
+      const m = at.clone().sub(this.fxPos).divideScalar(dt);
+      if (m.length() < 600) this.airVel.lerp(m, 1 - Math.exp(-dt * 12));
+    }
+    this.fxPos.copy(at); this.haveFxPos = true;
+    const indoor = this.world.canFly === false;
+    const air = this.airVel.length();
+    const show = !this.xrView && !indoor;
+    this.streaks.update(dt, this.camera.position, this.airVel, show);
+    this.vignette.update(air, show);
+    this.bursts.update(dt);
+    // In a car or boat the wind is mostly outside; in a plane or on a board it's in your face.
+    const exposed = !this.ride || this.ride instanceof Plane || this.vehicle === 'skate' || this.vehicle === 'bike';
+    this.sfx.update(dt, air * (exposed ? 1 : 0.45), this.ride ? 0 : this.ch.rockets, indoor);
   }
 
   /** Open or stow the wingsuit; only in the air, and not too close to the ground. */
@@ -473,7 +660,7 @@ export class Player {
    */
   private updateWingsuit(dt: number, ax: { x: number; y: number }, space: boolean, shift: boolean, dive: boolean) {
     const v = this.vel, p = this.position;
-    const burn = space || shift;
+    const burn = space; // Shift only adds the afterburner to a burn
     const want = THREE.MathUtils.clamp(-0.32 - ax.y * 0.4 - (dive ? 0.4 : 0) + (burn ? 0.32 + (shift ? 0.12 : 0) : 0), -1.0, burn ? 0.18 : -0.08);
     this.glide = THREE.MathUtils.damp(this.glide, want, 1.6, dt);
     // Steer: toward where the camera looks, plus A/D for a harder bank.
@@ -494,7 +681,7 @@ export class Player {
     this.speed = Math.hypot(v.x, v.z);
     this.mode = burn ? 'fly' : 'air';
     this.ch.rockets = THREE.MathUtils.damp(this.ch.rockets, burn ? 0.75 + (shift ? 0.6 : 0) : 0.0, 10, dt);
-    this.boost = THREE.MathUtils.damp(this.boost, shift ? 1 : 0, 3, dt);
+    this.boost = THREE.MathUtils.damp(this.boost, burn && shift ? 1 : 0, 3, dt);
     this.ch.lean.z = 1;
     this.ch.lean.x = this.wingBank;
   }
@@ -503,17 +690,36 @@ export class Player {
   private touchDown(ground: number) {
     const v = this.vel, p = this.position;
     const fall = -v.y, hs = Math.hypot(v.x, v.z);
+    const tumbling = this.tumbling;
     p.y = ground; v.y = 0;
     this.mode = 'walk';
     this.kick = 0;
-    if (hs > 16 || fall > 28) {
+    this.crouchT = -1;
+    this.tumbleT = 0; this.spin.set(0, 0); this.loose = 0;
+    // The ground answers: a thud, dust kicked up, and the camera dips with you.
+    const impact = fall + hs * 0.3;
+    this.sfx.thud(impact);
+    if (fall > 5 || hs > 10) {
+      const k = Math.min(1, impact / 45);
+      this.bursts.ring(p, Math.round(8 + 30 * k), 2 + 7 * k, 0.45 + 0.6 * k, 1 + 1.2 * k, DUST, 0.3);
+    }
+    this.dipV = -Math.min(3.2, fall / 9);
+    if (fall > 32 || (tumbling && fall > 14) || hs + fall > 62) {
+      // Far too fast to stick it: face down on the pavement, a beat, then up again.
+      if (hs > 1) this.facing = Math.atan2(v.x, v.z);
+      this.speed = Math.min(hs, 4);
+      this.stun = SPRAWL_T;
+      this.tumbleRot.set(0, 0);
+      this.ch.play('sprawl');
+      this.shake = 1;
+    } else if (hs > 12 || fall > 17) {
       // Too fast to stick it: tuck and roll along the way you were going.
       if (hs > 1) this.facing = Math.atan2(v.x, v.z);
       this.speed = Math.min(hs, 11);
       this.stun = 0.75;
       this.ch.play('roll');
       this.shake = Math.min(1, 0.5 + (hs + fall) / 120);
-    } else if (fall > 13 || hs > 9) {
+    } else if (fall > 6.5 || hs > 8) {
       this.speed = Math.min(hs, 7.2);
       this.ch.play('land');
       this.shake = Math.min(1, fall / 30 + 0.3);
@@ -533,6 +739,8 @@ export class Player {
       this.shake = Math.min(1, into / 40);
       v.x += n.x * into * 0.15; v.z += n.z * into * 0.15; // bounce off a little
       if (this.mode === 'fly' && into > 30) this.mode = 'air'; // knocked the burn out of you
+      if (into > 26 && this.mode === 'air') this.knock(1.1, Math.min(1, into / 60));
+      this.sfx.thud(into * 0.7);
     }
   }
 
@@ -554,9 +762,11 @@ export class Player {
 
   private desiredCamera(out: THREE.Vector3) {
     const r = this.ride;
-    const head = this.position.clone().add(new THREE.Vector3(0, r ? r.cam.height : 1.3, 0));
-    const flyBack = r ? Math.min(4, Math.abs(r.speed) / 15) : this.mode === 'fly' ? 2.5 + Math.min(3.5, this.vel.length() / 18) : this.mode === 'air' ? 1.5 : 0;
-    const dist = Math.max(1.6, (r ? r.cam.dist : this.distance) + flyBack + this.zoom);
+    const head = this.position.clone().add(new THREE.Vector3(0, r ? r.cam.height : 1.35, 0));
+    // Close on foot; the faster you go the more the camera falls back to show where you're headed.
+    const vs = this.vel.length();
+    const flyBack = r ? Math.min(4, Math.abs(r.speed) / 15) : this.mode === 'fly' ? 1.3 + Math.min(4.5, vs / 14) : this.mode === 'air' ? 0.4 + Math.min(2.4, vs / 20) : 0;
+    const dist = Math.max(1.5, (r ? r.cam.dist : this.distance) + flyBack + this.zoom);
     const back = new THREE.Vector3(
       -Math.sin(this.yaw) * Math.cos(this.pitch),
       Math.sin(this.pitch),
@@ -564,11 +774,15 @@ export class Player {
     );
     out.copy(head).addScaledVector(back, dist);
     // Over-the-shoulder offset (on foot).
-    const sh = r ? 0 : 0.4;
+    const sh = r ? 0 : 0.45;
     out.x += Math.cos(this.yaw) * -sh;
     out.z += -Math.sin(this.yaw) * -sh;
     const f = this.camCollide ? this.world.colliders.rayFraction(head, out) : 1;
-    out.lerpVectors(head, out, f);
+    // A wall pulls the camera in at once (never see through it) and lets it ease back out.
+    const full = head.distanceTo(out);
+    const free = full * f;
+    this.camDist = this.camDist < 0 || free < this.camDist ? free : Math.min(free, THREE.MathUtils.damp(this.camDist, free, 3, this.frameDt));
+    out.lerpVectors(head, out, full > 1e-3 ? this.camDist / full : 1);
     const w = this.world;
     const gy = (w.support ? w.support(out.x, out.z, out.y) : w.groundY(out.x, out.z)) + 0.35;
     if (out.y < gy) out.y = gy;
@@ -577,7 +791,7 @@ export class Player {
 
   private updateCamera(dt: number) {
     // Afterburner and ignition widen the lens a little (applied as a delta so photo mode's zoom is left alone).
-    const fk = this.ride || this.xrView ? 0 : this.boost * 14 + this.kick * 5;
+    const fk = this.ride || this.xrView ? 0 : this.boost * 14 + this.kick * 8;
     const nextKick = THREE.MathUtils.damp(this.fovKick, fk, 5, dt);
     if (Math.abs(nextKick - this.fovKick) > 0.01) {
       this.camera.fov += nextKick - this.fovKick;
@@ -588,10 +802,10 @@ export class Player {
     const want = new THREE.Vector3();
     const head = this.desiredCamera(want);
     const fast = this.mode === 'fly' || this.mode === 'air' ? Math.min(18, this.vel.length() * 0.2) : 0;
-    // Past ~60 m/s (shuttle, plane, wingsuit, afterburner) the camera rides along with you and only
-    // the offset is smoothed; otherwise it falls kilometers behind at Mach 1.
+    // Fast (a vehicle past ~60 m/s, or you past ~22 m/s: flying, falling) the camera rides along with
+    // you and only the offset is smoothed; otherwise it trails far behind (kilometers at Mach 1).
     const subjectSpeed = this.ride ? this.ride.speed : this.vel.length();
-    if (this.haveHead && subjectSpeed > 60) this.camPos.add(head.clone().sub(this.lastHead));
+    if (this.haveHead && subjectSpeed > (this.ride ? 60 : 22)) this.camPos.add(head.clone().sub(this.lastHead));
     this.lastHead.copy(head); this.haveHead = true;
     this.camPos.lerp(want, 1 - Math.exp(-dt * (this.mode === 'fly' || this.ride ? 9 + fast : 14)));
     this.camera.position.copy(this.camPos);
@@ -605,6 +819,11 @@ export class Player {
       const s = this.shake * 0.12;
       this.camera.position.x += (Math.random() - 0.5) * s; this.camera.position.y += (Math.random() - 0.5) * s;
     }
+    // Landing dip: a damped spring kicked by the impact.
+    this.dipV += (-90 * this.dipY - 13 * this.dipV) * Math.min(dt, 0.05);
+    this.dipY += this.dipV * Math.min(dt, 0.05);
+    this.camera.position.y += this.dipY;
+    look.y += this.dipY * 0.6;
     this.camera.lookAt(look);
   }
 
@@ -695,6 +914,7 @@ export class Player {
       this.pitch = THREE.MathUtils.damp(this.pitch, v.cam.pitch + (aircraft ? -v.pitch * 0.5 : 0), 1.5, dt);
     }
     this.updateCamera(dt);
+    this.updateFx(dt);
   }
 
   /** Step off: next to it on land, into the water from a boat, into free fall from a plane. */
@@ -707,7 +927,10 @@ export class Player {
     this.dropRide();
     const wy = this.world.water ? this.world.water(out.x, out.z) : NaN;
     const g = this.surface(out.x, out.z, out.y + 2);
-    if (inAir) { this.position.set(out.x, v.pos.y, out.z); this.mode = 'air'; this.ch.play('fall'); }
+    if (inAir) {
+      this.position.set(out.x, v.pos.y, out.z); this.mode = 'air'; this.ch.play('fall');
+      if (Math.abs(v.speed) > 30) this.knock(1.0, Math.min(1, Math.abs(v.speed) / 120)); // bailing out into the slipstream
+    }
     else if (!Number.isNaN(wy) && wy > g + 0.6) { this.position.set(out.x, wy - 1.05, out.z); this.mode = 'swim'; this.vel.set(0, 0, 0); }
     else { this.position.set(out.x, g, out.z); this.mode = 'walk'; this.vel.set(0, 0, 0); this.ch.play('idle'); }
     this.world.colliders.resolve(this.position, 0.38);
@@ -779,6 +1002,7 @@ export class Player {
   snapCamera() {
     const want = new THREE.Vector3();
     this.haveHead = false;
+    this.camDist = -1;
     this.desiredCamera(want);
     this.camPos.copy(want);
     this.camera.position.copy(want);

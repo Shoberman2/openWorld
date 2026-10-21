@@ -47,15 +47,6 @@
 .ow-minimap { position: absolute; right: 16px; bottom: 62px; width: 176px; height: 176px; border-radius: 10px; background: #f3efe8;
   border: 2px solid rgba(255,255,255,.9); box-shadow: 0 6px 22px rgba(0,0,0,.35); pointer-events: none; }
 
-/* ---- hints ---- */
-.ow-hints { position: absolute; left: 12px; bottom: 12px; max-width: 390px; padding: 8px 11px; border-radius: 10px; background: rgba(28,30,36,.62);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font-size: 11px; font-weight: 500; color: rgba(255,255,255,.9); display: flex; flex-direction: column; gap: 4px; }
-.ow-hrow { display: flex; flex-wrap: wrap; gap: 4px 14px; }
-.ow-hint { white-space: nowrap; }
-.ow-hint kbd { display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; margin-right: 4px; border-radius: 4px;
-  background: rgba(255,255,255,.92); color: #222; font: 700 9.5px/1 Inter, sans-serif; vertical-align: 1px; }
-.ow-hint kbd + kbd { margin-left: -2px; }
-
 /* ---- mode bar ---- */
 .ow-modes { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; gap: 4px; padding: 5px; border-radius: 12px;
   background: rgba(28,30,36,.62); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
@@ -69,12 +60,11 @@
 
 @media (max-width: 900px) {
   .ow-modes { display: none; }
-  .ow-hints { max-width: calc(100vw - 230px); }
 }
 @media (max-width: 700px) {
   .ow-minimap { width: 120px; height: 120px; }
   .ow-nav { bottom: 190px; width: 120px; }
-  .ow-hints, .ow-info .ow-i-wx { display: none; }
+  .ow-info .ow-i-wx { display: none; }
   .ow-cwrap { width: 260px !important; }
   .ow-attrib { max-width: 120px; }
 }
