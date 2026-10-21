@@ -82,7 +82,7 @@ export async function buildPresetPlace(id: CityId, repos: Repo[], say: (m: strin
       support: (x, z) => L.groundY(x, z) + onSidewalk(x, z), canFly: true,
     },
     spawn: L.spawn, spawnFacing: L.spawnFacing,
-    sky: { ...p.sky, envLight: 0.3, ambient: 2.4 }, startHour: null,
+    sky: { ...p.sky, envLight: 0.6, ambient: 2.6 }, startHour: null,
     airspace: L.land,
     map: {
       bounds: L.land, zSouth: -1, background: p.water.length ? '#16324a' : '#1a1e26',

@@ -129,6 +129,19 @@ export class Buf {
     this.quad(P(-hw, h, hd), P(hw, h, hd), P(hw, h, -hd), P(-hw, h, -hd), top ?? col);
     if (y0 > 0.05) this.quad(P(-hw, 0, -hd), P(hw, 0, -hd), P(hw, 0, hd), P(-hw, 0, hd), side);
   }
+  /** Any geometry (leaves, cylinders, spheres), placed by `m`, in one color. */
+  geom(g: THREE.BufferGeometry, m: THREE.Matrix4, col: RGB) {
+    const src = g.index ? g.toNonIndexed() : g;
+    const p = src.attributes.position, n = src.attributes.normal;
+    const nm = new THREE.Matrix3().getNormalMatrix(m);
+    const v = new THREE.Vector3(), w = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i).applyMatrix4(m);
+      w.fromBufferAttribute(n, i).applyMatrix3(nm).normalize();
+      this.pos.push(v.x, v.y, v.z); this.nrm.push(w.x, w.y, w.z); this.col.push(...col);
+    }
+    if (src !== g) src.dispose();
+  }
   mesh(mat: THREE.Material) {
     if (!this.pos.length) return null;
     const g = new THREE.BufferGeometry();

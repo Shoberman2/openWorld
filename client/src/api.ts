@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentInfo, Me, Repo, RepoDetail, ServerMsg, TalkRequest, BoardroomRequest, OfficeChannel, OfficeMessage, OfficeRequest } from '../../shared/types.ts';
+import type { AgentEvent, AgentInfo, ReviewAction, Me, Repo, RepoDetail, ServerMsg, TalkRequest, BoardroomRequest, OfficeChannel, OfficeMessage, OfficeRequest, MasterMessage, MasterThreadSummary, Schedule, Briefing, RepoPulse } from '../../shared/types.ts';
 
 async function json<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}));
@@ -19,6 +19,11 @@ export const api = {
   agentLog: (id: string) => fetch(`/api/agents/${id}/log`).then((r) => json<{ events: { event: AgentEvent; ts: number }[] }>(r)),
   stopAgent: (id: string) => fetch(`/api/agents/${id}/stop`, { method: 'POST' }).then((r) => json<AgentInfo>(r)),
   openPr: (id: string) => fetch(`/api/agents/${id}/pr`, { method: 'POST' }).then((r) => json<AgentInfo>(r)),
+  agentDiff: (id: string) => fetch(`/api/agents/${id}/diff`).then((r) => json<{ stat: string; diff: string; files: string[] }>(r)),
+  reviewAgent: (id: string, action: ReviewAction, note?: string) =>
+    fetch(`/api/agents/${id}/review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, note }) }).then((r) => json<AgentInfo>(r)),
+  answerAgent: (id: string, text: string) =>
+    fetch(`/api/agents/${id}/answer`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }).then((r) => json<AgentInfo>(r)),
 };
 
 /** POST that returns a text/event-stream; calls onEvent with each parsed `data:` JSON payload. */
@@ -95,4 +100,36 @@ export const office = {
     fetch('/api/office/read', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channel }) }).then((r) => json<{ unread: number }>(r)),
   send: (req: OfficeRequest, onEvent: (d: { type: 'me' | 'delta' | 'message' | 'error' | 'done'; message?: OfficeMessage; delta?: string; error?: string }) => void) =>
     postSSE('/api/office/message', { ...req, session: sessionId }, onEvent),
+};
+
+// ---------- Project masters (each repo's lead agent) via the phone ----------
+type ConvoEvent<M> = { type: 'me' | 'delta' | 'message' | 'error' | 'done'; message?: M; delta?: string; error?: string };
+export const masters = {
+  list: () => fetch('/api/masters').then((r) => json<{ threads: MasterThreadSummary[] }>(r)),
+  thread: (repo: string) => fetch(`/api/masters/${encodeURIComponent(repo)}`).then((r) => json<{ messages: MasterMessage[] }>(r)),
+  markRead: (repo: string) => fetch(`/api/masters/${encodeURIComponent(repo)}/read`, { method: 'POST' }).then((r) => json<{ unread: number }>(r)),
+  send: (repo: string, text: string, onEvent: (d: ConvoEvent<MasterMessage>) => void) =>
+    postSSE(`/api/masters/${encodeURIComponent(repo)}/message`, { text, session: sessionId }, onEvent),
+};
+
+// ---------- Schedules (project leads that work while you're away) and the briefing ----------
+const send = (method: string, body?: unknown): RequestInit => ({ method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+export const schedules = {
+  list: () => fetch('/api/schedules').then((r) => json<Schedule[]>(r)),
+  create: (s: { repo: string; task: string; cadence: Schedule['cadence']; hour: number; weekday?: number; enabled?: boolean }) =>
+    fetch('/api/schedules', send('POST', s)).then((r) => json<Schedule>(r)),
+  update: (id: string, patch: Partial<Pick<Schedule, 'enabled' | 'task' | 'cadence' | 'hour' | 'weekday'>>) =>
+    fetch(`/api/schedules/${encodeURIComponent(id)}`, send('PATCH', patch)).then((r) => json<Schedule>(r)),
+  remove: (id: string) => fetch(`/api/schedules/${encodeURIComponent(id)}`, send('DELETE')).then((r) => json<{ ok: true }>(r)),
+  run: (id: string) => fetch(`/api/schedules/${encodeURIComponent(id)}/run`, send('POST')).then((r) => json<AgentInfo>(r)),
+};
+export const briefing = {
+  get: (since?: string) => fetch(`/api/briefing${since ? `?since=${encodeURIComponent(since)}` : ''}`).then((r) => json<Briefing>(r)),
+  seen: () => fetch('/api/briefing/seen', send('POST')).then((r) => json<{ ok: true }>(r)),
+};
+
+// ---------- Work pulse (CI, PRs, issues, commits, releases per repo) ----------
+export const pulse = {
+  all: () => fetch('/api/pulse').then((r) => json<RepoPulse[]>(r)),
+  repo: (name: string) => fetch(`/api/pulse/${encodeURIComponent(name)}`).then((r) => json<RepoPulse>(r)),
 };

@@ -3,9 +3,12 @@
 import { WORLD } from '../frame.ts';
 import { demFor } from '../dem.ts';
 import { clipLine, clipRing, decodeTile, num, str, type Layers } from '../mvt.ts';
-import { GROUND, regionOf, taggedColor } from './palette.ts';
+import { GROUND, regionKey, regionOf, taggedColor } from './palette.ts';
+import { GROUND_KIND, STYLE, STYLES, chooseStyle, encodeSeed, facadeDims, groundFromPoi } from './facades.ts';
 import { Buf, alongY, cleanRing, cumLen, densify, disc, hash01, hashStr, inRing, reversed, ribbon, signedArea, strip, triangulate } from './geo.ts';
 import type { ChunkJob, ChunkOut, EdgeData, FootprintData, SignalData } from './types.ts';
+import { buildParks } from './parks.ts';
+import { assignHousenumbers, landmarkZones, type LandmarkClaim } from '../landmarks/zones.ts';
 
 const EMPTY: Layers = { extent: 4096, buffer: 0, polys: {}, lines: {}, points: {} };
 const DRIVE = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'minor', 'service', 'busway']);
@@ -51,7 +54,7 @@ class Raster {
   fill(rings: number[][], v = 1) {
     scan(rings, this.n, this.cell, 0.5, (i, j) => { this.data[j * this.n + i] = v; });
   }
-  seg(ax: number, az: number, bx: number, bz: number, r: number) {
+  seg(ax: number, az: number, bx: number, bz: number, r: number, val = 1) {
     const len = Math.hypot(bx - ax, bz - az), steps = Math.max(1, Math.ceil(len / (this.cell * 0.7)));
     const rc = Math.ceil(r / this.cell);
     for (let s = 0; s <= steps; s++) {
@@ -59,7 +62,7 @@ class Raster {
       const i0 = Math.floor(x / this.cell), j0 = Math.floor(z / this.cell);
       for (let dj = -rc; dj <= rc; dj++) for (let di = -rc; di <= rc; di++) {
         const i = i0 + di, j = j0 + dj;
-        if (i >= 0 && j >= 0 && i < this.n && j < this.n) this.data[j * this.n + i] = 1;
+        if (i >= 0 && j >= 0 && i < this.n && j < this.n) this.data[j * this.n + i] = Math.max(this.data[j * this.n + i], val);
       }
     }
   }
@@ -126,6 +129,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
   const wcell = size / M;
   const wet = new Float32Array(M * M).fill(NaN);
   const waterBuf = new Buf();
+  const shoreBuf = new Buf();
   const waterPaint: number[][][] = [];
   for (const f of layers.polys.water ?? []) {
     const cls = str(f.props.class);
@@ -144,6 +148,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
         level = hs[Math.floor(hs.length * 0.3)] ?? 0;
       }
       waterPaint.push(rings);
+      if (lod === 0) shoreline(shoreBuf, rings, level, size, cls === 'ocean' ? 1 : cls === 'lake' ? 0.6 : 0.4);
       scan(rings, M, wcell, 0.5, (i, j) => { const o = wet[j * M + i]; wet[j * M + i] = Number.isNaN(o) ? level : Math.max(o, level); });
       scan(rings, N + 1, cell, 0, (i, j) => { const q = j * (N + 1) + i; H[q] = Math.min(H[q], level - 2.4); });
       // Surface.
@@ -171,14 +176,63 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
 
   // ---------------------------------------------------------------- buildings
   const occ = new Raster(lod === 0 ? 512 : 128, size);
+  // Where the drivable streets are, so shopfronts know which walls face one.
+  const streetR = new Raster(lod === 0 ? 512 : 1, size);
+  if (lod === 0) for (const f of layers.lines.transportation ?? []) {
+    const cls = str(f.props.class);
+    if (!DRIVE.has(cls) || cls === 'motorway' || cls === 'service' || str(f.props.brunnel) === 'tunnel') continue;
+    const sp = roadSpec(cls, str(f.props.subclass), num(f.props.oneway) !== 0, num(f.props.ramp) === 1, '');
+    if (!sp) continue;
+    for (const line of f.lines) for (const piece of clipLine(line, E)) {
+      const m = toM(piece);
+      // 2 = an avenue or main street (shops), 1 = a side street.
+      const major = cls === 'primary' || cls === 'secondary' || cls === 'tertiary' || cls === 'trunk';
+      for (let q = 2; q < m.length; q += 2) streetR.seg(m[q - 2], m[q - 1], m[q], m[q + 1], sp.width / 2 + 2.5, major ? 2 : 1);
+    }
+  }
+  // Commercial and retail land: shops on every street there.
+  const commR = new Raster(lod === 0 ? 128 : 1, size);
+  if (lod === 0) for (const f of layers.polys.landuse ?? []) {
+    const c = str(f.props.class);
+    if (c !== 'commercial' && c !== 'retail') continue;
+    for (const poly of f.polys) { const o = clipRing(poly[0], E); if (o.length) commR.fill([toM(o)]); }
+  }
   // Buildings go into a 4x4 grid of meshes so the camera and the shadow pass can cull them.
   const CELLS = 4;
   const cells = Array.from({ length: CELLS * CELLS }, () => new Buf());
+  // See-through ironwork (fire escapes): its own alpha-tested mesh.
+  const iron = new Buf();
   const footprints: FootprintData[] = [];
   const density = new Float32Array(16 * 16);
   const paintBuildings: number[][] = [];
   let nBuildings = 0;
   const B = layers.buffer;
+  // Landmarks are drawn by hand (landmarks/): their map buildings are handed over, not extruded.
+  const lmZones = landmarkZones(job);
+  const lmClaims: LandmarkClaim[] = [];
+  // Where each building stands (its neighborhood picks the architecture), and what its shops are.
+  const rk = regionKey(job.country);
+  const n2 = 2 ** z;
+  const lonAt = (x: number) => ((tx + x / size) / n2) * 360 - 180;
+  const latAt = (zz: number) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * (ty + zz / size)) / n2))) * 180) / Math.PI;
+  const poiGrid = new Map<string, { x: number; z: number; g: number }[]>();
+  if (lod === 0) for (const p of layers.points.poi ?? []) {
+    const g = groundFromPoi(str(p.props.class), str(p.props.subclass));
+    if (g < 0) continue;
+    const x = p.x * S, zz = p.y * S, k = `${Math.floor(x / 40)},${Math.floor(zz / 40)}`;
+    let l = poiGrid.get(k); if (!l) poiGrid.set(k, (l = [])); l.push({ x, z: zz, g });
+  }
+  /** The street-level kind the map's points of interest inside this footprint suggest (-1: none). */
+  const groundOf = (ring: number[]) => {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let q = 0; q < ring.length; q += 2) { x0 = Math.min(x0, ring[q]); x1 = Math.max(x1, ring[q]); z0 = Math.min(z0, ring[q + 1]); z1 = Math.max(z1, ring[q + 1]); }
+    const votes = new Map<number, number>();
+    for (let i = Math.floor(x0 / 40); i <= Math.floor(x1 / 40); i++) for (let j = Math.floor(z0 / 40); j <= Math.floor(z1 / 40); j++)
+      for (const p of poiGrid.get(`${i},${j}`) ?? []) if (inRing(ring, p.x, p.z)) votes.set(p.g, (votes.get(p.g) ?? 0) + 1);
+    let best = -1, bn = 0;
+    for (const [g, n] of votes) if (n > bn || (n === bn && g > best)) { best = g; bn = n; }
+    return best;
+  };
   for (const f of layers.polys.building ?? []) {
     if (f.props.hide_3d === true) continue;
     const hTag = Math.max(3, num(f.props.render_height, 8));
@@ -213,10 +267,19 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       for (let q = 0; q < ring.length; q += 2) { gmin = Math.min(gmin, hAt(ring[q], ring[q + 1])); cx += ring[q]; cz += ring[q + 1]; }
       cx /= ring.length / 2; cz /= ring.length / 2;
       const h = Math.max(hTag, minH + 1.5);
+      const lmId = lmZones.any ? lmZones.claim(cx, cz, h) : null;
+      if (lmId) { lmClaims.push({ id: lmId, ring, holes: hs, base: gmin, top: gmin + h, minH }); return; }
       const glass = h >= 70 ? seed < 0.55 : h >= 40 ? seed < 0.18 : h >= 18 ? seed < 0.03 : false;
-      const pal = glass ? reg.glass : reg.walls;
+      // Architecture: from the neighborhood, height and footprint (facades.ts), and what's on the ground floor.
+      const style = glass ? STYLE.generic : chooseStyle(rk, job.country, latAt(cz), lonAt(cx), h, area, hash01(key + 101));
+      const sty = STYLES[style];
+      const poiG = lod === 0 && minH < 0.5 ? groundOf(ring) : -1;
+      const groundK = poiG >= 0 ? poiG : h < 7 ? GROUND_KIND.none : sty.ground0 === 1 ? GROUND_KIND.shops : sty.ground0 === 2 ? (hash01(key + 103) < 0.55 ? GROUND_KIND.lobby : GROUND_KIND.shops) : GROUND_KIND.none;
+      // A few towers in colored glass (green, bronze, red, deep blue), like the video's red one.
+      const tint = glass && hash01(key + 107) < 0.14 ? [0x4f7a6a, 0x7a5c44, 0x8a3c38, 0x3c5a86][Math.floor(hash01(key + 109) * 4)] : null;
+      const pal = glass ? reg.glass : style === STYLE.generic ? reg.walls : sty.walls;
       const tagged = colourTag ? taggedColor(colourTag) : null;
-      const wall = !glass && tagged !== null && seed < 0.8 ? tagged : pal[Math.floor(hash01(key + 3) * pal.length)];
+      const wall = tint ?? (!glass && tagged !== null && seed < 0.8 ? tagged : pal[Math.floor(hash01(key + 3) * pal.length)]);
       const roof = glass ? 0x9aa4ad : reg.roofs[Math.floor(hash01(key + 5) * reg.roofs.length)];
       const flat = (reg.flat ?? 0xc9c6bf) - Math.floor(hash01(key + 7) * 3) * 0x060606;
       const y0 = minH > 0.5 ? gmin + minH : gmin - 1.6;
@@ -224,8 +287,23 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       const cell = Math.min(CELLS - 1, Math.max(0, Math.floor((cz / size) * CELLS))) * CELLS + Math.min(CELLS - 1, Math.max(0, Math.floor((cx / size) * CELLS)));
       const bld = cells[cell];
       const start = bld.count;
-      const sd = seed * 0.999 + (glass ? 2 : 0);
+      const fs = seed * 0.999;
+      const sd = encodeSeed(seed, glass, style, groundK);
       const W = rgb(wall);
+      const dims = facadeDims(style, fs, h, groundK);
+      // Street level, wall by wall: shops face avenues (and every street in commercial districts and
+      // Manhattan's busy core), houses and walk-ups face side streets, back walls have none.
+      const lat0 = latAt(cz), lon0 = lonAt(cx);
+      const busy = lod === 0 && (commR.get(cx, cz) > 0 || (job.country === 'us' && lat0 < 40.766 && lat0 > 40.70 && lon0 > -74.02 && lon0 < -73.965 && h >= 12));
+      const wallGround = (front: number) => {
+        if (glass || lod > 0) return groundK;
+        if (h < 7 || front === 0) return GROUND_KIND.none;
+        if (poiG >= 0) return poiG;
+        // Row houses on an avenue have shops below (the avenue walls of a merged row).
+        if (sty.ground0 === 0) return front === 2 && h >= 9 && (style === STYLE.brownstone || style === STYLE.georgian || style === STYLE.victorian) ? GROUND_KIND.shops : GROUND_KIND.none;
+        if (front === 2 || busy) return groundK;
+        return sty.ground0 === 2 && hash01(key + 117) < 0.5 ? GROUND_KIND.lobby : GROUND_KIND.none;
+      };
       // Walls (outer + courtyard rings).
       for (const r of [ring, ...hs]) {
         const n = r.length / 2;
@@ -235,16 +313,19 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
           const len = Math.hypot(bx - ax, bz - az);
           if (len < 0.05) continue;
           const nx = -(bz - az) / len, nz = (bx - ax) / len;
+          const front = r === ring && lod === 0 ? streetR.get((ax + bx) / 2 + nx * 4, (az + bz) / 2 + nz * 4) : 1;
+          const wsd = encodeSeed(seed, glass, style, wallGround(front));
           const a0 = bld.v(ax, y0, az), b0 = bld.v(bx, y0, bz), b1 = bld.v(bx, top, bz), a1 = bld.v(ax, top, az);
           bld.quad(a0, b0, b1, a1);
           for (const [u, y] of [[0, y0], [len, y0], [len, top], [0, top]]) {
-            bld.nrm.push(nx, 0, nz); bld.col.push(...W); bld.fac.push(u, y - gmin, len, h); bld.seed.push(sd);
+            bld.nrm.push(nx, 0, nz); bld.col.push(...W); bld.fac.push(u, y - gmin, len, h); bld.seed.push(wsd);
           }
         }
       }
       // Roof: gabled for small houses in places that build them, flat otherwise.
       let pitched = false;
-      if (!glass && !hs.length && reg.pitch > 0 && h <= reg.pitch && area >= 25 && area <= 520 && minH < 0.5 && hash01(key + 11) < 0.85) {
+      const pitchy = style === STYLE.generic || style === STYLE.stucco || style === STYLE.mediterranean || style === STYLE.canal || style === STYLE.altbau || style === STYLE.latin || style === STYLE.asiamodern;
+      if (!glass && pitchy && !hs.length && reg.pitch > 0 && h <= reg.pitch && area >= 25 && area <= 520 && minH < 0.5 && hash01(key + 11) < 0.85) {
         pitched = gable(bld, ring, area, top, h, gmin, sd, W, rgb(roof));
       }
       if (!pitched) {
@@ -269,10 +350,60 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
           if (!inRing(ring, bx - w / 2, bz - d / 2) || !inRing(ring, bx + w / 2, bz + d / 2)) continue;
           roofBox(bld, bx, bz, w, d, top, top + hh, glass ? [196, 200, 204] : [178, 175, 168], sd, h);
         }
-        if (job.country === 'us' && !glass && h > 18 && h < 80 && area > 250 && hash01(key + 21) < 0.3) {
+        const towerP = style === STYLE.prewar || style === STYLE.tenement || style === STYLE.castiron ? 0.55 : style === STYLE.office || style === STYLE.deco ? 0.35 : 0.2;
+        if (job.country === 'us' && !glass && h > 15 && h < 90 && area > 220 && hash01(key + 21) < towerP) {
           const tx0 = cx + (hash01(key + 23) - 0.5) * Math.sqrt(area) * 0.4, tz0 = cz + (hash01(key + 25) - 0.5) * Math.sqrt(area) * 0.4;
           if (inRing(ring, tx0, tz0)) waterTower(bld, tx0, tz0, top, sd, h);
         }
+      }
+      // Near tier: real trim. A cornice and parapet around flat roofs (a thin metal coping on glass
+      // towers), a string course over the shop floor, and awnings and blade signs over street-front shops.
+      if (lod === 0 && !pitched && !hs.length) {
+        if (glass) trimBand(bld, ring, top - 0.15, top + 1.0, top, 0.06, 0.25, [78, 82, 86], sd, h, gmin);
+        else if (h >= 5) {
+          // Each style's cornice: brownstones and tenements carry a big bracketed (often dark, pressed-metal) one.
+          const big = sty.cornice >= 0.5;
+          const proj = sty.cornice * (0.75 + hash01(key + 31) * 0.5), par = big ? 0.25 + hash01(key + 33) * 0.3 : 0.4 + hash01(key + 33) * 0.75;
+          const cc = sty.corniceColor && hash01(key + 35) < 0.7 ? sty.corniceColor : trimColor(W, key);
+          trimBand(bld, ring, top - (big ? 0.9 : 0.5), top + par, top, Math.max(0.06, proj), 0.3, cc, sd, h, gmin);
+        }
+      }
+      if (lod === 0 && !glass && h >= 7 && minH < 0.5 && dims.groundH > 0) {
+        // Same shop-floor height as the facade shader (both read it from facades.ts).
+        ledge(bld, ring, gmin + dims.groundH - 0.02, 0.13, 0.22, trimColor(W, key), sd, h, gmin);
+        shopfronts(bld, ring, streetR, gmin, dims.groundH, key, sd, h);
+      }
+      // Street-facing extras: stoops, fire escapes, sidewalk sheds.
+      if (lod === 0 && !glass && minH < 0.5 && !hs.length) {
+        const wantStoop = sty.stoop > 0 && hash01(key + 111) < sty.stoop && h < 26;
+        const wantEscape = sty.fireEscape > 0 && hash01(key + 113) < sty.fireEscape && h >= 9 && h < 50;
+        const wantShed = job.country === 'us' && h > 14 && hash01(key + 115) < 0.035;
+        if (wantStoop || wantEscape || wantShed) streetWalls(ring, streetR, (ax, az, bx, bz, len, nx, nz) => {
+          const tx0 = (bx - ax) / len, tz0 = (bz - az) / len;
+          const dims = facadeDims(style, fs, h, wallGround(streetR.get((ax + bx) / 2 + nx * 4, (az + bz) / 2 + nz * 4)));
+          const bays = Math.max(1, Math.floor((len - 0.9) / dims.bayW)), margin = (len - bays * dims.bayW) / 2;
+          const sideStreet = streetR.get((ax + bx) / 2 + nx * 4, (az + bz) / 2 + nz * 4) === 1;
+          if (wantStoop && sideStreet && len >= 3.5) {
+            // One stoop per house front (~6 m lots on long rows), up to the parlor-floor door in the first bay.
+            // The facade shader lays each lot out the same way and puts the door in its first bay.
+            const lots = Math.max(1, Math.round(len / 6.2)), lotW = len / lots;
+            const lotBays = Math.max(1, Math.floor((lotW - 0.4) / dims.bayW)), lotMargin = (lotW - lotBays * dims.bayW) / 2;
+            for (let k = 0; k < lots; k++) {
+              const uDoor = lotW * k + lotMargin + dims.bayW * 0.5;
+              stoop(bld, ax + tx0 * uDoor, az + tz0 * uDoor, tx0, tz0, nx, nz, gmin, dims.plinth || 1.6, sty.base, sd, h);
+            }
+          }
+          if (wantEscape && len >= 6) {
+            const n = len > 22 ? 2 : 1;
+            for (let k = 0; k < n; k++) {
+              const bay0 = Math.min(bays - 2, Math.max(0, Math.floor(((k + 0.5) / n) * bays) - 1));
+              if (bay0 < 0) continue;
+              const u0 = margin + bay0 * dims.bayW + 0.15, u1 = margin + (bay0 + 2) * dims.bayW - 0.15;
+              fireEscape(iron, ax, az, tx0, tz0, nx, nz, u0, u1, gmin, dims.first, dims.floorH, h);
+            }
+          }
+          if (wantShed && len >= 8) shed(bld, ax, az, tx0, tz0, nx, nz, len, gmin, sd, h);
+        });
       }
       nBuildings++;
       if (minH < 2.5) {
@@ -308,6 +439,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       }
     }
   }
+  if (lod === 0) assignHousenumbers(layers, footprints, S);
 
   // ---------------------------------------------------------------- roads
   const roads: { pts: number[]; keys: string[]; spec: RoadSpec; cls: string; sub: string; bridge: boolean; layer: number; oneway: boolean; service: string }[] = [];
@@ -339,7 +471,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
   const rd = new Raster(lod === 0 ? 512 : 64, size);
   const us = job.country === 'us' || job.country === 'ca';
   const nodes = new Map<string, { x: number; z: number; edges: EdgeData[]; maxW: number; drive: number; major: number }>();
-  const LIFT_ROAD = 0.1, LIFT_WALK = 0.07;
+  const LIFT_ROAD = 0.1, LIFT_WALK = 0.07, CURB = 0.14;
   for (const r of roads) {
     // Densify for draping, remembering where the original vertices landed.
     const dense: number[] = [r.pts[0], r.pts[1]];
@@ -378,13 +510,15 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
     const yRoad = r.bridge ? (_x: number, _z: number, q: number) => ys[q] : (x: number, zz: number) => hAt(x, zz) + LIFT_ROAD;
     const yWalk = r.bridge ? (_x: number, _z: number, q: number) => ys[q] - 0.02 : (x: number, zz: number) => hAt(x, zz) + LIFT_WALK;
     if (lod === 0) {
+      // Street surfaces carry their own pattern coordinates: asphalt uv = (meters across, road width);
+      // paving uv = (meters in from the curb, or 500+ where there's no curb; meters along).
       if (r.spec.drive) {
-        ribbon(roadBuf, dense, r.spec.width, yRoad);
+        ribbon(roadBuf, dense, r.spec.width, yRoad, 0, (o) => o, r.spec.width);
         if (r.spec.walk && r.cls !== 'service' && !r.bridge) {
           const sw = r.cls === 'minor' ? 2.6 : 3.4;
-          ribbon(walkBuf, dense, r.spec.width + sw * 2, yWalk);
+          ribbon(walkBuf, dense, r.spec.width + sw * 2, yWalk, 0, (o) => 500 + o);
         }
-      } else ribbon(walkBuf, dense, r.spec.width, yWalk);
+      } else ribbon(walkBuf, dense, r.spec.width, yWalk, 0, (o) => 500 + o);
       if (r.bridge) bridgeSides(deckBuf, dense, ys, r.spec.width + (r.spec.drive ? 1 : 0.4), pillars, hAt);
     }
     for (let q = 2; q < dense.length; q += 2) rd.seg(dense[q - 2], dense[q - 1], dense[q], dense[q + 1], r.spec.width / 2 + (r.spec.drive ? 2.5 : 0.8));
@@ -418,6 +552,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
   const poles: number[] = [];
   const lamps: number[] = [];
   const trees: number[] = [];
+  const pits: number[] = [];
   const leaving = (e: EdgeData, atA: boolean) => {
     const p = e.pts, m = p.length;
     if (atA) { const l = Math.hypot(p[2] - p[0], p[3] - p[1]) || 1; return { x: (p[2] - p[0]) / l, z: (p[3] - p[1]) / l }; }
@@ -430,7 +565,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       if (nd.drive >= 2) {
         const bridgeNode = nd.edges.some((e) => e.bridge);
         const y = bridgeNode ? undefined : (x: number, zz: number) => hAt(x, zz) + LIFT_ROAD;
-        if (y) disc(roadBuf, nd.x, nd.z, nd.maxW / 2, y);
+        if (y) disc(roadBuf, nd.x, nd.z, nd.maxW / 2, y, 14, [-1, 0]);
       }
       const minor = nd.edges.filter((e) => e.drive && !MAJOR.has(e.cls)).length;
       const isSignal = nd.drive >= 3 && !nd.edges.some((e) => e.bridge || e.cls === 'motorway' || e.cls === 'service') && (nd.major >= 2 || (nd.major >= 1 && minor >= 2 && nd.maxW >= 10));
@@ -514,6 +649,8 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
           const x = tmp.x - tmp.tz * off * sd, zz = tmp.z + tmp.tx * off * sd;
           if (x < 0 || zz < 0 || x > size || zz > size || occ.get(x, zz) || wetAt(x, zz)) continue;
           trees.push(x, hAt(x, zz), zz, hash01(q * 13 + sv) * 6.28, 0.75 + hash01(q + sv) * 0.4, tropical ? 2 : 0);
+          // A tree pit in the paving, square to the street.
+          pits.push(x, zz, Math.atan2(-tmp.tz, tmp.tx));
         }
       }
     }
@@ -535,41 +672,119 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
     }
   }
 
-  // ---------------------------------------------------------------- vegetation in parks and woods
-  const greens: { rings: number[][]; kind: 'park' | 'wood' | 'grass' }[] = [];
-  for (const [layer, kindOf] of [
-    ['landcover', (c: string) => (c === 'wood' ? 'wood' : c === 'grass' ? 'grass' : null)],
-    ['park', () => 'park'],
-  ] as const) {
-    for (const f of layers.polys[layer] ?? []) {
-      const kind = kindOf(str(f.props.class));
-      if (!kind) continue;
-      for (const poly of f.polys) {
-        const outer = clipRing(poly[0], E);
-        if (outer.length) greens.push({ rings: [toM(outer), ...poly.slice(1).map((r) => clipRing(r, E)).filter((r) => r.length).map(toM)], kind: kind as 'park' | 'wood' | 'grass' });
-      }
-    }
+  // Raised sidewalks with a curb along city streets, cut back at intersections (the flat paving shows
+  // there, like a dropped curb at the crossing), and the street furniture standing on them.
+  const props: number[] = [];
+  const curbs: number[] = [];
+  // Where the map has real litter bins and mailboxes, use those instead of made-up ones.
+  let poiBins = false, poiBoxes = false;
+  if (lod === 0) {
+    let nb = 0, nm = 0;
+    for (const p of layers.points.poi ?? []) { const c = str(p.props.class); if (c === 'waste_basket') nb++; else if (c === 'post' && str(p.props.subclass) === 'post_box') nm++; }
+    poiBins = nb >= 6; poiBoxes = nm >= 3;
   }
   if (lod === 0) {
-    let budget = 2600 - trees.length / 6;
-    for (const g of greens) {
-      const r = g.rings[0];
-      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-      for (let q = 0; q < r.length; q += 2) { minX = Math.min(minX, r[q]); maxX = Math.max(maxX, r[q]); minZ = Math.min(minZ, r[q + 1]); maxZ = Math.max(maxZ, r[q + 1]); }
-      const area = (maxX - minX) * (maxZ - minZ);
-      const per = g.kind === 'wood' ? 90 : g.kind === 'park' ? 260 : 700;
-      const want = Math.min(budget, Math.floor(area / per));
-      const seed = hashStr(`${tx},${ty},${minX | 0},${minZ | 0}`);
-      for (let q = 0; q < want; q++) {
-        const x = minX + hash01(seed + q * 31) * (maxX - minX), zz = minZ + hash01(seed + q * 17 + 5) * (maxZ - minZ);
-        if (!inRing(r, x, zz) || g.rings.slice(1).some((h) => inRing(h, x, zz)) || occ.get(x, zz) || rd.get(x, zz) || wetAt(x, zz)) continue;
-        const conifer = g.kind === 'wood' && (north || hash01(seed + q) < 0.3);
-        trees.push(x, hAt(x, zz), zz, hash01(seed + q * 3) * 6.28, 0.8 + hash01(seed + q * 5) * 0.7, tropical && hash01(seed + q * 7) < 0.5 ? 2 : conifer ? 1 : 0);
-        budget--;
+    const tmp = { x: 0, z: 0, y: 0, tx: 0, tz: 0 };
+    const trimAt = (key: string) => { const nd = nodes.get(key); return nd && nd.drive >= 3 ? nd.maxW / 2 + 1.2 : 0; };
+    for (const e of edges) {
+      if (!e.drive || !e.walk || e.bridge || e.cls === 'service' || e.cls === 'motorway' || e.cls === 'trunk') continue;
+      const sw = e.cls === 'minor' ? 2.6 : 3.4, inner = e.width / 2;
+      const cum = cumLen(e.pts), len = cum[cum.length - 1];
+      const s0 = trimAt(e.a), s1 = len - trimAt(e.b);
+      if (s1 - s0 < 1.5) continue;
+      raisedWalk(walkBuf, e.pts, cum, s0, s1, inner, inner + sw, hAt, LIFT_ROAD, CURB, curbs, (x, zz) => occ.get(x, zz) === 1);
+      const seed = hashStr(e.a + e.b);
+      const put = (sv: number, side: number, off: number, kind: number) => {
+        if ((kind === 1 && poiBins) || (kind === 4 && poiBoxes)) return; // the map has the real ones
+        alongY(e.pts, e.ys, cum, sv, tmp);
+        const x = tmp.x - tmp.tz * off * side, zz = tmp.z + tmp.tx * off * side;
+        if (x < 0 || zz < 0 || x > size || zz > size || occ.get(x, zz) || wetAt(x, zz)) return;
+        // Faces the road.
+        props.push(x, hAt(x, zz) + LIFT_ROAD + CURB, zz, Math.atan2(side * tmp.tz, -side * tmp.tx), kind);
+      };
+      let k = 0;
+      for (let sv = s0 + 6; sv < s1 - 3; sv += 30, k++) {
+        const side = k % 2 ? 1 : -1, h = hash01(seed + k * 13 + 7);
+        if (h < 0.28) put(sv, side, inner + 1.15, 0);
+        else if (h < 0.56) put(sv, side, inner + 0.5, 1);
+        else if (us && h < 0.63) put(sv, side, inner + 0.55, 4);
       }
-      if (budget <= 0) break;
+      if (us && hash01(seed + 3) < 0.6) put(s0 + 1.6, 1, inner + 0.45, 2);
+      if (us && hash01(seed + 5) < 0.45) put(s1 - 1.6, -1, inner + 0.45, 2);
+      // Manholes in the lanes.
+      k = 0;
+      for (let sv = s0 + 8; sv < s1 - 4; sv += 41, k++) {
+        alongY(e.pts, e.ys, cum, sv, tmp);
+        const off = (hash01(seed + k * 31) - 0.5) * e.width * 0.55;
+        const x = tmp.x - tmp.tz * off, zz = tmp.z + tmp.tx * off;
+        if (x < 0 || zz < 0 || x > size || zz > size) continue;
+        props.push(x, hAt(x, zz) + LIFT_ROAD + 0.004, zz, hash01(seed + k) * 6.28, 3);
+      }
+    }
+    // Tree pits under the street trees (on the raised sidewalk).
+    for (let i = 0; i < pits.length; i += 3) props.push(pits[i], hAt(pits[i], pits[i + 1]) + LIFT_ROAD + CURB + 0.004, pits[i + 1], pits[i + 2], 5);
+    // Street furniture where the map says it is: subway entrances, bus shelters, bike-share docks,
+    // litter bins, mailboxes, newsstands. Oriented to the nearest street.
+    const segs = new Map<string, number[]>();
+    for (const e of edges) {
+      if (!e.drive || e.bridge || e.cls === 'motorway') continue;
+      for (let q = 2; q < e.pts.length; q += 2) {
+        const ax = e.pts[q - 2], az = e.pts[q - 1], bx = e.pts[q], bz = e.pts[q + 1];
+        const k = `${Math.floor((ax + bx) / 2 / 30)},${Math.floor((az + bz) / 2 / 30)}`;
+        let l = segs.get(k); if (!l) segs.set(k, (l = [])); l.push(ax, az, bx, bz, e.width);
+      }
+    }
+    const nearest = (x: number, zz: number) => {
+      let best: { d: number; px: number; pz: number; tx: number; tz: number; w: number } | null = null;
+      const ci = Math.floor(x / 30), cj = Math.floor(zz / 30);
+      for (let i = ci - 1; i <= ci + 1; i++) for (let j = cj - 1; j <= cj + 1; j++) {
+        const l = segs.get(`${i},${j}`); if (!l) continue;
+        for (let q = 0; q < l.length; q += 5) {
+          const ax = l[q], az = l[q + 1], ex = l[q + 2] - ax, ez = l[q + 3] - az, l2 = ex * ex + ez * ez;
+          if (l2 < 0.01) continue;
+          const t = Math.max(0, Math.min(1, ((x - ax) * ex + (zz - az) * ez) / l2));
+          const px = ax + ex * t, pz = az + ez * t, d = Math.hypot(x - px, zz - pz);
+          if (!best || d < best.d) { const ll = Math.sqrt(l2); best = { d, px, pz, tx: ex / ll, tz: ez / ll, w: l[q + 4] }; }
+        }
+      }
+      return best;
+    };
+    const city = density.reduce((a, b) => a + b, 0) / (size * size) > 0.18;
+    for (const p of layers.points.poi ?? []) {
+      const cls = str(p.props.class), sub = str(p.props.subclass);
+      const kind = sub === 'subway_entrance' ? 6 : cls === 'bus' && sub === 'bus_stop' && city ? 8 : cls === 'bicycle_rental' && city ? 9
+        : cls === 'waste_basket' ? 1 : cls === 'post' && sub === 'post_box' && us ? 4 : (sub === 'kiosk' || sub === 'newsagent') && city ? 7 : -1;
+      if (kind < 0) continue;
+      let x = p.x * S, zz = p.y * S;
+      if (x < 0 || zz < 0 || x >= size || zz >= size) continue;
+      const nr = nearest(x, zz);
+      if (!nr || nr.d > 22) continue;
+      // Which side of the street, and how far out from its centerline.
+      const side = (x - nr.px) * -nr.tz + (zz - nr.pz) * nr.tx >= 0 ? 1 : -1;
+      const rx = -nr.tz * side, rz = nr.tx * side;
+      const curbOff = nr.w / 2;
+      if (kind === 8 || kind === 4 || kind === 1 || kind === 7) {
+        // Put it on the sidewalk by the curb.
+        const off = curbOff + (kind === 8 ? 1.5 : kind === 7 ? 2.0 : 0.6);
+        x = nr.px + rx * off; zz = nr.pz + rz * off;
+      } else if (kind === 6 && nr.d < curbOff + 1.0) {
+        x = nr.px + rx * (curbOff + 1.6); zz = nr.pz + rz * (curbOff + 1.6);
+      }
+      if (occ.get(x, zz) || wetAt(x, zz)) continue;
+      const d = Math.hypot(x - nr.px, zz - nr.pz);
+      const onWalk = d > curbOff + 0.1 && d < curbOff + 3.6;
+      const y = hAt(x, zz) + (onWalk ? LIFT_ROAD + CURB : d <= curbOff ? LIFT_ROAD : 0.02);
+      // Facing the road (the bench convention), or along it for entrances and docks.
+      const face = Math.atan2(-rx, -rz);
+      props.push(x, y, zz, kind === 6 || kind === 9 ? Math.atan2(-nr.tz, nr.tx) : face, kind);
     }
   }
+
+  // ---------------------------------------------------------------- parks and woods (parks.ts)
+  const parks = buildParks({
+    layers, E, S, size, lod, tx, ty, north, tropical, hAt, wetAt,
+    built: (x, zz) => occ.get(x, zz) > 0, road: (x, zz) => rd.get(x, zz) > 0,
+  });
 
   // ---------------------------------------------------------------- ground mesh
   const ground = new Buf();
@@ -654,6 +869,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
         : c === 'sand' ? GROUND.sand : c === 'wetland' ? GROUND.wetland : c === 'ice' ? GROUND.ice : c === 'rock' ? GROUND.rock : null;
     });
     fillLayer('park', () => GROUND.park);
+    parks.paint(g, P);
     // Soft contact shadow around buildings.
     // One path, one blur (a filter applies per draw call).
     g.save();
@@ -712,13 +928,15 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
     id: job.id, z, tx, ty, lod, size, n: N, heights: H, wetN: M, wet,
     ground: groundM, tex,
     water: waterBuf.out(), buildings: cells.map((b) => b.out()), footprints,
+    iron: iron.out(),
     road: roadBuf.out(), walk: walkBuf.out(), paintW: whiteBuf.out(), paintY: yellowBuf.out(), deck: deckBuf.out(),
-    trees: new Float32Array(trees), lamps: new Float32Array(lamps), poles: new Float32Array(poles), pillars: new Float32Array(pillars),
-    signals, edges: lod === 0 ? edges : [], names: lod === 0 ? names : [], places,
+    trees: new Float32Array(trees), parks: parks.out, lamps: new Float32Array(lamps), poles: new Float32Array(poles), pillars: new Float32Array(pillars),
+    props: new Float32Array(props), curbs: new Float32Array(curbs), shore: shoreBuf.out(),
+    signals, landmarks: lmClaims, edges: lod === 0 ? edges : [], names: lod === 0 ? names : [], places,
     stats: { buildings: nBuildings, roads: roads.length, ms: Math.round(performance.now() - t0), verts: cells.reduce((a, b) => a + b.count, 0) },
   };
-  const transfer: Transferable[] = [H.buffer, wet.buffer, out.trees.buffer, out.lamps.buffer, out.poles.buffer, out.pillars.buffer];
-  for (const m of [out.ground, out.water, ...out.buildings, out.road, out.walk, out.paintW, out.paintY, out.deck]) {
+  const transfer: Transferable[] = [H.buffer, wet.buffer, out.trees.buffer, out.lamps.buffer, out.poles.buffer, out.pillars.buffer, out.props.buffer, out.curbs.buffer, parks.out.trees.buffer, parks.out.rocks.buffer];
+  for (const m of [out.ground, out.water, parks.out.wall, ...out.buildings, out.iron, out.road, out.walk, out.paintW, out.paintY, out.deck, out.shore]) {
     if (!m) continue;
     for (const a of [m.pos, m.nrm, m.uv, m.col, m.fac, m.seed, m.idx]) if (a) transfer.push(a.buffer);
   }
@@ -852,4 +1070,303 @@ function waterTower(b: Buf, x: number, z: number, roofY: number, sd: number, h: 
   }
   // Legs.
   for (const [dx, dz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) roofBox(b, x + dx * r * 0.6, z + dz * r * 0.6, 0.25, 0.25, roofY, roofY + legs, dark, sd, h);
+}
+
+const fract = (v: number) => v - Math.floor(v);
+
+/** Stone trim for a wall color: brick gets pale limestone dressings, render a lighter shade of itself. */
+function trimColor(w: [number, number, number], key: number): [number, number, number] {
+  const lum = 0.2126 * w[0] + 0.7152 * w[1] + 0.0722 * w[2];
+  const k = 0.92 + hash01(key + 41) * 0.12;
+  if (w[0] / Math.max(1, w[1]) > 1.25 && lum < 140) return [196 * k, 188 * k, 172 * k];
+  return [(w[0] + (216 - w[0]) * 0.35) * k, (w[1] + (211 - w[1]) * 0.35) * k, (w[2] + (200 - w[2]) * 0.35) * k];
+}
+
+/** The ring pushed out (d > 0) or in (d < 0) along its outward normals, mitered at the corners. */
+function offsetRing(ring: number[], d: number) {
+  const n = ring.length / 2, out: number[] = [];
+  for (let q = 0; q < n; q++) {
+    const p = (q + n - 1) % n, nx = (q + 1) % n;
+    const ax = ring[p * 2], az = ring[p * 2 + 1], bx = ring[q * 2], bz = ring[q * 2 + 1], cx = ring[nx * 2], cz = ring[nx * 2 + 1];
+    const l0 = Math.hypot(bx - ax, bz - az) || 1, l1 = Math.hypot(cx - bx, cz - bz) || 1;
+    const n0x = -(bz - az) / l0, n0z = (bx - ax) / l0, n1x = -(cz - bz) / l1, n1z = (cx - bx) / l1;
+    let mx = n0x + n1x, mz = n0z + n1z;
+    const ml = Math.hypot(mx, mz) || 1;
+    mx /= ml; mz /= ml;
+    const k = Math.min(2.5, 1 / Math.max(0.4, mx * n1x + mz * n1z));
+    out.push(bx + mx * d * k, bz + mz * d * k);
+  }
+  return out;
+}
+
+type RGB = [number, number, number];
+/** One flat face (4 corners, given normal) with trim attributes: facade code -3 (plain) or -4 (lit sign). */
+function face4(b: Buf, p: number[][], n: [number, number, number], col: RGB, u0: number, u1: number, gmin: number, sd: number, h: number, code = -3) {
+  const base = b.count;
+  p.forEach((v, i) => { b.v(v[0], v[1], v[2]); b.nrm.push(...n); b.col.push(...col); b.fac.push(i === 1 || i === 2 ? u1 : u0, v[1] - gmin, code, h); b.seed.push(sd); });
+  b.quad(base, base + 1, base + 2, base + 3);
+}
+
+/** Cornice + parapet: a band projecting `proj` out from yBot up to yTop, `thick` deep, its inner face down to the roof. */
+function trimBand(b: Buf, ring: number[], yBot: number, yTop: number, roofY: number, proj: number, thick: number, col: RGB, sd: number, h: number, gmin: number) {
+  const O = offsetRing(ring, proj), I = offsetRing(ring, -thick), n = ring.length / 2;
+  const under: RGB = [col[0] * 0.8, col[1] * 0.8, col[2] * 0.8];
+  for (let q = 0; q < n; q++) {
+    const r = (q + 1) % n;
+    const ax = ring[q * 2], az = ring[q * 2 + 1], bx = ring[r * 2], bz = ring[r * 2 + 1];
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 0.3) continue;
+    const nx = -(bz - az) / len, nz = (bx - ax) / len;
+    const Ao = [O[q * 2], O[q * 2 + 1]], Bo = [O[r * 2], O[r * 2 + 1]], Ai = [I[q * 2], I[q * 2 + 1]], Bi = [I[r * 2], I[r * 2 + 1]];
+    face4(b, [[ax, yBot, az], [bx, yBot, bz], [Bo[0], yBot, Bo[1]], [Ao[0], yBot, Ao[1]]], [0, -1, 0], under, 0, len, gmin, sd, h);
+    face4(b, [[Ao[0], yBot, Ao[1]], [Bo[0], yBot, Bo[1]], [Bo[0], yTop, Bo[1]], [Ao[0], yTop, Ao[1]]], [nx, 0, nz], col, 0, len, gmin, sd, h);
+    face4(b, [[Ao[0], yTop, Ao[1]], [Bo[0], yTop, Bo[1]], [Bi[0], yTop, Bi[1]], [Ai[0], yTop, Ai[1]]], [0, 1, 0], col, 0, len, gmin, sd, h);
+    if (yTop > roofY + 0.05) face4(b, [[Bi[0], roofY, Bi[1]], [Ai[0], roofY, Ai[1]], [Ai[0], yTop, Ai[1]], [Bi[0], yTop, Bi[1]]], [-nx, 0, -nz], under, len, 0, gmin, sd, h);
+  }
+}
+
+/** A string course: a slim projecting ledge running round the building at height y. */
+function ledge(b: Buf, ring: number[], y: number, proj: number, thick: number, col: RGB, sd: number, h: number, gmin: number) {
+  const O = offsetRing(ring, proj), n = ring.length / 2;
+  const under: RGB = [col[0] * 0.75, col[1] * 0.75, col[2] * 0.75];
+  for (let q = 0; q < n; q++) {
+    const r = (q + 1) % n;
+    const ax = ring[q * 2], az = ring[q * 2 + 1], bx = ring[r * 2], bz = ring[r * 2 + 1];
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 0.5) continue;
+    const nx = -(bz - az) / len, nz = (bx - ax) / len;
+    const Ao = [O[q * 2], O[q * 2 + 1]], Bo = [O[r * 2], O[r * 2 + 1]];
+    face4(b, [[ax, y, az], [bx, y, bz], [Bo[0], y, Bo[1]], [Ao[0], y, Ao[1]]], [0, -1, 0], under, 0, len, gmin, sd, h);
+    face4(b, [[Ao[0], y, Ao[1]], [Bo[0], y, Bo[1]], [Bo[0], y + thick, Bo[1]], [Ao[0], y + thick, Ao[1]]], [nx, 0, nz], col, 0, len, gmin, sd, h);
+    face4(b, [[Ao[0], y + thick, Ao[1]], [Bo[0], y + thick, Bo[1]], [bx, y + thick, bz], [ax, y + thick, az]], [0, 1, 0], col, 0, len, gmin, sd, h);
+  }
+}
+
+const AWNINGS: RGB[] = [[34, 72, 48], [112, 30, 32], [30, 44, 76], [30, 30, 32], [150, 122, 84], [140, 34, 26], [82, 86, 90], [96, 60, 36]];
+const SIGNS: RGB[] = [[196, 44, 34], [232, 184, 46], [34, 96, 168], [236, 236, 230], [34, 142, 92], [206, 96, 34], [120, 40, 120]];
+
+/** Blade signs over the ground-floor shop bays of walls that face a street (awnings are kept but switched off). */
+function shopfronts(b: Buf, ring: number[], streetR: Raster, gmin: number, gH: number, key: number, sd: number, h: number) {
+  const n = ring.length / 2;
+  for (let q = 0; q < n; q++) {
+    const r = (q + 1) % n;
+    const ax = ring[q * 2], az = ring[q * 2 + 1], bx = ring[r * 2], bz = ring[r * 2 + 1];
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 4.5) continue;
+    const tx = (bx - ax) / len, tz = (bz - az) / len, nx = -tz, nz = tx;
+    const mx = (ax + bx) / 2 + nx * 4, mz = (az + bz) / 2 + nz * 4;
+    if (!streetR.get(mx, mz)) continue;
+    const bays = Math.floor(len / 4.2);
+    for (let k = 0; k < bays; k++) {
+      const rr = hash01(key * 7 + q * 131 + k * 17);
+      const u0 = 4.2 * k + 0.42, u1 = 4.2 * k + 3.78;
+      const P = (u: number, out: number, y: number) => [ax + tx * u + nx * out, y, az + tz * u + nz * out];
+      if (rr < 0) {
+        // Fabric awning (off: the lit shop windows and their sign band are the look): sloping out and down from just over the shop window, with a valance.
+        const col = AWNINGS[Math.floor(hash01(key + q * 7 + k * 3) * AWNINGS.length)];
+        const yT = gmin + gH - 0.4, yL = yT - 0.55, out = 1.15;
+        const sl = Math.hypot(out, 0.55), nup: [number, number, number] = [nx * 0.55 / sl, out / sl, nz * 0.55 / sl];
+        face4(b, [P(u0, out, yL), P(u1, out, yL), P(u1, 0.02, yT), P(u0, 0.02, yT)], nup, col, u0, u1, gmin, sd, h);
+        const dark: RGB = [col[0] * 0.55, col[1] * 0.55, col[2] * 0.55];
+        face4(b, [P(u0, 0.02, yT), P(u1, 0.02, yT), P(u1, out, yL), P(u0, out, yL)], [-nup[0], -nup[1], -nup[2]], dark, u0, u1, gmin, sd, h);
+        face4(b, [P(u0, out, yL - 0.24), P(u1, out, yL - 0.24), P(u1, out, yL), P(u0, out, yL)], [nx, 0, nz], col, u0, u1, gmin, sd, h);
+        face4(b, [P(u1, out, yL - 0.24), P(u0, out, yL - 0.24), P(u0, out, yL), P(u1, out, yL)], [-nx, 0, -nz], dark, u1, u0, gmin, sd, h);
+      } else if (rr < 0.14) {
+        // Blade sign sticking out over the sidewalk (lit at night).
+        const col = SIGNS[Math.floor(hash01(key + q * 5 + k * 11) * SIGNS.length)];
+        const u = u0 + 0.2, y0 = gmin + gH + 0.35, y1 = y0 + 1.1 + hash01(key + k) * 0.8, o0 = 0.15, o1 = 0.95, th = 0.05;
+        face4(b, [P(u - th, o0, y0), P(u - th, o1, y0), P(u - th, o1, y1), P(u - th, o0, y1)], [-tx, 0, -tz], col, 0, 0.8, gmin, sd, h, -4);
+        face4(b, [P(u + th, o1, y0), P(u + th, o0, y0), P(u + th, o0, y1), P(u + th, o1, y1)], [tx, 0, tz], col, 0, 0.8, gmin, sd, h, -4);
+        const edge: RGB = [40, 40, 42];
+        face4(b, [P(u - th, o1, y0), P(u + th, o1, y0), P(u + th, o1, y1), P(u - th, o1, y1)], [nx, 0, nz], edge, 0, 0.1, gmin, sd, h);
+      }
+    }
+  }
+}
+
+/** Calls fn for each wall of the ring that faces a drivable street (outward normal nx, nz). */
+function streetWalls(ring: number[], streetR: Raster, fn: (ax: number, az: number, bx: number, bz: number, len: number, nx: number, nz: number) => void) {
+  const n = ring.length / 2;
+  for (let q = 0; q < n; q++) {
+    const r = (q + 1) % n;
+    const ax = ring[q * 2], az = ring[q * 2 + 1], bx = ring[r * 2], bz = ring[r * 2 + 1];
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 3) continue;
+    const nx = -(bz - az) / len, nz = (bx - ax) / len;
+    if (!streetR.get((ax + bx) / 2 + nx * 4, (az + bz) / 2 + nz * 4)) continue;
+    fn(ax, az, bx, bz, len, nx, nz);
+  }
+}
+
+/**
+ * A box in a wall's frame: along the wall u0..u1 (from a, direction t), out from it o0..o1 (normal n),
+ * y0..y1. Plain trim faces (facade code -3); `bottom` adds an underside.
+ */
+function wallBox(b: Buf, ax: number, az: number, tx: number, tz: number, nx: number, nz: number, u0: number, u1: number, o0: number, o1: number, y0: number, y1: number, col: RGB, sd: number, h: number, gmin: number, bottom = false) {
+  const P = (u: number, o: number, y: number) => [ax + tx * u + nx * o, y, az + tz * u + nz * o];
+  const dark: RGB = [col[0] * 0.78, col[1] * 0.78, col[2] * 0.78];
+  face4(b, [P(u0, o1, y0), P(u1, o1, y0), P(u1, o1, y1), P(u0, o1, y1)], [nx, 0, nz], col, u0, u1, gmin, sd, h);
+  face4(b, [P(u0, o1, y1), P(u1, o1, y1), P(u1, o0, y1), P(u0, o0, y1)], [0, 1, 0], col, u0, u1, gmin, sd, h);
+  face4(b, [P(u1, o1, y0), P(u1, o0, y0), P(u1, o0, y1), P(u1, o1, y1)], [tx, 0, tz], dark, 0, o1 - o0, gmin, sd, h);
+  face4(b, [P(u0, o0, y0), P(u0, o1, y0), P(u0, o1, y1), P(u0, o0, y1)], [-tx, 0, -tz], dark, 0, o1 - o0, gmin, sd, h);
+  if (o0 > 0.01) face4(b, [P(u1, o0, y0), P(u0, o0, y0), P(u0, o0, y1), P(u1, o0, y1)], [-nx, 0, -nz], dark, u1, u0, gmin, sd, h);
+  if (bottom) face4(b, [P(u0, o0, y0), P(u1, o0, y0), P(u1, o1, y0), P(u0, o1, y0)], [0, -1, 0], dark, u0, u1, gmin, sd, h);
+}
+
+/** A brownstone stoop: steps rising from the sidewalk to the parlor-floor door at `rise`, between stone cheek walls. */
+function stoop(b: Buf, x: number, z: number, tx: number, tz: number, nx: number, nz: number, gmin: number, rise: number, col: RGB, sd: number, h: number) {
+  const steps = Math.max(4, Math.round(rise / 0.19)), run = 0.29, w = 1.7;
+  const stone: RGB = [col[0] * 1.05, col[1] * 1.05, col[2] * 1.05];
+  const ax = x - tx * (w / 2), az = z - tz * (w / 2);
+  const landing = 1.25;
+  // Top landing, then each step out toward the street.
+  wallBox(b, ax, az, tx, tz, nx, nz, 0, w, 0, landing, gmin, gmin + rise, stone, sd, h, gmin);
+  for (let s = 0; s < steps - 1; s++) {
+    const o0 = landing + s * run, y1 = gmin + rise * (1 - (s + 1) / steps);
+    wallBox(b, ax, az, tx, tz, nx, nz, 0, w, o0, o0 + run, gmin, y1, stone, sd, h, gmin);
+  }
+  // Cheek walls (sloping caps) with a newel post at the bottom.
+  const out = landing + (steps - 1) * run;
+  for (const u of [-0.22, w]) {
+    wallBox(b, ax, az, tx, tz, nx, nz, u, u + 0.22, 0, out, gmin, gmin + rise + 0.75, col, sd, h, gmin);
+    wallBox(b, ax, az, tx, tz, nx, nz, u - 0.03, u + 0.25, out - 0.35, out + 0.05, gmin, gmin + 1.1, col, sd, h, gmin);
+  }
+}
+
+/**
+ * A New York fire escape on a street wall between u0 and u1, as a few see-through quads in the
+ * ironwork mesh (its shader cuts the bars and slats): a slatted platform with railings at each floor
+ * above the ground floor, a stair between platforms, a drop ladder over the sidewalk.
+ * Iron uv = (meters along, meters up); color r = pattern (1 railing, 2 slats, 3 rungs).
+ */
+function fireEscape(b: Buf, ax: number, az: number, tx: number, tz: number, nx: number, nz: number, u0: number, u1: number, gmin: number, first: number, floorH: number, h: number) {
+  const depth = 1.15;
+  const P = (u: number, o: number, y: number): [number, number, number] => [ax + tx * u + nx * o, y, az + tz * u + nz * o];
+  const quad = (p: [number, number, number][], uv: number[], pat: number) => {
+    const base = b.count;
+    p.forEach((q, i) => { b.v(q[0], q[1], q[2]); b.uv.push(uv[i * 2], uv[i * 2 + 1]); b.col.push(pat * 60, 0, 0); });
+    b.quad(base, base + 1, base + 2, base + 3);
+  };
+  const floors = Math.floor((h - first - 1.2) / floorH);
+  for (let k = 1; k <= floors; k++) {
+    const y = gmin + first + floorH * k - 0.05;
+    if (y > gmin + h - 1.5) break;
+    const L = u1 - u0;
+    quad([P(u0, 0.05, y), P(u1, 0.05, y), P(u1, depth, y), P(u0, depth, y)], [0, 0, L, 0, L, depth, 0, depth], 2);
+    quad([P(u0, depth, y), P(u1, depth, y), P(u1, depth, y + 1.0), P(u0, depth, y + 1.0)], [0, 0, L, 0, L, 1.0, 0, 1.0], 1);
+    quad([P(u0, 0.05, y), P(u0, depth, y), P(u0, depth, y + 1.0), P(u0, 0.05, y + 1.0)], [0, 0, depth, 0, depth, 1.0, 0, 1.0], 1);
+    quad([P(u1, depth, y), P(u1, 0.05, y), P(u1, 0.05, y + 1.0), P(u1, depth, y + 1.0)], [0, 0, depth, 0, depth, 1.0, 0, 1.0], 1);
+    // The stair up to the next platform: a steep slatted ramp, alternating ends.
+    if (k < floors) {
+      const left = k % 2 === 1, ua = left ? u0 + 0.25 : u1 - 0.25, ub = left ? ua + 1.6 : ua - 1.6;
+      const run = Math.hypot(1.6, floorH);
+      quad([P(ua, 0.35, y), P(ua, 0.95, y), P(ub, 0.95, y + floorH), P(ub, 0.35, y + floorH)], [0, 0, 0.6, 0, 0.6, run, 0, run], 3);
+    }
+  }
+  // Drop ladder hanging from the lowest platform.
+  if (floors >= 1) {
+    const y = gmin + first + floorH - 0.05, ul = u1 - 0.7;
+    quad([P(ul, depth - 0.2, y - 2.1), P(ul + 0.5, depth - 0.2, y - 2.1), P(ul + 0.5, depth - 0.2, y), P(ul, depth - 0.2, y)], [0, 0, 0.5, 0, 0.5, 2.1, 0, 2.1], 3);
+  }
+}
+
+/** A New York sidewalk shed (scaffolding): a green plywood deck on posts over the sidewalk. */
+function shed(b: Buf, ax: number, az: number, tx: number, tz: number, nx: number, nz: number, len: number, gmin: number, sd: number, h: number) {
+  const green: RGB = [52, 84, 58], post: RGB = [70, 92, 74], depth = 2.0, y = gmin + 3.3;
+  wallBox(b, ax, az, tx, tz, nx, nz, 0.3, len - 0.3, 0, depth, y, y + 0.35, green, sd, h, gmin, true);
+  wallBox(b, ax, az, tx, tz, nx, nz, 0.3, len - 0.3, depth - 0.06, depth, y + 0.35, y + 1.25, green, sd, h, gmin);
+  for (let u = 0.4; u < len - 0.4; u += 2.4) wallBox(b, ax, az, tx, tz, nx, nz, u, u + 0.12, depth - 0.2, depth - 0.08, gmin, y, post, sd, h, gmin);
+}
+
+/**
+ * Sidewalks on both sides of a street centerline between arc lengths s0 and s1: a top `curb` above
+ * the road from offset `inner` to `outer`, a curb face down to the road, and an outer edge. Records
+ * the raised stretches in `curbs` for walking.
+ */
+function raisedWalk(b: Buf, pts: number[], cum: number[], s0: number, s1: number, inner: number, outer: number, hAt: (x: number, z: number) => number, lift: number, curb: number, curbs: number[], solid: (x: number, z: number) => boolean) {
+  const n = pts.length / 2;
+  // Mitered right-hand normals per point (as in ribbon()).
+  const nx: number[] = [], nz: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const x = pts[i * 2], z = pts[i * 2 + 1];
+    let tx = 0, tz = 0;
+    if (i > 0) { const dx = x - pts[i * 2 - 2], dz = z - pts[i * 2 - 1], l = Math.hypot(dx, dz) || 1; tx += dx / l; tz += dz / l; }
+    if (i < n - 1) { const dx = pts[i * 2 + 2] - x, dz = pts[i * 2 + 3] - z, l = Math.hypot(dx, dz) || 1; tx += dx / l; tz += dz / l; }
+    const tl = Math.hypot(tx, tz) || 1;
+    tx /= tl; tz /= tl;
+    let k = 1;
+    if (i > 0 && i < n - 1) {
+      const dx = x - pts[i * 2 - 2], dz = z - pts[i * 2 - 1], l = Math.hypot(dx, dz) || 1;
+      k = Math.min(2.2, 1 / Math.max(0.3, (dx / l) * tx + (dz / l) * tz));
+    }
+    nx.push(-tz * k); nz.push(tx * k);
+  }
+  // Where a building stands a little way back, the paving runs on up to its wall.
+  const reach = (i: number, side: number) => {
+    for (let d = outer + 0.5; d <= outer + 6; d += 0.75) {
+      if (solid(pts[i * 2] + nx[i] * d * side, pts[i * 2 + 1] + nz[i] * d * side)) return d + 0.4;
+    }
+    return outer;
+  };
+  const outR = Array.from({ length: n }, (_, i) => reach(i, 1)), outL = Array.from({ length: n }, (_, i) => reach(i, -1));
+  for (let i = 0; i + 1 < n; i++) {
+    const a = Math.max(s0, cum[i]), c = Math.min(s1, cum[i + 1]);
+    const segL = cum[i + 1] - cum[i];
+    if (c - a < 0.05 || segL < 1e-3) continue;
+    const ta = (a - cum[i]) / segL, tb = (c - cum[i]) / segL;
+    const L = (t: number) => ({
+      x: pts[i * 2] + (pts[i * 2 + 2] - pts[i * 2]) * t, z: pts[i * 2 + 1] + (pts[i * 2 + 3] - pts[i * 2 + 1]) * t,
+      nx: nx[i] + (nx[i + 1] - nx[i]) * t, nz: nz[i] + (nz[i + 1] - nz[i]) * t,
+      oR: outR[i] + (outR[i + 1] - outR[i]) * t, oL: outL[i] + (outL[i + 1] - outL[i]) * t,
+    });
+    const A = L(ta), B = L(tb);
+    curbs.push(A.x, A.z, B.x, B.z, inner, Math.max(A.oR, A.oL, B.oR, B.oL));
+    for (const side of [1, -1]) {
+      const at = (p: typeof A, off: number) => { const x = p.x + p.nx * off * side, z = p.z + p.nz * off * side; return { x, z, g: hAt(x, z) }; };
+      const ia = at(A, inner), ib = at(B, inner), oa = at(A, side > 0 ? A.oR : A.oL), ob = at(B, side > 0 ? B.oR : B.oL);
+      // uv: (meters in from the curb, meters along) on top; -1 marks the granite curb face, -2 the outer edge.
+      const top = (q: { x: number; z: number; g: number }, d: number, s: number) => { b.uv.push(d, s); return b.v(q.x, q.g + lift + curb, q.z); };
+      const wR = (side > 0 ? A.oR : A.oL) - inner, wR1 = (side > 0 ? B.oR : B.oL) - inner;
+      // Top (faces up), wound left-to-right across the direction of travel as in ribbon().
+      const [l0, l1, r0, r1, dl0, dl1, dr0, dr1] = side > 0 ? [ia, ib, oa, ob, 0, 0, wR, wR1] : [oa, ob, ia, ib, wR, wR1, 0, 0];
+      const vl0 = top(l0, dl0, a), vr0 = top(r0, dr0, a), vr1 = top(r1, dr1, c), vl1 = top(l1, dl1, c);
+      b.tri(vl0, vr0, vr1); b.tri(vl0, vr1, vl1);
+      // Curb face toward the road, and the outer edge down to the ground.
+      const wall = (p: { x: number; z: number; g: number }, q: { x: number; z: number; g: number }, y0: number, faceRight: boolean, code: number) => {
+        b.uv.push(code, a, code, c, code, c, code, a);
+        const p0 = b.v(p.x, p.g + y0, p.z), q0 = b.v(q.x, q.g + y0, q.z), q1 = b.v(q.x, q.g + lift + curb, q.z), p1 = b.v(p.x, p.g + lift + curb, p.z);
+        if (faceRight) b.quad(p0, q0, q1, p1); else b.quad(q0, p0, p1, q1);
+      };
+      wall(ia, ib, lift - 0.02, side < 0, -1);
+      wall(oa, ob, 0, side > 0, -2);
+    }
+  }
+}
+
+/** Foam and shallow water along the real shoreline of a water polygon (tile-edge cuts are skipped). */
+function shoreline(b: Buf, rings: number[][], level: number, size: number, strength: number) {
+  const width = 4 + strength * 5;
+  const edge = (v: number) => v < 0.05 || v > size - 0.05;
+  rings.forEach((r, ri) => {
+    const area = signedArea(r);
+    // Water lies inside the outer ring and outside the holes; (-dz, dx) points out of a ring with area < 0.
+    const inward = (area < 0) !== (ri > 0) ? -1 : 1;
+    let u = 0;
+    const n = r.length / 2;
+    for (let q = 0; q < n; q++) {
+      const p = (q + 1) % n;
+      const ax = r[q * 2], az = r[q * 2 + 1], bx = r[p * 2], bz = r[p * 2 + 1];
+      const len = Math.hypot(bx - ax, bz - az);
+      if (len < 0.2) continue;
+      if ((edge(ax) && edge(bx) && Math.abs(ax - bx) < 0.1) || (edge(az) && edge(bz) && Math.abs(az - bz) < 0.1)) { u += len; continue; }
+      const ix = (-(bz - az) / len) * inward, iz = ((bx - ax) / len) * inward;
+      const y = level + 0.035;
+      const base = b.count;
+      for (const [x, z, uu, vv] of [[ax, az, u, 0], [bx, bz, u + len, 0], [bx + ix * width, bz + iz * width, u + len, 1], [ax + ix * width, az + iz * width, u, 1]]) {
+        b.v(x, y, z); b.nrm.push(0, 1, 0); b.uv.push(uu, vv); b.col.push(Math.round(strength * 255), 0, 0);
+      }
+      b.tri(base, base + 2, base + 1); b.tri(base, base + 3, base + 2);
+      u += len;
+    }
+  });
 }

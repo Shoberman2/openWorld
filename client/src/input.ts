@@ -5,6 +5,8 @@ export class Input {
   mouseDY = 0;
   enabled = true;
   locked = false;
+  /** Input from another device (VR controllers): held key codes and an analog stick (x right, y forward). */
+  virtual = { keys: new Set<string>(), x: 0, y: 0 };
   private pressHandlers = new Map<string, Array<() => void>>();
 
   constructor(private canvas: HTMLCanvasElement) {
@@ -37,7 +39,12 @@ export class Input {
   }
 
   down(code: string) {
-    return this.enabled && this.keys.has(code);
+    return this.enabled && (this.keys.has(code) || this.virtual.keys.has(code));
+  }
+
+  /** Fire a key's press handlers as if it were tapped (VR controller buttons). */
+  press(code: string) {
+    this.pressHandlers.get(code)?.forEach((h) => h());
   }
 
   /** Movement axes: x = strafe right, y = forward. */
@@ -47,6 +54,7 @@ export class Input {
     if (this.down('KeyS') || this.down('ArrowDown')) y -= 1;
     if (this.down('KeyD') || this.down('ArrowRight')) x += 1;
     if (this.down('KeyA') || this.down('ArrowLeft')) x -= 1;
+    if (this.enabled) { x = Math.max(-1, Math.min(1, x + this.virtual.x)); y = Math.max(-1, Math.min(1, y + this.virtual.y)); }
     return { x, y };
   }
 
@@ -62,6 +70,7 @@ export class Input {
     this.enabled = on;
     if (!on) {
       this.keys.clear();
+      this.virtual.keys.clear();
       if (document.pointerLockElement) document.exitPointerLock();
     }
   }

@@ -6,7 +6,7 @@ import { mulberry32 } from './city/layout.ts';
 import { laneOffsets, type Streets } from './city/streets.ts';
 import { shared } from './engine.ts';
 
-export type TypeId = 'sedan' | 'suv' | 'taxi' | 'bus' | 'truck';
+export type TypeId = 'sedan' | 'suv' | 'taxi' | 'pickup' | 'van' | 'bus' | 'truck';
 
 export interface CarType { id: TypeId; length: number; speed: number; body: THREE.BufferGeometry; lights: THREE.BufferGeometry }
 
@@ -23,46 +23,117 @@ function paint(g: THREE.BufferGeometry, c: THREE.ColorRepresentation) {
 function wheels(len: number, width: number, r: number, axles: number[]) {
   const out: THREE.BufferGeometry[] = [];
   for (const z of axles) for (const s of [-1, 1]) {
-    out.push(paint(new THREE.CylinderGeometry(r, r, 0.28, 14).rotateZ(Math.PI / 2).translate(s * (width / 2 - 0.1), r, z * len), 0x111111));
-    out.push(paint(new THREE.CylinderGeometry(r * 0.55, r * 0.55, 0.3, 10).rotateZ(Math.PI / 2).translate(s * (width / 2 - 0.08), r, z * len), 0x8a8d91));
+    out.push(paint(new THREE.CylinderGeometry(r, r, 0.26, 16).rotateZ(Math.PI / 2).translate(s * (width / 2 - 0.12), r, z * len), 0x141414));
+    out.push(paint(new THREE.CylinderGeometry(r * 0.58, r * 0.58, 0.28, 12).rotateZ(Math.PI / 2).translate(s * (width / 2 - 0.1), r, z * len), 0x9a9da1));
   }
   return out;
 }
 
-function car(len: number, w: number, h: number, cabinLen: number, cabinH: number, color: number, glass = 0x161b22): THREE.BufferGeometry[] {
+/**
+ * A car side profile (front at -len/2, y up from the ground) extruded across the car's width, with
+ * softly beveled edges: reads as a real, well-proportioned vehicle instead of stacked boxes.
+ */
+function profile(pts: [number, number][], w: number, color: number, bevel = 0.05) {
+  const shape = new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y)));
+  const g = new THREE.ExtrudeGeometry(shape, { depth: w - bevel * 2, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 2, curveSegments: 1 });
+  g.translate(0, 0, -(w - bevel * 2) / 2).rotateY(Math.PI / 2);
+  return paint(g, color);
+}
+
+const GLASS = 0x1b232c;
+
+/** Glass around the cabin: a slightly wider slab of the greenhouse, so side windows, windshield and rear window show dark. */
+function glass(pts: [number, number][], w: number) {
+  return profile(pts, w + 0.03, GLASS, 0.02);
+}
+
+/** Thin body-colored pillar dividing the side windows. */
+function pillar(z: number, y0: number, y1: number, w: number, color: number) {
+  return paint(new THREE.BoxGeometry(w + 0.06, y1 - y0, 0.12).translate(0, (y0 + y1) / 2, z), color);
+}
+
+function bumpers(len: number, w: number, y: number) {
   return [
-    paint(new RoundedBoxGeometry(w, h * 0.55, len, 3, 0.18).translate(0, 0.35 + h * 0.275, 0), color),
-    paint(new RoundedBoxGeometry(w * 0.86, cabinH, cabinLen, 3, 0.22).translate(0, 0.35 + h * 0.55 + cabinH / 2 - 0.06, -len * 0.04), glass),
-    paint(new THREE.BoxGeometry(w * 0.88, 0.05, cabinLen * 0.7).translate(0, 0.35 + h * 0.55 + cabinH - 0.06, -len * 0.04), color),
-    paint(new THREE.BoxGeometry(w * 1.01, 0.18, 0.2).translate(0, 0.5, len / 2), 0x1a1a1a),
-    paint(new THREE.BoxGeometry(w * 1.01, 0.18, 0.2).translate(0, 0.5, -len / 2), 0x1a1a1a),
-    ...wheels(len, w, 0.34, [0.32, -0.32]),
+    paint(new THREE.BoxGeometry(w + 0.04, 0.2, 0.16).translate(0, y, len / 2), 0x2a2c2f),
+    paint(new THREE.BoxGeometry(w + 0.04, 0.2, 0.16).translate(0, y, -len / 2), 0x2a2c2f),
   ];
 }
 
 function lightsFor(len: number, w: number, y: number, extra: THREE.BufferGeometry[] = []) {
   const head = 0xfff4dc, tail = 0xff1a10;
   return mergeGeometries([
-    paint(new THREE.BoxGeometry(0.42, 0.14, 0.05).translate(-w / 2 + 0.32, y, len / 2 + 0.01), head),
-    paint(new THREE.BoxGeometry(0.42, 0.14, 0.05).translate(w / 2 - 0.32, y, len / 2 + 0.01), head),
-    paint(new THREE.BoxGeometry(0.38, 0.14, 0.05).translate(-w / 2 + 0.3, y, -len / 2 - 0.01), tail),
-    paint(new THREE.BoxGeometry(0.38, 0.14, 0.05).translate(w / 2 - 0.3, y, -len / 2 - 0.01), tail),
+    paint(new THREE.BoxGeometry(0.4, 0.16, 0.05).translate(-w / 2 + 0.34, y, len / 2 + 0.02), head),
+    paint(new THREE.BoxGeometry(0.4, 0.16, 0.05).translate(w / 2 - 0.34, y, len / 2 + 0.02), head),
+    paint(new THREE.BoxGeometry(0.34, 0.18, 0.05).translate(-w / 2 + 0.3, y, -len / 2 - 0.02), tail),
+    paint(new THREE.BoxGeometry(0.34, 0.18, 0.05).translate(w / 2 - 0.3, y, -len / 2 - 0.02), tail),
     ...extra,
   ]);
 }
 
+/** A three-box sedan (the taxi is the boxy '80s version, in yellow). */
+function sedanBody(L: number, w: number, color: number, boxy: boolean) {
+  const f = -L / 2, b = L / 2;
+  const belt = boxy ? 0.98 : 0.95, roof = boxy ? 1.42 : 1.4;
+  const ws0 = f + (boxy ? 1.35 : 1.25), ws1 = f + (boxy ? 1.85 : 1.95), rw0 = b - (boxy ? 1.25 : 1.45), rw1 = b - (boxy ? 0.85 : 0.95);
+  const body: [number, number][] = [
+    [f + 0.06, 0.3], [f, 0.42], [f, 0.74], [f + 0.12, boxy ? 0.86 : 0.83], [ws0, belt], [ws1, roof], [rw0, roof], [rw1, belt], [b - 0.08, belt - 0.03], [b, 0.82], [b, 0.42], [b - 0.06, 0.3],
+  ];
+  const win: [number, number][] = [[ws0 + 0.03, belt + 0.01], [ws1 + 0.01, roof - 0.06], [rw0 - 0.01, roof - 0.06], [rw1 - 0.03, belt + 0.01]];
+  return [profile(body, w, color), glass(win, w), pillar((ws1 + rw0) / 2, belt, roof - 0.04, w, color), ...bumpers(L, w, 0.45), ...wheels(L, w, 0.34, [0.31, -0.31])];
+}
+
 export function makeTypes(): CarType[] {
-  const sedan: CarType = { id: 'sedan', length: 4.7, speed: 12, body: mergeGeometries(car(4.7, 1.85, 1.3, 2.4, 0.62, 0xffffff)), lights: lightsFor(4.7, 1.85, 0.85) };
-  const suv: CarType = { id: 'suv', length: 4.95, speed: 11.5, body: mergeGeometries(car(4.95, 2.0, 1.65, 3.2, 0.78, 0xffffff)), lights: lightsFor(4.95, 2.0, 1.0) };
-  const roofSign = paint(new THREE.BoxGeometry(0.9, 0.32, 0.3).translate(0, 2.05, -0.2), 0xfff2b0);
+  const W = 0xffffff; // body vertices stay white so each instance's paint shows through
+  const sedan: CarType = { id: 'sedan', length: 4.7, speed: 12, body: mergeGeometries(sedanBody(4.7, 1.84, W, false)), lights: lightsFor(4.7, 1.84, 0.72) };
   const taxi: CarType = {
-    id: 'taxi', length: 4.9, speed: 13,
-    body: mergeGeometries([
-      ...car(4.9, 1.88, 1.32, 2.5, 0.62, 0xf2b705),
-      paint(new THREE.BoxGeometry(1.9, 0.12, 4.0).translate(0, 0.75, 0), 0x1a1a1a), // checker stripe
-    ]),
-    lights: lightsFor(4.9, 1.88, 0.86, [roofSign]),
+    id: 'taxi', length: 5.1, speed: 13,
+    body: mergeGeometries([...sedanBody(5.1, 1.9, 0xf2b90c, true), paint(new THREE.BoxGeometry(0.75, 0.26, 0.32).translate(0, 1.55, -0.15), 0x1c1c1c)]),
+    lights: lightsFor(5.1, 1.9, 0.72, [paint(new THREE.BoxGeometry(0.72, 0.2, 0.34).translate(0, 1.56, -0.15), 0xfff2b0)]),
   };
+
+  // Boxy off-roader with a spare wheel on the tailgate.
+  const sL = 4.6, sw = 1.95, sf = -sL / 2, sb = sL / 2;
+  const suv: CarType = {
+    id: 'suv', length: sL, speed: 11.5,
+    body: mergeGeometries([
+      profile([[sf + 0.05, 0.38], [sf, 0.5], [sf, 1.05], [sf + 0.1, 1.12], [sf + 1.15, 1.16], [sf + 1.5, 1.8], [sb - 0.05, 1.82], [sb, 1.7], [sb, 0.5], [sb - 0.05, 0.38]], sw, W, 0.07),
+      glass([[sf + 1.18, 1.19], [sf + 1.49, 1.75], [sb + 0.02, 1.75], [sb + 0.02, 1.2]], sw),
+      pillar(sf + 2.45, 1.16, 1.78, sw, W), pillar(sb - 0.6, 1.16, 1.78, sw, W),
+      paint(new THREE.CylinderGeometry(0.36, 0.36, 0.24, 16).rotateX(Math.PI / 2).translate(0, 1.0, sb + 0.14), 0x141414),
+      ...bumpers(sL, sw, 0.55), ...wheels(sL, sw, 0.4, [0.3, -0.3]),
+    ]),
+    lights: lightsFor(sL, sw, 0.9),
+  };
+
+  // Pickup: cab, open bed with walls and a tailgate.
+  const pL = 5.4, pw = 1.98, pf = -pL / 2, pb = pL / 2, cabEnd = pf + 2.75;
+  const pickup: CarType = {
+    id: 'pickup', length: pL, speed: 11.5,
+    body: mergeGeometries([
+      profile([[pf + 0.05, 0.4], [pf, 0.52], [pf, 1.05], [pf + 0.12, 1.15], [pf + 1.3, 1.18], [pf + 1.78, 1.8], [cabEnd - 0.08, 1.82], [cabEnd, 1.74], [cabEnd, 0.8], [pb, 0.8], [pb, 0.52], [pb - 0.05, 0.4]], pw, W, 0.06),
+      glass([[pf + 1.33, 1.21], [pf + 1.77, 1.76], [cabEnd + 0.02, 1.76], [cabEnd + 0.02, 1.22]], pw),
+      paint(new THREE.BoxGeometry(0.1, 0.4, pb - cabEnd).translate(pw / 2 - 0.05, 1.0, (pb + cabEnd) / 2), W),
+      paint(new THREE.BoxGeometry(0.1, 0.4, pb - cabEnd).translate(-pw / 2 + 0.05, 1.0, (pb + cabEnd) / 2), W),
+      paint(new THREE.BoxGeometry(pw, 0.4, 0.1).translate(0, 1.0, pb - 0.05), W),
+      paint(new THREE.BoxGeometry(pw - 0.2, 0.02, pb - cabEnd - 0.1).translate(0, 0.81, (pb + cabEnd) / 2), 0x26282b),
+      ...bumpers(pL, pw, 0.55), ...wheels(pL, pw, 0.4, [0.33, -0.3]),
+    ]),
+    lights: lightsFor(pL, pw, 0.92),
+  };
+
+  // Delivery van: short hood, tall box, cab windows only.
+  const vL = 5.9, vw = 2.05, vf = -vL / 2, vb = vL / 2;
+  const van: CarType = {
+    id: 'van', length: vL, speed: 10.5,
+    body: mergeGeometries([
+      profile([[vf + 0.05, 0.38], [vf, 0.5], [vf, 1.0], [vf + 0.15, 1.1], [vf + 0.7, 1.18], [vf + 1.3, 2.05], [vf + 1.55, 2.6], [vb - 0.05, 2.62], [vb, 2.55], [vb, 0.5], [vb - 0.05, 0.38]], vw, W, 0.06),
+      glass([[vf + 0.72, 1.21], [vf + 1.28, 2.0], [vf + 1.95, 2.0], [vf + 1.95, 1.22]], vw),
+      paint(new THREE.BoxGeometry(vw + 0.02, 0.28, vL - 2.3).translate(0, 1.15, vb - (vL - 2.3) / 2 - 0.1), 0x2f6fbf),
+      ...bumpers(vL, vw, 0.5), ...wheels(vL, vw, 0.38, [0.33, -0.3]),
+    ]),
+    lights: lightsFor(vL, vw, 0.85),
+  };
+
   const bus: CarType = {
     id: 'bus', length: 12, speed: 9,
     body: mergeGeometries([
@@ -83,8 +154,17 @@ export function makeTypes(): CarType[] {
     ]),
     lights: lightsFor(7.5, 2.4, 0.9),
   };
-  return [sedan, suv, taxi, bus, truck];
+  return [sedan, suv, taxi, pickup, van, bus, truck];
 }
+
+/** Share of each type in ordinary traffic (taxis come on top of this, by city). */
+export const MIX: [TypeId, number][] = [['sedan', 40], ['suv', 22], ['pickup', 12], ['van', 12], ['bus', 6], ['truck', 8]];
+export function pickType(r: number): TypeId {
+  let t = r * MIX.reduce((a, m) => a + m[1], 0);
+  for (const [id, w] of MIX) { t -= w; if (t <= 0) return id; }
+  return 'sedan';
+}
+export const emptyMix = (): Record<TypeId, number> => ({ taxi: 0, sedan: 0, suv: 0, pickup: 0, van: 0, bus: 0, truck: 0 });
 
 interface Car {
   type: CarType;
@@ -118,13 +198,8 @@ export class Traffic {
   constructor(private l: Layout, private streets: Streets, count: number) {
     const rand = mulberry32(1234);
     const p = l.profile;
-    const want: Record<TypeId, number> = { taxi: 0, sedan: 0, suv: 0, bus: 0, truck: 0 };
-    const pick = (): TypeId => {
-      const r = rand();
-      if (r < p.taxiShare) return 'taxi';
-      const r2 = rand();
-      return r2 < 0.5 ? 'sedan' : r2 < 0.82 ? 'suv' : r2 < 0.9 ? 'bus' : 'truck';
-    };
+    const want = emptyMix();
+    const pick = (): TypeId => (rand() < p.taxiShare ? 'taxi' : pickType(rand()));
     const plan: TypeId[] = Array.from({ length: count }, pick);
     plan.forEach((t) => want[t]++);
     const bodyMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.55 });
@@ -138,7 +213,7 @@ export class Traffic {
       this.bodies.set(t.id, b); this.lights.set(t.id, li);
       this.group.add(b, li);
     }
-    const used: Record<TypeId, number> = { taxi: 0, sedan: 0, suv: 0, bus: 0, truck: 0 };
+    const used = emptyMix();
     for (const tid of plan) {
       const type = this.types.find((t) => t.id === tid)!;
       const axis: 'x' | 'z' = rand() < 0.6 ? 'z' : 'x';

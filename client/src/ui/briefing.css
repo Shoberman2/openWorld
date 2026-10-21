@@ -1,0 +1,65 @@
+/* Briefing (desk panel + phone Today) and Schedules (phone). */
+.bf-headline { margin: 2px 0 2px; font-size: 17px; line-height: 1.35; font-weight: 650; color: var(--text, #f2f4f8); }
+.bf-since { margin: 0 0 10px; font-size: 12px; color: #9aa3b2; }
+.bf-h { margin: 16px 2px 6px; font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #9aa3b2; }
+.bf-list { list-style: none; margin: 0; padding: 0; }
+.bf-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.07); }
+.bf-row > div { flex: 1; min-width: 0; }
+.bf-row b { display: block; font-size: 13.5px; }
+.bf-row small { display: block; color: #c4cbd6; font-size: 12.5px; line-height: 1.35; margin-top: 2px; overflow-wrap: anywhere; }
+.bf-row em { display: block; font-style: normal; color: #8a93a2; font-size: 11.5px; margin-top: 3px; }
+.bf-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; background: #6b7685; }
+.bf-dot.done { background: #3ddc97; }
+.bf-dot.error { background: #ff6b6b; }
+.bf-dot.needs_input { background: #ffb347; box-shadow: 0 0 0 4px rgba(255,179,71,.18); }
+.bf-dot.pr { background: #b58bff; }
+.bf-dot.sched { background: #4fb2ff; }
+.bf-btn { flex: none; border: 0; border-radius: 10px; padding: 6px 12px; background: #0a84ff; color: #fff; font: 600 12px/1.2 inherit; cursor: pointer; text-decoration: none; white-space: nowrap; }
+.bf-btn.ghost { background: #262a33; color: #d4d9e3; }
+.bf-btn:disabled { opacity: .5; }
+.bf-question { margin: 4px 0 6px; padding: 8px 10px; border-radius: 10px; background: rgba(255,179,71,.1); color: #ffe2b8; font-size: 13px; line-height: 1.4; }
+.bf-answer { display: flex; gap: 6px; }
+.bf-answer input { flex: 1; min-width: 0; border: 1px solid rgba(255,255,255,.12); background: rgba(0,0,0,.25); color: inherit; border-radius: 10px; padding: 7px 10px; font: inherit; font-size: 13px; }
+.bf-sent { margin: 2px 0 0; color: #3ddc97; font-size: 12.5px; }
+.bf-empty { color: #9aa3b2; font-size: 13px; line-height: 1.45; margin: 4px 2px; }
+.briefing-panel .panel-footer { display: flex; justify-content: flex-end; }
+.bf-toast { max-width: 420px; }
+.bf-toast-actions { display: flex; gap: 6px; margin-top: 8px; }
+
+/* Phone home: the Today widget */
+.today-widget { width: 100%; text-align: left; border: 0; cursor: pointer; display: block; margin: 0 0 10px; padding: 12px 14px; border-radius: 20px; color: #fff;
+  background: linear-gradient(160deg, rgba(232,163,61,.32), rgba(232,163,61,.08)); }
+.today-widget .tw-top { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #ffcf8a; }
+.today-widget .tw-top i { margin-left: auto; font-style: normal; background: #ff9f0a; color: #1a1206; border-radius: 999px; padding: 1px 7px; letter-spacing: 0; }
+.today-widget p { margin: 6px 0 0; font-size: 13.5px; line-height: 1.35; }
+
+/* Phone: Schedules app */
+.sc-row { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.07); }
+.sc-row .sc-top { display: flex; align-items: center; gap: 10px; }
+.sc-row .sc-top > div { flex: 1; min-width: 0; }
+.sc-row b { display: block; font-size: 13.5px; }
+.sc-row small { display: block; color: #9aa3b2; font-size: 12px; margin-top: 2px; }
+.sc-row p { margin: 6px 0 8px; color: #c4cbd6; font-size: 12.5px; line-height: 1.35; overflow-wrap: anywhere; }
+.sc-actions { display: flex; gap: 6px; }
+.sc-toggle { flex: none; position: relative; width: 44px; height: 26px; border-radius: 999px; border: 0; background: #3a3f4a; cursor: pointer; transition: background .15s; }
+.sc-toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.sc-toggle.on { background: #34c759; }
+.sc-toggle.on::after { transform: translateX(18px); }
+.sc-templates { display: grid; gap: 8px; }
+.sc-tpl { text-align: left; border: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.05); color: inherit; border-radius: 14px; padding: 10px 12px; cursor: pointer; font: inherit; }
+.sc-tpl b { display: block; font-size: 13.5px; }
+.sc-tpl small { display: block; color: #9aa3b2; font-size: 12px; margin-top: 2px; line-height: 1.35; }
+.sc-form { display: grid; gap: 8px; padding: 4px 0 12px; }
+.sc-form label { display: grid; gap: 4px; font-size: 11.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #9aa3b2; }
+.sc-form select, .sc-form textarea, .sc-form input { border: 1px solid rgba(255,255,255,.12); background: rgba(0,0,0,.25); color: #f2f4f8; border-radius: 10px; padding: 8px 10px; font: inherit; font-size: 13px; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.sc-form textarea { min-height: 84px; resize: vertical; }
+.sc-form .sc-when { display: flex; gap: 8px; }
+.sc-form .sc-when > * { flex: 1; min-width: 0; }
+.sc-note { color: #8a93a2; font-size: 11.5px; line-height: 1.4; margin: 2px 2px 10px; }
+
+/* Phone dock with six or more apps (Schedules, Review…): smaller tiles so they all fit. */
+.home-dock:has(> :nth-child(6)) { padding-inline: 4px; justify-content: space-between; }
+.home-dock:has(> :nth-child(6)) .ai-tile { width: 40px; height: 40px; border-radius: 11px; }
+.home-dock:has(> :nth-child(6)) .ai-tile svg { width: 22px; height: 22px; }
+.home-dock:has(> :nth-child(6)) .ai-name { font-size: 9.5px; }
+.home-dock:has(> :nth-child(7)) .ai-tile { width: 36px; height: 36px; }

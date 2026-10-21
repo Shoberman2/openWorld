@@ -5,16 +5,18 @@ import type { GeoPlace, Repo } from '../../../shared/types.ts';
 import { Colliders } from '../player.ts';
 import { updateGlow } from '../city/buildings.ts';
 import type { Place } from '../place.ts';
-import { GeoFrame, haversine, type LatLon } from './frame.ts';
+import { GeoFrame, WORLD, haversine, type LatLon } from './frame.ts';
 import { Pool } from './pool.ts';
 import { Chunks, type BuildingHit } from './chunks.ts';
+import { LandmarkLayer } from './landmarks/index.ts';
 import { FarTerrain } from './far.ts';
-import { EarthTraffic, EarthPedestrians } from './traffic.ts';
+import { EarthTraffic, EarthPedestrians, EarthShips } from './traffic.ts';
 import { buildEarthRepo, chooseEarthSites, type EarthSite, type HostFp } from './sites.ts';
 import { updateWater } from './style.ts';
 import { OceanWaves } from './ocean.ts';
 import type { DayNight } from '../engine.ts';
 import { driveLeft } from './build/chunk.ts';
+import type { FootprintData } from './build/types.ts';
 
 const HOME_R = 850;
 
@@ -35,8 +37,24 @@ export interface EarthApi {
   attach(camera: THREE.Camera, sky: DayNight): void;
   /** An ordinary building you're standing at (not a project HQ), for walking inside. */
   buildingNear(x: number, z: number, maxDist?: number): BuildingHit | null;
-  stats(): { chunks: number; loading: number; buildings: number; cars: number };
+  /** Ordinary buildings whose center is within r meters of (x, z), in world coordinates (detailed chunks only). */
+  footprintsNear(x: number, z: number, r: number): { fp: FootprintData; chunk: string; ring: number[]; cx: number; cz: number }[];
+  stats(): { chunks: number; loading: number; buildings: number; cars: number; far: number; queued: number; ghosts: number; rebases: number };
+  /** Lighter streaming (smaller radius), for VR. */
+  setLite(on: boolean): void;
+  /**
+   * Flying far, the world quietly re-centers on you (keeping coordinates small and the map true to
+   * scale). Everything that holds a position in the old frame gets moved by `map` (in place).
+   */
+  onShift: ((map: (v: THREE.Vector3) => void) => void) | null;
+  /** The building in the middle of the view, after a short look (name or address, and neighborhood). */
+  lookingAt(): { title: string; sub: string } | null;
+  /** Street name signs at intersections on or off. */
+  setStreetSigns(on: boolean): void;
 }
+
+/** Re-center the world once you're this far from its origin (more when you're going fast). */
+const REBASE_M = 20_000;
 
 export async function searchPlaces(q: string): Promise<GeoPlace[]> {
   const res = await fetch(`/api/geo/search?q=${encodeURIComponent(q)}`);
@@ -65,7 +83,12 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
   root.add(far.group, chunks.group);
   // ?q=low: a lighter world for slow GPUs (and headless tests): smaller streaming radius.
   const low = new URLSearchParams(location.search).get('q') === 'low';
-  const tune = () => { if (low) { chunks.radius0 = 450; chunks.radius1 = 1300; far.radius = 1; } };
+  // VR (setLite) streams less too: every frame is drawn twice on a headset GPU.
+  let lite = false, base: [number, number, number] | null = null;
+  const tune = () => {
+    base ??= [chunks.radius0, chunks.radius1, far.radius];
+    [chunks.radius0, chunks.radius1, far.radius] = low ? [450, 1300, 1] : lite ? [500, 1800, 1] : base;
+  };
   tune();
 
   let lastGround = 0;
@@ -84,22 +107,28 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
 
   // ---- Projects move in ----
   say(`Moving ${repos.length} projects into the neighborhood…`);
+  // Projects take over real buildings and leave them as they are; landmarks stay landmarks.
+  const LANDMARK = /^(place_of_worship|museum|attraction|monument|historic|castle|town_hall|theatre|library|art_gallery|stadium|college|university|government|embassy|courthouse|zoo|aquarium)$/;
   const fps: HostFp[] = [];
-  for (const ch of chunks.chunks.values()) {
-    if (ch.lod !== 0) continue;
-    for (const f of ch.footprints) {
-      const ring = f.ring.map((v, i) => v + (i % 2 ? ch.z0 : ch.x0));
-      fps.push({ key: f.key, chunk: ch.key, ring, area: f.area, cx: f.cx + ch.x0, cz: f.cz + ch.z0, base: f.base, top: f.top, h: f.h, glass: f.glass, color: f.color });
-    }
-  }
   const fpGrid = new Map<string, HostFp[]>();
-  for (const f of fps) {
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    for (let i = 0; i < f.ring.length; i += 2) { minX = Math.min(minX, f.ring[i]); maxX = Math.max(maxX, f.ring[i]); minZ = Math.min(minZ, f.ring[i + 1]); maxZ = Math.max(maxZ, f.ring[i + 1]); }
-    for (let i = Math.floor(minX / 40); i <= Math.floor(maxX / 40); i++) for (let j = Math.floor(minZ / 40); j <= Math.floor(maxZ / 40); j++) {
-      const k = `${i},${j}`; let l = fpGrid.get(k); if (!l) fpGrid.set(k, (l = [])); l.push(f);
+  const collect = () => {
+    fps.length = 0; fpGrid.clear();
+    for (const ch of chunks.chunks.values()) {
+      if (ch.lod !== 0) continue;
+      for (const f of ch.footprints) {
+        const ring = f.ring.map((v, i) => v + (i % 2 ? ch.z0 : ch.x0));
+        const landmark = !!f.poi && (LANDMARK.test(f.poi.cls) || LANDMARK.test(f.poi.sub));
+        fps.push({ key: f.key, chunk: ch.key, ring, area: f.area, cx: f.cx + ch.x0, cz: f.cz + ch.z0, base: f.base, top: f.top, h: f.h, glass: f.glass, color: f.color, landmark });
+      }
     }
-  }
+    for (const f of fps) {
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (let i = 0; i < f.ring.length; i += 2) { minX = Math.min(minX, f.ring[i]); maxX = Math.max(maxX, f.ring[i]); minZ = Math.min(minZ, f.ring[i + 1]); maxZ = Math.max(maxZ, f.ring[i + 1]); }
+      for (let i = Math.floor(minX / 40); i <= Math.floor(maxX / 40); i++) for (let j = Math.floor(minZ / 40); j <= Math.floor(maxZ / 40); j++) {
+        const k = `${i},${j}`; let l = fpGrid.get(k); if (!l) fpGrid.set(k, (l = [])); l.push(f);
+      }
+    }
+  };
   const inRing = (p: number[], x: number, z: number) => {
     let inside = false;
     for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) if ((p[i + 1] > z) !== (p[j + 1] > z) && x < ((p[j] - p[i]) * (z - p[i + 1])) / (p[j + 1] - p[i + 1]) + p[i]) inside = !inside;
@@ -107,18 +136,21 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
   };
   const solid = (x: number, z: number) => (fpGrid.get(`${Math.floor(x / 40)},${Math.floor(z / 40)}`) ?? []).some((f) => inRing(f.ring, x, z));
   const wet = (x: number, z: number) => !Number.isNaN(chunks.waterAt(x, z));
-  const edges = [...chunks.net.drive, ...chunks.net.walk.filter((e) => !e.drive)];
-  const { sites, added } = chooseEarthSites(repos, fps, edges, solid, wet, heightAt, HOME_R);
-  for (const s of sites) if (s.fp.chunk) chunks.hide(s.fp.chunk, s.fp.key);
-  chunks.keepCpu = false;
-  const addSiteColliders = () => {
-    for (const f of added) {
-      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-      for (let i = 0; i < f.ring.length; i += 2) { minX = Math.min(minX, f.ring[i]); maxX = Math.max(maxX, f.ring[i]); minZ = Math.min(minZ, f.ring[i + 1]); maxZ = Math.max(maxZ, f.ring[i + 1]); }
-      colliders.add({ minX, maxX, minZ, maxZ, maxY: f.top, poly: f.ring }, 'sites');
+  // Not enough real buildings near home (a small town)? Look farther out rather than invent any.
+  let sites: EarthSite[] = [];
+  for (const r of [HOME_R, HOME_R * 1.6, HOME_R * 2.4]) {
+    if (r > HOME_R) {
+      say(`Looking farther out for buildings (${Math.round(r)} m)…`);
+      await chunks.loadAround(0, 0, r);
     }
-  };
-  addSiteColliders();
+    collect();
+    const edges = [...chunks.net.drive, ...chunks.net.walk.filter((e) => !e.drive)];
+    const pick = chooseEarthSites(repos, fps, edges, solid, wet, heightAt, r);
+    sites = pick.sites;
+    if (!pick.leftovers.length) break;
+    console.info(`[earth] ${pick.leftovers.length} projects found no building within ${Math.round(r)} m: ${pick.leftovers.map((p) => `${p.name} (${p.tier})`).join(", ")}`);
+  }
+  chunks.keepCpu = false;
   const sitesGroup = new THREE.Group();
   for (const g of await Promise.all(sites.map((s: EarthSite) => buildEarthRepo(s)))) sitesGroup.add(g);
   sitesGroup.traverse((obj) => { obj.matrixAutoUpdate = false; obj.updateMatrix(); });
@@ -132,9 +164,30 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
   spawn.y = heightAt(spawn.x, spawn.z);
   const spawnFacing = top ? Math.atan2(-top.doorOut.x, -top.doorOut.z) : 0;
   const nyc = Math.abs(home.lat - 40.75) < 0.25 && Math.abs(home.lon + 73.98) < 0.3;
-  const traffic = new EarthTraffic(chunks.net, 150, driveLeft(country), nyc ? 0.4 : 0);
-  const peds = new EarthPedestrians(chunks.net, 64, solid);
-  root.add(traffic.group, peds.group);
+  // Busy streets: lots of cars and caretakers, all instanced; fewer on slow GPUs (?q=low) and in VR.
+  const CARS = 320, BOTS = 300;
+  // Bikes ride with the traffic: everywhere a few couriers, in the Netherlands and Denmark a lot.
+  const BIKES = 110;
+  const bikesFor = (cc: string) => (['nl', 'dk'].includes(cc) ? 110 : ['de', 'be', 'jp', 'cn'].includes(cc) ? 40 : 16);
+  const traffic = new EarthTraffic(chunks.net, CARS, driveLeft(country), nyc ? 0.32 : 0, BIKES);
+  traffic.bikesWanted = bikesFor(country); traffic.driveLeft = driveLeft(country);
+  // Container ships out on the open sea.
+  const ships = new EarthShips(low ? 3 : 6, (x, z) => chunks.waterAt(x, z), () => -e0);
+  const benchesNear = (x: number, z: number, r: number) => {
+    const out: number[] = [];
+    for (const ch of chunks.chunks.values()) {
+      if (ch.lod !== 0 || ch.x0 > x + r || ch.x0 + ch.size < x - r || ch.z0 > z + r || ch.z0 + ch.size < z - r) continue;
+      out.push(...ch.benches);
+    }
+    return out;
+  };
+  const peds = new EarthPedestrians(chunks.net, BOTS, solid, (x, z) => chunks.curbAt(x, z), benchesNear);
+  const crowdBudget = () => {
+    traffic.budget = low ? 110 + Math.round(BIKES / 3) : lite ? 140 + Math.round(BIKES / 3) : CARS + BIKES;
+    peds.budget = low ? 90 : lite ? 120 : BOTS;
+  };
+  crowdBudget();
+  root.add(traffic.group, peds.group, ships.group);
 
   // Sun for this latitude; local solar time from longitude.
   const maxElevation = THREE.MathUtils.clamp(90 - Math.abs(home.lat) + 8, 18, 82);
@@ -166,6 +219,8 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
       // Rebase the world frame at the destination (keeps coordinates small and the map square).
       sayT?.('Flying there…');
       chunks.dispose(); far.dispose();
+      for (const g of ghosts.splice(0)) { g.chunks.dispose(); g.holder.removeFromParent(); }
+      haveLast = false;
       const base = goingHome ? home : { lat, lon };
       frame = new GeoFrame(base.lat, base.lon);
       const [h0, g] = await Promise.all([pool.elev(frame.mx0, frame.my0).catch(() => 0), goingHome ? null : reverseGeo(lat, lon)]);
@@ -181,10 +236,9 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
       // Traffic and people follow the new network.
       traffic.net = chunks.net;
       peds.net = chunks.net;
+      traffic.bikesWanted = bikesFor(country); traffic.driveLeft = driveLeft(country);
       atHome = goingHome;
       sitesGroup.visible = atHome;
-      colliders.removeOwner('sites');
-      if (atHome) addSiteColliders();
       Object.assign(earth, { frame, e0, atHome, country });
       earth.onRebase?.();
     }
@@ -193,6 +247,70 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
     await chunks.loadAround(p.x, p.z, 300, (d, t) => sayT?.(`Streaming the map: tiles ${d}/${t}…`));
     chunks.updateMask(frame.tileAt(14, p.x, p.z));
     return new THREE.Vector3(p.x, heightAt(p.x, p.z), p.z);
+  }
+
+  // ---- Seamless travel: re-centering without a loading screen ----
+  // The old world stays on screen as scenery (moved into the new frame) until the new one covers it.
+  const ghosts: { chunks: Chunks; holder: THREE.Group; at: number }[] = [];
+  let rebases = 0;
+  const lastP = new THREE.Vector3();
+  const vel = new THREE.Vector3();
+  let haveLast = false;
+  /** Re-center on (lat, lon) mid-flight: a pure change of coordinates, nothing reloads behind a fade. */
+  function rebase(base: LatLon, toHome: boolean) {
+    const old = frame;
+    const next = new GeoFrame(base.lat, base.lon);
+    // Local coordinates are linear in mercator meters, so old → new is an exact scale + offset.
+    const s = next.k / old.k;
+    let dmx = old.mx0 - next.mx0;
+    if (dmx > WORLD / 2) dmx -= WORLD; else if (dmx < -WORLD / 2) dmx += WORLD; // across the antimeridian
+    const ox = dmx * next.k, oz = -(old.my0 - next.my0) * next.k;
+    const A = new THREE.Matrix4().set(s, 0, 0, ox, 0, 1, 0, 0, 0, 0, s, oz, 0, 0, 0, 1);
+    const map = (v: THREE.Vector3) => { v.set(v.x * s + ox, v.y, v.z * s + oz); };
+    // Older ghosts ride along.
+    for (const g of ghosts) { g.holder.matrix.premultiply(A); g.holder.matrixWorldNeedsUpdate = true; }
+    // The current detailed world becomes a ghost: still drawn, no longer solid.
+    chunks.freeze();
+    const holder = new THREE.Group();
+    holder.matrixAutoUpdate = false;
+    holder.matrix.copy(A);
+    holder.add(chunks.group);
+    root.add(holder);
+    ghosts.push({ chunks, holder, at: performance.now() });
+    // The horizon just moves across (exact: the local frame is linear in mercator).
+    far.rebase(next, map, s);
+
+    frame = next;
+    chunks = new Chunks(frame, e0, pool, colliders, country);
+    chunks.hidden = toHome ? hiddenAtHome : new Map();
+    chunks.onChange = harvest;
+    root.add(chunks.group);
+    tune();
+    traffic.net = chunks.net;
+    peds.net = chunks.net;
+    ships.reset();
+    atHome = toHome;
+    sitesGroup.visible = atHome;
+    Object.assign(earth, { frame, atHome });
+    lastP.set(lastP.x * s + ox, lastP.y, lastP.z * s + oz);
+    rebases++;
+    earth.onShift?.(map);
+    earth.onRebase?.();
+    // Ask which country we're over now (driving side, regional styles).
+    void reverseGeo(base.lat, base.lon).then((g) => { if (g?.countryCode && frame === next) { country = g.countryCode; earth.country = country; traffic.bikesWanted = bikesFor(country); traffic.driveLeft = driveLeft(country); } });
+  }
+  /** Retire ghost chunks the new world has covered, and whole ghosts once they're empty (or old). */
+  function pruneGhosts() {
+    for (let i = ghosts.length - 1; i >= 0; i--) {
+      const g = ghosts[i];
+      g.chunks.pruneUnder((key) => chunks.chunks.has(key));
+      const age = performance.now() - g.at;
+      if (g.chunks.chunks.size === 0 || age > 30_000 || ghosts.length - i > 3) {
+        g.chunks.dispose();
+        g.holder.removeFromParent();
+        ghosts.splice(i, 1);
+      }
+    }
   }
 
   // Open-sea waves near the coast, following the camera.
@@ -210,12 +328,15 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
 
   // Away from home, ask the geocoder which city we're in (at most every 20 s, after moving 1.5 km).
   let revCity = '', revAt: LatLon | null = null, revTime = -1e9;
+  /** The geocoder found no address under us last time: open sea (or the middle of nowhere). */
+  let revNothing = false;
   const refreshCity = (g: LatLon) => {
     if (performance.now() - revTime < 20000 || (revAt && haversine(revAt, g) < 1500)) return;
     revTime = performance.now(); revAt = g;
     void reverseGeo(g.lat, g.lon).then((r) => {
       const parts = (r?.label ?? '').split(',').map((x) => x.trim()).filter(Boolean);
       revCity = parts.length >= 3 ? parts[1] : parts.length === 2 ? parts[0] : '';
+      revNothing = !r;
     });
   };
 
@@ -226,11 +347,34 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
     frame, e0, home, atHome, country,
     onRebase: null,
     heightAt,
+    onShift: null,
     attach(camera, sky) { cam = camera; dn = sky; },
+    setLite(on) { lite = on; tune(); crowdBudget(); },
+    lookingAt() {
+      if (!cam) return null;
+      const streetNear = (x: number, z: number) => { const n = namesNear(x, z); return n.length && n[0].d < 45 ? n[0].name : null; };
+      const hit = chunks.landmarks.look(cam, performance.now() / 1000, streetNear);
+      if (!hit) return null;
+      const hood = earth.area(hit.x, hit.z).place;
+      return { title: hit.title, sub: [hit.sub, hood].filter((t) => t && t !== hit.title).join(' · ') };
+    },
+    setStreetSigns(on) { LandmarkLayer.signsOn = on; chunks.landmarks.setSigns(on); },
     buildingNear(x, z, maxDist = 1.6) {
       const hit = chunks.buildingNear(x, z, maxDist);
       if (!hit || chunks.hidden.get(hit.chunk.key)?.has(hit.fp.key) || hit.fp.h < 3) return null;
       return hit;
+    },
+    footprintsNear(x, z, r) {
+      const out: { fp: FootprintData; chunk: string; ring: number[]; cx: number; cz: number }[] = [];
+      for (const ch of chunks.chunks.values()) {
+        if (ch.lod !== 0 || Math.abs(ch.x0 + ch.size / 2 - x) > ch.size / 2 + r || Math.abs(ch.z0 + ch.size / 2 - z) > ch.size / 2 + r) continue;
+        for (const f of ch.footprints) {
+          const cx = f.cx + ch.x0, cz = f.cz + ch.z0;
+          if (Math.hypot(cx - x, cz - z) > r || chunks.hidden.get(ch.key)?.has(f.key)) continue;
+          out.push({ fp: f, chunk: ch.key, ring: f.ring.map((v, i) => v + (i % 2 ? ch.z0 : ch.x0)), cx, cz });
+        }
+      }
+      return out;
     },
     async teleport(lat, lon, sayT) {
       teleporting = true;
@@ -250,14 +394,15 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
       // Near home, the geocoder's city ("New York") beats whatever town point happens to be loaded.
       const nearHome = atHome && haversine(g, home) < 6000 && cityName;
       const cityLabel = nearHome ? cityName : revCity || city?.name || '';
-      const placeName = hood?.name ?? (cityLabel || (atHome ? title : ''));
+      const away = !(atHome && haversine(g, home) < 6000);
+      const placeName = hood?.name ?? (cityLabel || (!away ? title : revNothing ? 'Over open water' : ''));
       const sub = hood ? cityLabel : '';
       return { place: placeName, sub };
     },
     stats() {
       let b = 0;
       for (const ch of chunks.chunks.values()) b += ch.stats.buildings;
-      return { chunks: chunks.chunks.size, loading: chunks.pending, buildings: b, cars: traffic.cars.filter((c) => c.live).length };
+      return { chunks: chunks.chunks.size, loading: chunks.pending, buildings: b, cars: traffic.cars.filter((c) => c.live).length, far: far.pending, queued: pool.queued, ghosts: ghosts.length, rebases };
     },
   };
   const hiddenAtHome = chunks.hidden;
@@ -288,7 +433,7 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
     world: {
       colliders, canFly: true,
       groundY: heightAt,
-      support: (x, z, y) => Math.max(heightAt(x, z), chunks.deckAt(x, z, y)),
+      support: (x, z, y) => Math.max(heightAt(x, z) + chunks.curbAt(x, z), chunks.deckAt(x, z, y)),
       water: (x, z) => chunks.waterAt(x, z),
     },
     sky: {
@@ -301,18 +446,43 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
     map: { bounds: { minX: -HOME_R, maxX: HOME_R, minZ: -HOME_R, maxZ: HOME_R }, zSouth: 1, background: '#262a31', draw() { /* the Earth uses the tile minimap */ } },
     locationName(x, z) {
       const names = namesNear(x, z);
-      if (!names.length) return earth.area(x, z).place || title;
+      if (!names.length) return earth.area(x, z).place || (atHome ? title : 'In the air');
       if (names[0].d > 40) return `Near ${names[0].name}`;
       return names.length > 1 && names[1].d < 30 ? `${names[0].name} & ${names[1].name}` : names[0].name;
     },
     update(dt, time, player) {
       const agl = player.y - heightAt(player.x, player.z);
+      // Sun shadows reach farther the higher you fly, so the city below keeps its depth.
+      if (dn) dn.shadowReach = THREE.MathUtils.clamp(140 + Math.max(0, agl) * 1.6, 140, 1000);
       if (!teleporting) {
-        chunks.update(player, agl, time);
-        far.update(player, agl);
+        // How fast we're going (from the position track), and where we'll be shortly.
+        if (haveLast && dt > 0) vel.lerp(new THREE.Vector3().subVectors(player, lastP).divideScalar(dt), 1 - Math.exp(-dt * 3));
+        else vel.set(0, 0, 0);
+        lastP.copy(player); haveLast = true;
+        const speed = Math.hypot(vel.x, vel.z);
+        const lead = (secs: number, max: number) => {
+          const d = Math.min(speed * secs, max), k = speed > 0.5 ? d / speed : 0;
+          return { x: player.x + vel.x * k, z: player.z + vel.z * k };
+        };
+        // Far from the origin (or racing away from it): re-center, without a loading screen.
+        const fromOrigin = Math.hypot(player.x, player.z);
+        const here = frame.toGeo(player.x, player.z);
+        const nearHome = haversine(here, home) < 12_000;
+        if (!atHome && nearHome && fromOrigin > 1500) rebase(home, true);
+        else if (fromOrigin > Math.max(REBASE_M, Math.min(300_000, speed * 10))) rebase(here, false);
+        chunks.update(player, agl, time, lead(5, 2500), speed);
+        far.update(player, agl, lead(12, 40_000), speed);
+        if (ghosts.length) pruneGhosts();
+        // See as far as you can from up there: the far plane follows altitude (not in VR, it owns the camera).
+        if (cam instanceof THREE.PerspectiveCamera && !lite) {
+          const nf = THREE.MathUtils.clamp(30_000 + Math.max(0, agl) * 18, 30_000, 260_000);
+          const nn = THREE.MathUtils.clamp(Math.max(0, agl) / 2500, 0.25, 4);
+          if (Math.abs(nf - cam.far) > 2000 || Math.abs(nn - cam.near) > 0.05) { cam.far = nf; cam.near = nn; cam.updateProjectionMatrix(); }
+        }
       }
       traffic.update(dt, player);
       peds.update(dt, player);
+      ships.update(dt, player);
       updateWater(time);
       updateGlow(time);
       if (cam && dn) {
@@ -322,7 +492,7 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
         waves.update(dt, cam, oceanNear ? -e0 : null, Math.max(w.storm, (w.windSpeed - 15) / 50));
       }
     },
-    debug: { get chunks() { return chunks; }, get far() { return far; }, pool, traffic, peds, sites, get frame() { return frame; }, colliders },
+    debug: { get chunks() { return chunks; }, get far() { return far; }, pool, traffic, peds, ships, sites, get frame() { return frame; }, colliders },
     earth,
   };
 }

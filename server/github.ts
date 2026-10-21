@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
-import type { Me, Repo, Tier, Worker } from '../shared/types.ts';
+import type { CiState, Me, PulseCommit, PulseIssue, PulsePr, Repo, Tier, Worker } from '../shared/types.ts';
 import { PATHS, readConfig, run, hasClaude } from './config.ts';
 
 // ---------- token ----------
@@ -58,12 +58,20 @@ async function ghJson<T = any>(path: string, opts: Parameters<typeof gh>[1] = {}
 }
 
 async function gql<T = any>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
-  const res = await gh('/graphql', { method: 'POST', body: { query, variables }, timeoutMs: 30_000 });
-  const json: any = await res.json();
-  if (!res.ok || json.errors) {
-    throw new GitHubError(`GitHub GraphQL: ${JSON.stringify(json.errors || json).slice(0, 300)}`);
+  // GitHub answers big GraphQL queries with an HTML 502/504 page now and then; retry those.
+  for (let attempt = 0; ; attempt++) {
+    const res = await gh('/graphql', { method: 'POST', body: { query, variables }, timeoutMs: 30_000 });
+    const text = await res.text();
+    let json: any = null;
+    try { json = JSON.parse(text); } catch { /* HTML error page */ }
+    if (json && res.ok && !json.errors) return json.data;
+    if (attempt < 2 && (!json || res.status >= 500)) {
+      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+      continue;
+    }
+    const detail = json ? JSON.stringify(json.errors || json) : `${res.status} ${text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()}`;
+    throw new GitHubError(`GitHub GraphQL: ${detail.slice(0, 300)}`);
   }
-  return json.data;
 }
 
 // ---------- me ----------
@@ -114,7 +122,9 @@ export async function listRepos(): Promise<Repo[]> {
   const nodes: any[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < 10; page++) {
-    const data: any = await gql(REPOS_QUERY, { cursor });
+    let data: any;
+    try { data = await gql(REPOS_QUERY, { cursor }); }
+    catch (e) { if (reposCache) return reposCache.repos; throw e; } // GitHub down: keep the last good city
     const conn = data.viewer.repositories;
     nodes.push(...conn.nodes);
     if (!conn.pageInfo.hasNextPage) break;
@@ -219,7 +229,7 @@ export function logoContentType(file: string) {
 const SKIP_DIR = /(^|\/)(node_modules|\.next|dist|build|out|Pods|vendor|\.git|coverage|__tests__|tests?|fixtures?|__snapshots__|\.vercel|DerivedData|site-packages)(\/|$)/i;
 const LOGO_NAME = /(logo|icon|favicon|apple-touch-icon|brand|mark)/i;
 
-export function rankLogoPath(path: string): number {
+export function rankLogoPath(path: string, repoName?: string): number {
   const lower = path.toLowerCase();
   const base = lower.split('/').pop()!;
   const ext = extname(base);
@@ -239,6 +249,12 @@ export function rankLogoPath(path: string): number {
   if (ext === '.svg') s += 6;
   if (ext === '.png') s += 4;
   if (/(dark|white|mono|small|16|32)/.test(base)) s -= 8;
+  // Variants (logo-ember.svg, logo-old.png, logo-v2-alt.svg…) lose to the plain logo and the repo-named one.
+  const stem = base.slice(0, base.length - ext.length);
+  if (stem === 'logo') s += 12;
+  else if (repoName && stem.replace(/[-_ .]/g, '') === `${repoName.toLowerCase().replace(/[-_ .]/g, '')}logo`) s += 10;
+  if (/(ember|light|black|inverse|invert|alt|old|legacy|draft|test|v\d|outline|wordmark|text|full|horizontal|stacked|banner|og-image|social)/.test(stem)) s -= 10;
+  if (/(^|\/)(docs?|archive|deliverables|marketing|examples?|mockups?)\//.test(lower)) s -= 20;
   s -= path.split('/').length * 3;
   return s;
 }
@@ -271,7 +287,7 @@ async function discoverLogo(repo: Repo): Promise<string | null> {
     const tree = await ghJson(`/repos/${repo.fullName}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
     const candidates = (tree.tree as any[])
       .filter((e) => e.type === 'blob' && (e.size ?? 0) < 2_000_000)
-      .map((e) => ({ path: e.path as string, score: rankLogoPath(e.path) }))
+      .map((e) => ({ path: e.path as string, score: rankLogoPath(e.path, repo.name) }))
       .filter((c) => c.score >= 0)
       .sort((a, b) => b.score - a.score);
     for (const c of candidates.slice(0, 3)) {
@@ -484,4 +500,77 @@ export function readLogo(file: string) {
 
 export function listCachedLogos() {
   return readdirSync(PATHS.logos);
+}
+
+// ---------- pulse: the live state of many repos in one query ----------
+
+const PULSE_FIELDS = `
+  pushedAt
+  latestRelease { tagName publishedAt }
+  defaultBranchRef {
+    target {
+      ... on Commit {
+        history(first: 10) {
+          nodes { oid messageHeadline committedDate author { name user { login } } statusCheckRollup { state } }
+        }
+      }
+    }
+  }
+  pullRequests(states: OPEN, first: 20, orderBy: {field: CREATED_AT, direction: DESC}) {
+    nodes { number title url createdAt isDraft body author { login } commits(last: 3) { nodes { commit { message } } } }
+  }
+  issues(states: OPEN, first: 20, orderBy: {field: CREATED_AT, direction: DESC}) {
+    nodes { number title url createdAt labels(first: 6) { nodes { name } } }
+  }`;
+
+const CI: Record<string, CiState> = { SUCCESS: 'passing', FAILURE: 'failing', ERROR: 'failing', PENDING: 'pending', EXPECTED: 'pending' };
+
+export interface RawPulse {
+  pushedAt: string;
+  ci: CiState;
+  ciSince: string | null;
+  openPrs: PulsePr[];
+  openIssues: PulseIssue[];
+  recentCommits: PulseCommit[];
+  lastRelease: { tag: string; publishedAt: string } | null;
+}
+
+/** CI, open PRs and issues, recent commits and the latest release for up to ~8 repos per GraphQL call. */
+export async function repoPulses(repos: Repo[]): Promise<Map<string, RawPulse>> {
+  const out = new Map<string, RawPulse>();
+  for (let i = 0; i < repos.length; i += 8) {
+    const batch = repos.slice(i, i + 8);
+    const query = `query {\n${batch.map((r, k) => `  r${k}: repository(owner: ${JSON.stringify(r.owner)}, name: ${JSON.stringify(r.name)}) { ${PULSE_FIELDS} }`).join('\n')}\n}`;
+    const data = await gql(query);
+    batch.forEach((r, k) => {
+      const n = data[`r${k}`];
+      if (!n) return;
+      const history: any[] = n.defaultBranchRef?.target?.history?.nodes ?? [];
+      const state = (c: any): CiState => CI[c?.statusCheckRollup?.state] ?? 'none';
+      const ci = history.length ? state(history[0]) : 'none';
+      // The branch has been in this state since the oldest commit of the newest unbroken run.
+      let since: string | null = null;
+      for (const c of history) { if (state(c) !== ci) break; since = c.committedDate; }
+      out.set(r.name, {
+        pushedAt: n.pushedAt,
+        ci,
+        ciSince: ci === 'none' ? null : since,
+        openPrs: (n.pullRequests?.nodes ?? []).map((p: any) => {
+          const login = p.author?.login ?? 'ghost';
+          // AI coding agents only: dependency bots aren't waiting on a conversation with you.
+          const agent = detectAgent(login, p.body || '', ...(p.commits?.nodes ?? []).map((c: any) => c.commit?.message || ''));
+          return {
+            number: p.number, title: p.title, author: login, url: p.url, createdAt: p.createdAt, isDraft: !!p.isDraft,
+            isAgent: !!agent && !/^(Dependabot|Renovate|Vercel Bot|Bot)$/.test(agent),
+          };
+        }),
+        openIssues: (n.issues?.nodes ?? []).map((x: any) => ({
+          number: x.number, title: x.title, url: x.url, createdAt: x.createdAt, labels: (x.labels?.nodes ?? []).map((l: any) => l.name),
+        })),
+        recentCommits: history.map((c) => ({ sha: c.oid, message: c.messageHeadline, author: c.author?.user?.login || c.author?.name || 'unknown', date: c.committedDate })),
+        lastRelease: n.latestRelease ? { tag: n.latestRelease.tagName, publishedAt: n.latestRelease.publishedAt } : null,
+      });
+    });
+  }
+  return out;
 }

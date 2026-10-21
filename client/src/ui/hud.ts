@@ -21,7 +21,15 @@ export interface HudFrame {
   weather?: string;
   /** Optional extra status, e.g. "on road", "on roof". */
   surface?: string;
+  /** The building in the middle of the view ("Chrysler Building · 405 Lexington Ave"). */
+  looking?: { title: string; sub: string } | null;
 }
+
+/** The look-at label can be switched off (map Settings); remembered per browser. */
+export const lookLabels = {
+  get on() { try { return localStorage.getItem('ow.lookLabels') !== '0'; } catch { return true; } },
+  set on(v: boolean) { try { localStorage.setItem('ow.lookLabels', v ? '1' : '0'); } catch { /* private mode */ } },
+};
 
 export interface Hud {
   update(f: HudFrame): void;
@@ -111,6 +119,7 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
       <div class="ow-i-place"></div>
       <div class="ow-i-time"></div>
     </div>
+    <div class="ow-look"><b></b><span></span></div>
     <div class="ow-nav hidden">
       <div class="ow-nav-arrow">↑</div>
       <div class="ow-nav-text"><b></b><span></span><small><i></i><em></em></small></div>
@@ -126,6 +135,8 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
   const nav = q('.ow-nav'), navArrow = q('.ow-nav-arrow');
   const navDist = q('.ow-nav-text b'), navDir = q('.ow-nav-text span'), navName = q('.ow-nav-text em');
   const hints = q('.ow-hints');
+  const look = q('.ow-look'), lookTitle = q('.ow-look b'), lookSub = q('.ow-look span');
+  let lookKey = '';
   let hintKey = '';
   const setHints = (key: string) => {
     if (key === hintKey) return;
@@ -176,6 +187,13 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
       }
 
       setHints(f.mode);
+      const lk = lookLabels.on && f.mode !== 'indoors' ? f.looking ?? null : null;
+      const key = lk ? lk.title + '|' + lk.sub : '';
+      if (key !== lookKey) {
+        lookKey = key;
+        if (lk) { lookTitle.textContent = lk.title; lookSub.textContent = lk.sub; }
+        look.classList.toggle('on', !!lk);
+      }
       // Text lines don't need 60 Hz.
       slow -= 1;
       if (slow > 0) return;

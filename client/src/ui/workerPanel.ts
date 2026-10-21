@@ -3,6 +3,8 @@ import type { GameCtx } from '../ctx.ts';
 import { talk, track } from '../api.ts';
 import { esc } from '../interact.ts';
 import { chatUI, openPanel } from './panel.ts';
+import { assignStrip } from './assign.ts';
+import { openAgentLivePanel } from './agentPanel.ts';
 
 export interface SpeechHooks {
   /** Called as the NPC's reply streams in, with the text so far. */
@@ -22,7 +24,6 @@ function ago(iso: string) {
 
 /** Talk to a desk worker (a past PR/commit) or, with target 'reception', the lobby receptionist. */
 export function openWorkerPanel(ctx: GameCtx, repo: Repo, target: Worker | 'reception', hooks: SpeechHooks = {}) {
-  void ctx;
   const isRec = target === 'reception';
   const w = isRec ? null : target;
   const who = isRec ? 'Reception' : w!.isAgent ? (w!.agentName ?? w!.author) : w!.author;
@@ -51,6 +52,12 @@ export function openWorkerPanel(ctx: GameCtx, repo: Repo, target: Worker | 'rece
       ${w.files.length ? `<details><summary>Changed files (${w.files.length})</summary><ul class="files">${w.files.map((f) => `<li>${esc(f)}</li>`).join('')}</ul></details>` : ''}`;
     panel.body.appendChild(meta);
   }
+
+  // One step from a conversation to real work: type what should get done, Enter, and an agent takes a desk.
+  panel.body.prepend(assignStrip(ctx, repo, isRec ? 'reception' : 'desk', {
+    placeholder: isRec ? `What should get done in ${repo.name}?` : `Follow up on “${w!.title.slice(0, 60)}”: what should get done?`,
+    onWatch: (a) => openAgentLivePanel(ctx, a),
+  }));
 
   const history: { role: 'user' | 'assistant'; content: string }[] = [];
   const abort = new AbortController();

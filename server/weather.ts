@@ -47,7 +47,62 @@ export async function liveWeather(lat: number, lon: number): Promise<LiveWeather
   }
 }
 
+// ---------- the whole planet, for the map's globe ----------
+// A 15° grid of current conditions (264 points; Open-Meteo counts each point as a call, and the free
+// tier allows 600 a minute), fetched in batches and kept for 30 minutes. Coarse on purpose: it shows
+// where the cloud and the storms are right now, not their shape.
+//   GET /api/weather/global -> GlobalWeather
+
+export interface GlobalWeather {
+  at: number; // ms epoch when fetched
+  lat0: number; lon0: number; step: number; rows: number; cols: number;
+  /** Row-major from lat0 (south) and lon0 (west): cloud 0..1, precip mm/h, WMO code, wind km/h and from-direction. */
+  cloud: number[]; precip: number[]; code: number[]; wind: number[]; windDir: number[];
+}
+
+let globalCache: GlobalWeather | null = null;
+let globalInflight: Promise<GlobalWeather | null> | null = null;
+
+async function fetchGlobal(): Promise<GlobalWeather | null> {
+  const step = 15, lat0 = -75, lon0 = -180, rows = 11, cols = 24;
+  const pts: { lat: number; lon: number }[] = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) pts.push({ lat: lat0 + r * step, lon: lon0 + c * step });
+  const out: GlobalWeather = { at: Date.now(), lat0, lon0, step, rows, cols, cloud: [], precip: [], code: [], wind: [], windDir: [] };
+  for (let i = 0; i < pts.length; i += 100) {
+    const batch = pts.slice(i, i + 100);
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${batch.map((p) => p.lat).join(',')}&longitude=${batch.map((p) => p.lon).join(',')}`
+      + '&current=precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m';
+    const res = await fetch(url, { headers: { 'User-Agent': 'OpenWorldHQ/0.1 (local open-world game)' }, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error(`open-meteo ${res.status}`);
+    const body = (await res.json()) as { current?: Record<string, number> }[] | { current?: Record<string, number> };
+    const list = Array.isArray(body) ? body : [body];
+    for (const b of list) {
+      const c = b.current ?? {};
+      out.cloud.push((c.cloud_cover ?? 0) / 100);
+      out.precip.push(c.precipitation ?? 0);
+      out.code.push(c.weather_code ?? 0);
+      out.wind.push(c.wind_speed_10m ?? 0);
+      out.windDir.push(c.wind_direction_10m ?? 0);
+    }
+  }
+  return out.cloud.length === pts.length ? out : null;
+}
+
+export async function globalWeather(): Promise<GlobalWeather | null> {
+  if (globalCache && Date.now() - globalCache.at < 30 * 60_000) return globalCache;
+  globalInflight ??= fetchGlobal()
+    .then((g) => { if (g) globalCache = g; return g ?? globalCache; })
+    .catch(() => globalCache)
+    .finally(() => { globalInflight = null; });
+  return globalInflight;
+}
+
 export function registerWeather(app: Express) {
+  app.get('/api/weather/global', async (_req: Request, res: Response) => {
+    const g = await globalWeather();
+    if (!g) { res.status(503).json({ error: 'global weather unavailable' }); return; }
+    res.json(g);
+  });
   app.get('/api/weather', async (req: Request, res: Response) => {
     const lat = Number(req.query.lat), lon = Number(req.query.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {

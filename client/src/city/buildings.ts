@@ -6,6 +6,7 @@ import { facadeMaterial, unitBox, taperedBox, unitCylinder } from './facade.ts';
 import type { Box } from '../player.ts';
 import { api } from '../api.ts';
 import { shared } from '../engine.ts';
+import { buildEntrance } from './entrance.ts';
 
 const tmpM = new THREE.Matrix4();
 const tmpQ = new THREE.Quaternion();
@@ -129,6 +130,12 @@ export function loadLogo(name: string, hasLogo: boolean): Promise<HTMLImageEleme
   return pr;
 }
 
+function hashName(s: string) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
 function initials(name: string) {
   const parts = name.replace(/([a-z])([A-Z])/g, '$1 $2').split(/[\s\-_.]+/).filter(Boolean);
   return (parts.length > 1 ? parts[0][0] + parts[1][0] : name.slice(0, 2)).toUpperCase();
@@ -156,45 +163,6 @@ export function logoTexture(site: { repo: Repo }, img: HTMLImageElement | null) 
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 8;
-  return t;
-}
-
-export function nameTexture(text: string, color: string) {
-  const c = document.createElement('canvas');
-  c.width = 1024; c.height = 192;
-  const g = c.getContext('2d')!;
-  g.fillStyle = 'rgba(12,14,20,0.92)';
-  roundRect(g, 0, 0, 1024, 192, 24); g.fill();
-  g.fillStyle = color; g.fillRect(0, 168, 1024, 24);
-  g.fillStyle = '#fff';
-  let size = 110;
-  g.font = `800 ${size}px Inter, sans-serif`;
-  while (g.measureText(text).width > 940 && size > 40) { size -= 6; g.font = `800 ${size}px Inter, sans-serif`; }
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText(text, 512, 92);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 8;
-  return t;
-}
-
-/** Glass lobby doors with frames, warm light inside and a brand-colored transom. */
-export function doorTexture(brand: string) {
-  const c = document.createElement('canvas');
-  c.width = 512; c.height = 256;
-  const g = c.getContext('2d')!;
-  const grd = g.createLinearGradient(0, 0, 0, 256);
-  grd.addColorStop(0, '#7a6a52'); grd.addColorStop(1, '#f3dcae');
-  g.fillStyle = grd; g.fillRect(0, 0, 512, 256);
-  g.fillStyle = 'rgba(255,240,210,0.5)';
-  for (let x = 30; x < 512; x += 90) g.fillRect(x, 0, 40, 30);
-  g.fillStyle = brand || '#ffcc33'; g.fillRect(0, 0, 512, 22);
-  g.fillStyle = '#15181c';
-  for (const x of [0, 128, 254, 382, 506]) g.fillRect(x, 0, 6, 256);
-  g.fillRect(0, 22, 512, 6); g.fillRect(0, 250, 512, 6);
-  g.fillStyle = 'rgba(30,30,30,0.6)'; g.fillRect(236, 120, 6, 50); g.fillRect(270, 120, 6, 50);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
 
@@ -308,7 +276,6 @@ export async function buildRepoBuilding(l: Layout, site: RepoSite, colliders: Bo
   // ---- Signage ----
   const img = await loadLogo(repo.name, repo.hasLogo);
   const logoMat = new THREE.MeshBasicMaterial({ map: logoTexture(site, img), toneMapped: true });
-  const nameMat = new THREE.MeshBasicMaterial({ map: nameTexture(repo.name, repo.brandColor || '#ffcc33'), transparent: true });
   const plane = new THREE.PlaneGeometry(1, 1);
   const faces: [number, number, number, number, number][] = [
     // [nx, nz, halfW(of perpendicular extent), offset, rotY]
@@ -331,41 +298,12 @@ export async function buildRepoBuilding(l: Layout, site: RepoSite, colliders: Bo
     }
   }
 
-  // Entrance: canopy, glowing doors, name sign above, logo plaque.
+  // Entrance: a glass lobby pavilion with doors, canopy, letters and a logo (entrance.ts).
   const out = site.doorOut;
-  const ry = Math.atan2(out.x, out.z);
-  const doorW = repo.tier === 'landmark' ? 8 : repo.tier === 'tower' ? 6 : 3.6;
-  const gy = site.door.y;
-  const doorMat = new THREE.MeshStandardMaterial({ color: 0x0b1016, roughness: 0.08, metalness: 0.6, emissive: 0xffffff, emissiveMap: doorTexture(repo.brandColor), emissiveIntensity: 0.8 });
-  doorMat.userData = { base: 0.8 };
-  glowMaterials.push(doorMat);
-  const door = new THREE.Mesh(plane, doorMat);
-  door.position.copy(site.door).addScaledVector(out, 0.06); door.position.y = gy + 1.6;
-  door.rotation.y = ry; door.scale.set(doorW, 3.2, 1);
-  group.add(door);
-  const canopy = add(unitBox, new THREE.MeshStandardMaterial({ color: brand, roughness: 0.4, metalness: 0.3 }), 0, 0, 0, doorW + 2, 0.35, 3);
-  canopy.position.copy(site.door).addScaledVector(out, 1.5); canopy.position.y = gy + 3.6; canopy.rotation.y = ry;
-  const strip = add(unitBox, glow(brand, 1.6), 0, 0, 0, doorW + 2.05, 0.12, 3.05);
-  strip.position.copy(canopy.position); strip.position.y = gy + 3.58; strip.rotation.y = ry;
-  const nm = new THREE.Mesh(plane, nameMat);
-  const nameW = Math.min(Math.max(doorW + 4, 9), (out.x !== 0 ? d : w) * 0.9);
-  nm.position.copy(site.door).addScaledVector(out, 0.08); nm.position.y = gy + 5.4;
-  nm.rotation.y = ry; nm.scale.set(nameW, nameW * 0.1875, 1);
-  group.add(nm);
-  if (H <= 40) {
-    const lg = new THREE.Mesh(plane, logoMat);
-    const s = Math.min(6, Math.max(3, (out.x !== 0 ? d : w) * 0.25));
-    lg.position.copy(site.door).addScaledVector(out, 0.08); lg.position.y = Math.min(gy + 6.4 + s / 2 + 0.6, base + H - s / 2 - 0.5);
-    if (lg.position.y - s / 2 < gy + 6.2) lg.position.y = base + H + s / 2 + 0.9; // roof-mounted on tiny buildings
-    lg.rotation.y = ry; lg.scale.setScalar(s);
-    group.add(lg);
-  }
-  // Pillars flanking the door so it reads as an entrance.
-  for (const side of [-1, 1]) {
-    const px = site.door.x + out.z * side * (doorW / 2 + 0.6) + out.x * 2.6;
-    const pz = site.door.z - out.x * side * (doorW / 2 + 0.6) + out.z * 2.6;
-    add(new THREE.CylinderGeometry(0.18, 0.18, 1, 8).translate(0, 0.5, 0), new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.8, roughness: 0.3 }), px, gy, pz, 1, 3.6, 1);
-  }
+  group.add(buildEntrance({
+    door: site.door, out, wallLen: out.x !== 0 ? d : w, maxH: base + H - site.door.y, tier: repo.tier,
+    name: repo.name, brand: repo.brandColor || '#6b7a8f', logo: logoMat.map!, seed: hashName(repo.name),
+  }));
 
   return { group, site, top: new THREE.Vector3(cx, top, cz) };
 }

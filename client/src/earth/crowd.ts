@@ -1,6 +1,8 @@
 // The city's caretaker robots: white humanoids drawn as one instanced mesh per body part, so a
-// whole crowd costs a dozen draw calls. Animated procedurally (walk cycle, idle sway).
+// whole crowd costs a couple of dozen draw calls. Animated procedurally: walking, idling, sitting on
+// benches, wiping windows, sweeping, carrying packages.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 interface Part {
   name: string;
@@ -28,7 +30,18 @@ const PARTS: Part[] = [
   { name: 'shinR', geo: r(0.055, 0.045, 0.4).translate(0, -0.01, 0), dark: true, parent: 9, pivot: [0, -0.41, 0] },
   { name: 'footL', geo: new THREE.BoxGeometry(0.1, 0.06, 0.2).translate(0, -0.03, 0.04), dark: false, parent: 10, pivot: [0, -0.42, 0] },
   { name: 'footR', geo: new THREE.BoxGeometry(0.1, 0.06, 0.2).translate(0, -0.03, 0.04), dark: false, parent: 11, pivot: [0, -0.42, 0] },
+  // Ear discs (white rim, dark center), like the game's caretakers.
+  { name: 'earL', geo: new THREE.CylinderGeometry(0.075, 0.075, 0.035, 16).rotateZ(Math.PI / 2).translate(0.14, 0.17, 0), dark: false, parent: 2, pivot: [0, 0, 0] },
+  { name: 'earR', geo: new THREE.CylinderGeometry(0.075, 0.075, 0.035, 16).rotateZ(Math.PI / 2).translate(-0.14, 0.17, 0), dark: false, parent: 2, pivot: [0, 0, 0] },
+  { name: 'earDots', geo: new THREE.CylinderGeometry(0.04, 0.04, 0.32, 12).rotateZ(Math.PI / 2).translate(0, 0.17, 0), dark: true, parent: 2, pivot: [0, 0, 0] },
+  // Dark joints at elbows and knees.
+  { name: 'elbowL', geo: new THREE.SphereGeometry(0.05, 8, 6), dark: true, parent: 6, pivot: [0, 0, 0] },
+  { name: 'elbowR', geo: new THREE.SphereGeometry(0.05, 8, 6), dark: true, parent: 7, pivot: [0, 0, 0] },
+  { name: 'kneeL', geo: new THREE.SphereGeometry(0.062, 8, 6), dark: true, parent: 10, pivot: [0, 0, 0] },
+  { name: 'kneeR', geo: new THREE.SphereGeometry(0.062, 8, 6), dark: true, parent: 11, pivot: [0, 0, 0] },
 ];
+const EXTRA = PARTS.length;
+const BROOM = new THREE.Matrix4().makeRotationX(0.9).setPosition(0, -0.3, 0);
 
 const PIVOTS = PARTS.map((p) => new THREE.Vector3(...p.pivot));
 const ONE = new THREE.Vector3(1, 1, 1), UP = new THREE.Vector3(0, 1, 0);
@@ -43,6 +56,10 @@ export interface CrowdMember {
   phase: number;
   /** Optional box carried in both hands (delivery robots). */
   carry: boolean;
+  /** What the body is doing: walking/idling, sitting on a bench, wiping a window, sweeping. */
+  pose: 'stand' | 'sit' | 'clean' | 'sweep';
+  /** 0..1 fade for going in and out of doors (scales the robot down to nothing). */
+  fade: number;
 }
 
 export class Crowd {
@@ -50,13 +67,14 @@ export class Crowd {
   members: CrowdMember[] = [];
   private meshes: THREE.InstancedMesh[];
   private box: THREE.InstancedMesh;
+  private broom: THREE.InstancedMesh;
   private local = PARTS.map(() => new THREE.Matrix4());
   private world = PARTS.map(() => new THREE.Matrix4());
   private m = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   private e = new THREE.Euler();
-  private zero = new THREE.Matrix4().makeScale(0, 0, 0);
   private sc = new THREE.Vector3();
+  private p = new THREE.Vector3();
 
   constructor(count: number) {
     const white = new THREE.MeshStandardMaterial({ color: 0xeef0f2, roughness: 0.45, metalness: 0.05 });
@@ -72,7 +90,14 @@ export class Crowd {
     this.box.castShadow = true;
     this.box.frustumCulled = false;
     this.group.add(this.box);
-    for (let i = 0; i < count; i++) this.members.push({ pos: new THREE.Vector3(), yaw: 0, speed: 0, scale: 1, visible: false, phase: Math.random() * 10, carry: Math.random() < 0.12 });
+    const broom = mergeGeometries([
+      new THREE.CylinderGeometry(0.016, 0.016, 1.25, 6).translate(0, -0.35, 0),
+      new THREE.BoxGeometry(0.34, 0.09, 0.08).translate(0, -0.99, 0),
+    ]);
+    this.broom = new THREE.InstancedMesh(broom, new THREE.MeshStandardMaterial({ color: 0x8a6a45, roughness: 0.85 }), count);
+    this.broom.frustumCulled = false;
+    this.group.add(this.broom);
+    for (let i = 0; i < count; i++) this.members.push({ pos: new THREE.Vector3(), yaw: 0, speed: 0, scale: 1, visible: false, phase: Math.random() * 10, carry: false, pose: 'stand', fade: 1 });
   }
 
   update(dt: number) {
@@ -80,12 +105,11 @@ export class Crowd {
       this.q.setFromEuler(this.e.set(x, y, z));
       this.local[i].compose(PIVOTS[i], this.q, ONE);
     };
-    this.members.forEach((c, n) => {
-      if (!c.visible) {
-        for (const im of this.meshes) im.setMatrixAt(n, this.zero);
-        this.box.setMatrixAt(n, this.zero);
-        return;
-      }
+    // Only robots in view are written, packed at the front, and only those are drawn (hidden ones
+    // would still cost vertex work in the main and shadow passes).
+    let n = 0, nb = 0, nw = 0;
+    for (const c of this.members) {
+      if (!c.visible || c.fade <= 0.01) continue;
       const walking = c.speed > 0.2;
       c.phase += dt * (walking ? c.speed * 3.1 : 1.2);
       const s = Math.sin(c.phase), co = Math.cos(c.phase);
@@ -107,8 +131,34 @@ export class Crowd {
       rot(11, Math.max(0, co) * 0.85 * amp + 0.02, 0, 0);
       rot(12, -s * 0.2 * amp, 0, 0);
       rot(13, s * 0.2 * amp, 0, 0);
+      for (let i = 14; i < EXTRA; i++) rot(i, 0);
+      let drop = 0;
+      if (c.pose === 'sit') {
+        // On a bench: seat at 0.46 m, thighs forward, shins down, hands on the knees.
+        drop = 0.42;
+        rot(0, 0); rot(1, -0.05, Math.sin(c.phase * 0.2) * 0.1, 0);
+        rot(8, -1.5, 0, 0.06); rot(9, -1.5, 0, -0.06);
+        rot(10, 1.5, 0, 0); rot(11, 1.5, 0, 0);
+        rot(12, 0); rot(13, 0);
+        rot(4, -0.75, 0, 0.1); rot(5, -0.75, 0, -0.1);
+        rot(6, -0.55, 0, 0); rot(7, -0.55, 0, 0);
+      } else if (c.pose === 'clean') {
+        // Wiping a window: right arm up in slow circles, left hand on the hip.
+        const w = c.phase * 1.6;
+        rot(4, -0.25, 0, 0.35); rot(6, -1.2, 0, 0);
+        rot(5, -2.1 + Math.sin(w) * 0.25, 0, -0.2 + Math.cos(w) * 0.3); rot(7, -0.35, 0, 0);
+        rot(1, 0, Math.sin(w) * 0.06, 0);
+      } else if (c.pose === 'sweep') {
+        // Both hands on the broom, swinging it side to side.
+        const w = c.phase * 0.9;
+        rot(1, 0.12, Math.sin(w) * 0.35, 0);
+        rot(4, -0.7, 0, 0.2); rot(5, -0.55, 0, -0.25);
+        rot(6, -0.6, 0, 0); rot(7, -0.5, 0, 0);
+      }
       this.q.setFromAxisAngle(UP, c.yaw);
-      this.m.compose(c.pos, this.q, this.sc.set(c.scale, c.scale, c.scale));
+      const k = c.scale * Math.min(1, c.fade);
+      this.p.copy(c.pos); this.p.y -= drop * c.scale;
+      this.m.compose(this.p, this.q, this.sc.set(k, k, k));
       for (let i = 0; i < PARTS.length; i++) {
         const p = PARTS[i].parent;
         this.world[i].multiplyMatrices(p < 0 ? this.m : this.world[p], this.local[i]);
@@ -116,10 +166,16 @@ export class Crowd {
       }
       if (c.carry) {
         this.m.copy(this.world[1]).multiply(BOX_OFFSET);
-        this.box.setMatrixAt(n, this.m);
-      } else this.box.setMatrixAt(n, this.zero);
-    });
-    for (const im of this.meshes) im.instanceMatrix.needsUpdate = true;
-    this.box.instanceMatrix.needsUpdate = true;
+        this.box.setMatrixAt(nb++, this.m);
+      }
+      if (c.pose === 'sweep') {
+        this.m.copy(this.world[7]).multiply(BROOM);
+        this.broom.setMatrixAt(nw++, this.m);
+      }
+      n++;
+    }
+    for (const im of this.meshes) { im.count = n; im.instanceMatrix.needsUpdate = true; }
+    this.box.count = nb; this.box.instanceMatrix.needsUpdate = true;
+    this.broom.count = nw; this.broom.instanceMatrix.needsUpdate = true;
   }
 }

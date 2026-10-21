@@ -215,3 +215,73 @@ export function boatModel(): Model {
   b.build(group);
   return { group, wheels: [], parts: {}, dispose: b.dispose };
 }
+
+/**
+ * A space shuttle orbiter, about 0.6 scale (22 m long): white fuselage and delta wings, black nose
+ * and belly, a tall fin, OMS pods and three main engines whose flames the vehicle scales.
+ */
+export function shuttleModel(): Model {
+  const b = builder(), group = new THREE.Group();
+  const white = std(0xeeece6, 0.5), black = std(0x26282c, 0.7), grey = std(0x9a9ea4, 0.45, 0.4), glass = std(0x1e2a36, 0.1, 0.4);
+  const bell = std(0x3a3d42, 0.35, 0.7);
+  // The wings are one shape mirrored, so their faces must show from both sides.
+  const wingMat = new THREE.MeshStandardMaterial({ color: 0xeeece6, roughness: 0.5, side: THREE.DoubleSide });
+  const Y = 2.6; // fuselage axis height on its gear
+  // Fuselage along Z with a rounded nose, a payload-bay seam and a black chin.
+  b.add(new THREE.CylinderGeometry(1.55, 1.6, 14, 20).rotateX(Math.PI / 2), white, 0, Y, -1);
+  b.add(new THREE.SphereGeometry(1.55, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2).rotateX(Math.PI / 2).scale(1, 0.95, 2.6), white, 0, Y, 6);
+  b.add(new THREE.SphereGeometry(1.56, 20, 12, 0, Math.PI * 2, Math.PI * 0.62, Math.PI * 0.38).rotateX(Math.PI / 2).scale(1, 0.95, 2.62), black, 0, Y, 6);
+  b.add(new THREE.BoxGeometry(2.7, 0.06, 9), grey, 0, Y + 1.5, -1.5);
+  // Cockpit windows.
+  for (const s of [-1, 0, 1]) b.add(new THREE.BoxGeometry(0.55, 0.32, 0.06), glass, s * 0.62, Y + 1.25, 7.2, -0.75, s * -0.25, 0);
+  // Delta wings with black leading edges (a flat shape, extruded thin).
+  const wingShape = new THREE.Shape();
+  wingShape.moveTo(0, 4.5); wingShape.lineTo(1.2, 2.2); wingShape.lineTo(7.4, -5.6); wingShape.lineTo(7.4, -7.2); wingShape.lineTo(0, -7.6); wingShape.closePath();
+  for (const s of [-1, 1]) {
+    // Shape x runs outboard, y forward; extruded downward 0.32 m.
+    const wg = new THREE.ExtrudeGeometry(wingShape, { depth: 0.32, bevelEnabled: false }).rotateX(Math.PI / 2).scale(s, 1, 1);
+    b.add(wg, wingMat, s * 0.9, Y - 0.85, -0.2);
+    b.add(new THREE.BoxGeometry(6.6, 0.12, 0.9), grey, s * 4.6, Y - 0.9, -7.4); // elevons
+  }
+  // Black belly.
+  b.add(new THREE.BoxGeometry(3.0, 0.1, 13.5), black, 0, Y - 1.45, -1.2);
+  // Fin and rudder.
+  const fin = new THREE.Shape();
+  // Shape x runs aft from the fin's root leading edge, y up; the leading edge sweeps back.
+  fin.moveTo(0, 0); fin.lineTo(4.6, 0); fin.lineTo(4.4, 6.2); fin.lineTo(3.0, 6.2); fin.closePath();
+  b.add(new THREE.ExtrudeGeometry(fin, { depth: 0.36, bevelEnabled: false }).rotateY(Math.PI / 2).translate(-0.18, 0, 0), wingMat, 0, Y + 1.1, -3.9);
+  b.add(new THREE.BoxGeometry(0.42, 6.0, 0.35), grey, 0, Y + 4.2, -8.3); // rudder hinge line
+  // OMS pods and the engine block.
+  for (const s of [-1, 1]) b.add(new THREE.CapsuleGeometry(0.62, 3.2, 4, 12).rotateX(Math.PI / 2), white, s * 1.25, Y + 1.25, -6.6);
+  b.add(new THREE.BoxGeometry(3.2, 3.0, 1.0), grey, 0, Y + 0.1, -8.4);
+  const engines: [number, number][] = [[0, 0.95], [-0.95, -0.5], [0.95, -0.5]];
+  for (const [x, y] of engines) b.add(new THREE.CylinderGeometry(0.5, 0.85, 1.6, 16, 1, true).rotateX(-Math.PI / 2), bell, x, Y + y, -9.6);
+  // Landing gear.
+  for (const [x, z] of [[-1.5, -2.5], [1.5, -2.5], [0, 5.2]] as const) b.add(new THREE.CylinderGeometry(0.1, 0.1, 1.2, 8), grey, x, 0.6, z);
+  b.build(group);
+  const wheels: Model['wheels'] = [];
+  for (const [x, z] of [[-1.5, -2.5], [1.5, -2.5], [0, 5.2]] as const) {
+    const w = wheel(b, 0.42, 0.3, black, grey);
+    w.position.set(x, 0.42, z);
+    group.add(w);
+    wheels.push({ obj: w, r: 0.42 });
+  }
+  // Main-engine flames: a white-hot core in a long orange jet, scaled by the vehicle with throttle.
+  const flames = new THREE.Group();
+  const outer = new THREE.MeshBasicMaterial({ color: 0xff8a2a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  const inner = new THREE.MeshBasicMaterial({ color: 0xfff3c8, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  const og = new THREE.ConeGeometry(0.78, 1, 16, 1, true).rotateX(Math.PI / 2).translate(0, 0, -0.5);
+  const ig = new THREE.ConeGeometry(0.42, 0.55, 12, 1, true).rotateX(Math.PI / 2).translate(0, 0, -0.275);
+  for (const [x, y] of engines) {
+    const f = new THREE.Group();
+    f.add(new THREE.Mesh(og, outer), new THREE.Mesh(ig, inner));
+    f.position.set(x, Y + y, -10.3);
+    flames.add(f);
+  }
+  const glowLight = new THREE.PointLight(0xff9a4a, 0, 60, 2);
+  glowLight.position.set(0, Y, -12);
+  flames.add(glowLight);
+  group.add(flames);
+  const dispose = () => { b.dispose(); og.dispose(); ig.dispose(); outer.dispose(); inner.dispose(); glowLight.dispose(); };
+  return { group, wheels, parts: { flames, glow: glowLight }, dispose };
+}

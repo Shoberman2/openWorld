@@ -51,18 +51,20 @@ export async function demFor(z: number, mxMin: number, myMin: number, mxMax: num
   await Promise.all(
     [...range(tx0, tx1)].flatMap((x) => [...range(ty0, ty1)].map(async (y) => tiles.set(`${x},${y}`, await tile(z, x, y)))),
   );
-  const any = [...tiles.values()].find(Boolean);
-  const size = any?.size ?? 256;
+  // Mapterhorn tiles are 512 px; where it has a hole the AWS fallback answers with 256 px ones, so a
+  // box can mix both. Sample on the finest grid and read each tile at its own resolution.
+  const size = Math.max(256, ...[...tiles.values()].map((t) => t?.size ?? 0));
   const px = (ts / size); // mercator meters per pixel
   const raw = (gx: number, gy: number) => {
     // gx, gy: global pixel coordinates at this zoom (pixel centers at +0.5).
     const tx = Math.floor(gx / size), ty = Math.floor(gy / size);
     const t = tiles.get(`${tx},${ty}`);
     if (!t) return 0;
-    const ix = Math.min(size - 1, Math.max(0, Math.floor(gx - tx * size)));
-    const iy = Math.min(size - 1, Math.max(0, Math.floor(gy - ty * size)));
-    const v = t.h[iy * size + ix];
-    return v < -500 ? 0 : v;
+    const f = t.size / size;
+    const ix = Math.min(t.size - 1, Math.max(0, Math.floor((gx - tx * size) * f)));
+    const iy = Math.min(t.size - 1, Math.max(0, Math.floor((gy - ty * size) * f)));
+    const v = t.h[iy * t.size + ix];
+    return v < -500 || !Number.isFinite(v) ? 0 : v;
   };
   const bilinear = (mx: number, my: number) => {
     const gx = (mx + WORLD / 2) / px - 0.5, gy = (WORLD / 2 - my) / px - 0.5;

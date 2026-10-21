@@ -83,7 +83,10 @@ export interface RepoDetail {
 
 // ---------- Live agents (Claude Code running in a clone of the repo) ----------
 
-export type AgentStatus = 'preparing' | 'running' | 'done' | 'error' | 'stopped';
+export type AgentStatus = 'preparing' | 'running' | 'needs_input' | 'done' | 'error' | 'stopped';
+
+/** What the user decided at the lobby review station. null = not reviewed yet. */
+export type ReviewState = 'pending' | 'approved' | 'changes_requested' | 'discarded';
 
 export interface AgentInfo {
   id: string;
@@ -98,6 +101,18 @@ export interface AgentInfo {
   filesChanged: string[];
   prUrl: string | null;
   costUsd: number | null;
+  /** Set while status is 'needs_input': the question the agent is blocked on. */
+  question?: string | null;
+  /** Agent's own final summary of what it did (last result text). */
+  summary?: string | null;
+  /** `git diff --stat` one-liner, e.g. "3 files changed, +40 −12". */
+  diffStat?: string | null;
+  /** Review lifecycle; 'pending' once a run finishes with changes. */
+  review?: ReviewState | null;
+  /** Schedule that started this run, if any. */
+  scheduleId?: string | null;
+  /** Claude Code session, so answers and change requests resume the same conversation. */
+  sessionId?: string | null;
 }
 
 export type AgentEvent =
@@ -138,7 +153,108 @@ export type ServerMsg =
   | { type: 'agent:update'; agent: AgentInfo }
   | { type: 'agent:event'; agentId: string; event: AgentEvent; ts: number }
   | { type: 'office:message'; message: OfficeMessage }
-  | { type: 'office:typing'; on: boolean; channel: OfficeChannel };
+  | { type: 'office:typing'; on: boolean; channel: OfficeChannel }
+  | { type: 'master:message'; repo: string; message: MasterMessage }
+  | { type: 'master:typing'; repo: string; on: boolean }
+  | { type: 'pulse:update'; pulse: RepoPulse }
+  | { type: 'schedule:update'; schedule: Schedule };
+
+// ---------- Work pulse: the live state of each repo, drawn onto its building ----------
+// GET /api/pulse            -> RepoPulse[]   (refreshed in the background ~every 2 min; WS pulse:update on change)
+// GET /api/pulse/:repo      -> RepoPulse
+
+export type CiState = 'passing' | 'failing' | 'pending' | 'none';
+
+export interface PulsePr {
+  number: number;
+  title: string;
+  author: string;
+  isAgent: boolean;
+  url: string;
+  createdAt: string;
+  isDraft: boolean;
+}
+
+export interface PulseIssue {
+  number: number;
+  title: string;
+  url: string;
+  labels: string[];
+  createdAt: string;
+}
+
+export interface PulseCommit {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
+export interface RepoPulse {
+  repo: string;
+  ci: CiState;
+  /** When the default branch entered its current CI state (best effort). */
+  ciSince: string | null;
+  openPrs: PulsePr[];
+  openIssues: PulseIssue[];
+  recentCommits: PulseCommit[]; // last ~10 on the default branch
+  lastRelease: { tag: string; publishedAt: string } | null;
+  pushedAt: string;
+  /** No push in 30+ days. */
+  stale: boolean;
+  /** Agents in this repo with status preparing|running|needs_input. */
+  activeAgents: number;
+  /** Things waiting on the user: agent runs pending review + agents needing input + open PRs by agents. */
+  needsYou: number;
+  updatedAt: string;
+}
+
+// ---------- Agent review + questions ----------
+// GET  /api/agents/:id/diff                      -> {stat: string, diff: string, files: string[]}
+// POST /api/agents/:id/review {action, note?}    -> AgentInfo
+//      action 'approve' = commit+push+open PR (same as /pr), 'changes' = resume the agent with note,
+//      'discard' = mark discarded and remove the worktree
+// POST /api/agents/:id/answer {text}             -> AgentInfo  (resumes a needs_input agent)
+// Env OPENWORLD_FAKE_AGENTS=1: agents are simulated (no claude, no clone) with a fake diff, for tests/tutorials.
+// Env OPENWORLD_DRY_PR=1: "approve" never pushes; it records a fake prUrl.
+
+export type ReviewAction = 'approve' | 'changes' | 'discard';
+
+// ---------- Schedules: project leads that work while you're away ----------
+// GET    /api/schedules                 -> Schedule[]
+// POST   /api/schedules {repo, task, cadence, hour, weekday?} -> Schedule
+// PATCH  /api/schedules/:id {enabled?, task?, cadence?, hour?, weekday?} -> Schedule
+// DELETE /api/schedules/:id             -> {ok:true}
+// POST   /api/schedules/:id/run         -> AgentInfo   (run now)
+
+export interface Schedule {
+  id: string;
+  repo: string;
+  task: string;
+  cadence: 'daily' | 'weekly';
+  hour: number; // local hour 0-23
+  weekday?: number; // 0=Sun, weekly only
+  enabled: boolean;
+  lastRunAt: string | null;
+  lastAgentId: string | null;
+  nextRunAt: string | null;
+  createdAt: string;
+}
+
+// ---------- Briefing: what happened while you were away (apartment desk, phone "Today") ----------
+// GET /api/briefing?since=ISO   -> Briefing   (since defaults to the last time the briefing was opened)
+// POST /api/briefing/seen       -> {ok:true}
+
+export interface Briefing {
+  since: string;
+  finished: AgentInfo[]; // runs that ended since `since`
+  needsReview: AgentInfo[]; // review === 'pending'
+  needsInput: AgentInfo[]; // status === 'needs_input'
+  failingCi: { repo: string; since: string | null }[];
+  newPrs: (PulsePr & { repo: string })[];
+  scheduled: Schedule[]; // enabled schedules, soonest first
+  headline: string; // one-sentence plain summary, e.g. "3 runs finished overnight, 2 need your review."
+}
 
 // ---------- SSE streams ----------
 // POST /api/talk       body TalkRequest       -> SSE events: {delta:string} ... {done:true}
@@ -195,6 +311,8 @@ export interface OfficeMessage {
   ts: string;
   /** Worker agents HQ started because of this message. */
   dispatched?: OfficeDispatch[];
+  /** Repos whose project lead HQ handed this to (see masters). */
+  delegated?: string[];
   /** Agents this message is about (stops, PRs, finish reports). */
   refs?: { agentId: string; action: 'stopped' | 'pr' | 'report' }[];
   read?: boolean;
@@ -206,4 +324,31 @@ export interface OfficeRequest {
   subject?: string;
   /** Client session id, for local analytics only. */
   session?: string;
+}
+
+// ---------- Project masters (phone "Projects" app) ----------
+// Every repo has a master agent: the lead for that building, reachable by text from anywhere.
+// It knows the repo (README, recent PRs/commits, agents in the building), answers questions and
+// dispatches worker agents into that repo. HQ sits above the masters and can delegate to them.
+// GET  /api/masters                 -> {threads: MasterThreadSummary[]}  (only repos with messages)
+// GET  /api/masters/:repo           -> {messages: MasterMessage[]}
+// POST /api/masters/:repo/message {text} -> SSE, same events as /api/office/message
+// POST /api/masters/:repo/read      -> {unread}
+
+export interface MasterMessage {
+  id: string;
+  repo: string;
+  /** 'hq' when HQ delegated work to this master. */
+  from: 'me' | 'master' | 'hq';
+  text: string;
+  ts: string;
+  dispatched?: OfficeDispatch[];
+  refs?: { agentId: string; action: 'stopped' | 'pr' | 'report' }[];
+  read?: boolean;
+}
+
+export interface MasterThreadSummary {
+  repo: string;
+  unread: number;
+  last: MasterMessage | null;
 }

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { AgentEvent, AgentInfo, BoardMessage, Repo, RepoDetail, Worker } from '../../shared/types.ts';
 import type { GameCtx, Scene3D } from './ctx.ts';
@@ -7,13 +8,20 @@ import { api, onLive, track } from './api.ts';
 import { shared } from './engine.ts';
 import { CLOTHES, makeNpc, type Character } from './characters.ts';
 import { Colliders, type PlayerWorld } from './player.ts';
+import { Lift } from './rooms/lift.ts';
+import { FloorViews, type CityViewPlacement } from './rooms/cityView.ts';
+import { planarUV, surfaceMaterial } from './rooms/surfaces.ts';
+import { quality } from './engine.ts';
 import { esc } from './interact.ts';
 import {
-  canvas, carpetTexture, drawAgentMonitor, drawDecisions, drawFeed, drawIdleMonitor, drawLogoWall, drawPlate, drawSign,
-  drawWorkerMonitor, hashStr, marbleTexture, rng, skylineTexture, texFrom, woodTexture,
+  canvas, drawAgentMonitor, drawDecisions, drawFeed, drawIdleMonitor, drawLogoWall, drawPlate, drawSign,
+  drawWorkerMonitor, hashStr, rng, skylineTexture, texFrom,
 } from './interiorArt.ts';
 import { openWorkerPanel } from './ui/workerPanel.ts';
 import { openAgentLivePanel, openHireAgentPanel } from './ui/agentPanel.ts';
+import { openReview } from './ui/review.ts';
+import { pulse } from './pulse.ts';
+import { drawIssueBoard, drawShelfSign, makeCarryBox, makeCrate, openPrShelf } from './rooms/work.ts';
 import { BOARD, openBoardroomPanel } from './ui/boardroomPanel.ts';
 
 export interface Interior extends Scene3D {
@@ -22,6 +30,8 @@ export interface Interior extends Scene3D {
   spawnFacing: number;
   repo: Repo;
   detail: RepoDetail;
+  /** Testing: jump straight to floor f (0 lobby .. 3 boardroom), standing by the lifts. */
+  debugFloor?(f: number): void;
 }
 
 // ---------- helpers ----------
@@ -47,11 +57,17 @@ class Batch {
   cyl(mat: THREE.Material, rTop: number, rBot: number, h: number, pos: V3, seg = 16) {
     this.add(mat, new THREE.CylinderGeometry(rTop, rBot, h, seg), pos);
   }
+  /** Materials whose merged geometry gets UVs in meters (textured surfaces: wood, stone, plaster). */
+  worldUV = new Set<THREE.Material>();
+  rounded(mat: THREE.Material, w: number, h: number, d: number, r: number, pos: V3, rotY = 0) {
+    this.add(mat, new RoundedBoxGeometry(w, h, d, 2, Math.min(r, w / 2, h / 2, d / 2)), pos, rotY);
+  }
   build(parent: THREE.Object3D, casters: Set<THREE.Material>, out: THREE.BufferGeometry[]) {
     for (const [mat, list] of this.parts) {
       const merged = mergeGeometries(list, false);
       list.forEach((g) => g.dispose());
       if (!merged) continue;
+      if (this.worldUV.has(mat)) planarUV(merged);
       const mesh = new THREE.Mesh(merged, mat);
       mesh.castShadow = casters.has(mat);
       mesh.receiveShadow = true;
@@ -96,148 +112,228 @@ interface Npc {
   turnToPlayer: boolean;
   nextGesture: number;
   kind: 'worker' | 'reception' | 'agent' | 'board';
+  floor: number;
 }
 
 const angleTo = (from: THREE.Vector3, to: THREE.Vector3) => Math.atan2(to.x - from.x, to.z - from.z);
 const lerpAngle = (a: number, b: number, t: number) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * t;
 
+const handDir = new THREE.Vector3();
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _q = new THREE.Quaternion(), _qp = new THREE.Quaternion(), _qw = new THREE.Quaternion();
+/** Turn `bone` (in world space) so the direction from it to `child` points along `dir`. */
+function aimBone(bone: THREE.Object3D | undefined, child: THREE.Object3D | undefined, dir: THREE.Vector3) {
+  if (!bone || !child || !bone.parent) return;
+  bone.updateWorldMatrix(true, true);
+  const cur = child.getWorldPosition(_b).sub(bone.getWorldPosition(_a)).normalize();
+  _q.setFromUnitVectors(cur, dir);
+  bone.getWorldQuaternion(_qw);
+  bone.parent.getWorldQuaternion(_qp).invert();
+  bone.quaternion.copy(_qp.multiply(_q.multiply(_qw)));
+}
+
 // ---------- build ----------
 
-export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior> {
+export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPlacement): Promise<Interior> {
   const detail: RepoDetail = await api.repo(repo.name).catch(() => ({ repo, readme: '', workers: [], decisions: [], agents: [] }));
   track('building_entered', { repo: repo.name, tier: repo.tier });
 
   const W = ({ landmark: 48, tower: 44, midrise: 40, small: 34 } as const)[repo.tier] ?? 40;
-  const D = 40;
   const H = repo.tier === 'landmark' ? 5 : 4.2;
   const LOBBY = 9;
-  const ROOM_W = 13, ROOM_D = 14;
-  const zRooms = D - ROOM_D;
-  const labCx = W / 2 - ROOM_W / 2;
-  const brdCx = -W / 2 + ROOM_W / 2;
-  const brdCz = zRooms + ROOM_D / 2;
+  // Four floors joined by a lift: the lobby, the work floor, the Agent Lab and the boardroom (then the roof).
+  const FH = H + 2.6; // floor to floor: the slab and services between one ceiling and the next floor
+  const LOBBY_F = 0, WORK_F = 1, LAB_F = 2, BOARD_F = 3, FLOORS = 4;
+  const DEPTH = [14.5, 30, 26, 26];
+  const D = Math.max(...DEPTH);
+  const fy = (f: number) => f * FH;
+  const LIFT_Z = 12; // lift car center; its doors face the front of the building
+  const LIFT_FRONT = LIFT_Z - (1.75 / 2 + 0.26); // the landing wall
+  const labCx = 0, brdCx = 0, brdCz = 19.4;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0d1018);
+  // Lighting from the room itself until the city view (captured per floor) takes over.
   const envRT = ctx.engine.pmrem.fromScene(new RoomEnvironment(), 0.04);
   scene.environment = envRT.texture;
   scene.environmentIntensity = 0.35;
+  const lite = quality.low || ctx.engine.renderer.xr.isPresenting;
 
   const geos: THREE.BufferGeometry[] = [];
   const mats: THREE.Material[] = [];
   const texs: THREE.Texture[] = [];
   const M = <T extends THREE.Material>(m: T) => { mats.push(m); return m; };
   const T = <X extends THREE.Texture>(t: X) => { texs.push(t); return t; };
+  const S = (name: Parameters<typeof surfaceMaterial>[0], opts: Parameters<typeof surfaceMaterial>[1] = {}) => {
+    const m = M(surfaceMaterial(name, { lite, ...opts }));
+    for (const k of ['map', 'normalMap', 'roughnessMap'] as const) { const t = (m as THREE.MeshStandardMaterial)[k]; if (t) T(t); }
+    return m;
+  };
 
   const brand = new THREE.Color(repo.brandColor || '#4fd1ff');
   const mat = {
-    wall: M(new THREE.MeshStandardMaterial({ color: 0xe9e6e0, roughness: 0.85 })),
-    ceiling: M(new THREE.MeshStandardMaterial({ color: 0xd9d8d4, roughness: 0.95 })),
-    light: M(new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff3e2, emissiveIntensity: 2.2 })),
+    wall: S('plaster', { tint: 0xf1eee9 }),
+    ceiling: S('acoustic'),
+    plasterCeil: S('plaster', { tint: 0xf4f2ee, ceiling: true }),
+    exposed: M(new THREE.MeshStandardMaterial({ color: 0x2e3238, roughness: 0.9 })),
+    duct: M(new THREE.MeshStandardMaterial({ color: 0xa9aeb4, roughness: 0.38, metalness: 0.85 })),
+    light: M(new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff3e2, emissiveIntensity: 2.4 })),
+    trim: M(new THREE.MeshStandardMaterial({ color: 0xdfe1e3, roughness: 0.4, metalness: 0.6 })),
+    brass: M(new THREE.MeshStandardMaterial({ color: 0xc9a46a, roughness: 0.25, metalness: 1 })),
     metal: M(new THREE.MeshStandardMaterial({ color: 0x2a2e35, roughness: 0.35, metalness: 0.85 })),
     steel: M(new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.25, metalness: 0.9 })),
     white: M(new THREE.MeshStandardMaterial({ color: 0xf2f1ee, roughness: 0.35 })),
-    wood: M(new THREE.MeshStandardMaterial({ map: T(woodTexture('#9a7550')), roughness: 0.45 })),
-    darkWood: M(new THREE.MeshStandardMaterial({ map: T(woodTexture('#4a3426')), roughness: 0.3 })),
-    fabric: M(new THREE.MeshStandardMaterial({ color: 0x2c3340, roughness: 0.95 })),
-    sofa: M(new THREE.MeshStandardMaterial({ color: 0x6b5a4a, roughness: 0.9 })),
-    divider: M(new THREE.MeshStandardMaterial({ color: 0x8f9aa6, roughness: 0.95 })),
+    whiteSteel: M(new THREE.MeshStandardMaterial({ color: 0xe9eaeb, roughness: 0.3, metalness: 0.4 })),
+    wood: S('oak'),
+    darkWood: S('walnut'),
+    stone: S('marble'),
+    quartz: S('terrazzo', { tint: 0xf4f2ee }),
+    fabric: S('fabric', { tint: 0x323946 }),
+    mesh: M(new THREE.MeshStandardMaterial({ color: 0x1d2026, roughness: 0.85 })),
+    sofa: S('fabric', { tint: 0x8a7a68 }),
+    sofa2: S('fabric', { tint: 0x5d6b62 }),
+    leather: M(new THREE.MeshStandardMaterial({ color: 0x5a3a28, roughness: 0.55 })),
+    felt: S('felt', { tint: 0x55606a }),
+    rug: S('felt', { tint: 0xb9b0a3 }),
+    divider: S('felt', { tint: 0x8f9aa6 }),
     black: M(new THREE.MeshStandardMaterial({ color: 0x111317, roughness: 0.4, metalness: 0.3 })),
-    leaf: M(new THREE.MeshStandardMaterial({ color: 0x3f7a3a, roughness: 0.8, flatShading: true })),
-    leaf2: M(new THREE.MeshStandardMaterial({ color: 0x2f6332, roughness: 0.8, flatShading: true })),
+    leaf: M(new THREE.MeshStandardMaterial({ color: 0x3b6e33, roughness: 0.6, side: THREE.DoubleSide })),
+    leaf2: M(new THREE.MeshStandardMaterial({ color: 0x2b5a2c, roughness: 0.6, side: THREE.DoubleSide })),
+    stem: M(new THREE.MeshStandardMaterial({ color: 0x5a4632, roughness: 0.9 })),
+    soil: M(new THREE.MeshStandardMaterial({ color: 0x2f2620, roughness: 1 })),
     pot: M(new THREE.MeshStandardMaterial({ color: 0xe8e4dc, roughness: 0.6 })),
+    potDark: M(new THREE.MeshStandardMaterial({ color: 0x3a3c3f, roughness: 0.7 })),
+    book: M(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 })),
+    ceramic: M(new THREE.MeshStandardMaterial({ color: 0xf6f5f2, roughness: 0.2 })),
     accent: M(new THREE.MeshStandardMaterial({ color: brand, emissive: brand, emissiveIntensity: 0.8, roughness: 0.4 })),
-    glass: M(new THREE.MeshPhysicalMaterial({ color: 0xcfe6ee, roughness: 0.04, metalness: 0, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide, envMapIntensity: 1.4 })),
-    window: M(new THREE.MeshPhysicalMaterial({ color: 0xbfd6e0, roughness: 0.02, transparent: true, opacity: 0.08, depthWrite: false, side: THREE.DoubleSide })),
+    glass: M(new THREE.MeshPhysicalMaterial({ color: 0xdbeef3, roughness: 0.03, metalness: 0, transparent: true, opacity: 0.14, depthWrite: false, side: THREE.DoubleSide, envMapIntensity: 1.6 })),
+    window: M(new THREE.MeshPhysicalMaterial({ color: 0xc9dde6, roughness: 0.02, metalness: 0, transparent: true, opacity: 0.1, depthWrite: false, side: THREE.DoubleSide, envMapIntensity: 1.2 })),
   };
-  const casters = new Set<THREE.Material>([mat.white, mat.wood, mat.darkWood, mat.fabric, mat.sofa, mat.divider, mat.black, mat.leaf, mat.leaf2, mat.pot, mat.metal]);
+  const casters = new Set<THREE.Material>([mat.white, mat.wood, mat.darkWood, mat.fabric, mat.mesh, mat.sofa, mat.sofa2, mat.leather, mat.felt, mat.divider, mat.black,
+    mat.leaf, mat.leaf2, mat.pot, mat.potDark, mat.metal, mat.wall, mat.trim, mat.stone, mat.quartz, mat.whiteSteel, mat.duct, mat.exposed]);
+  const worldUV = [mat.wall, mat.wood, mat.darkWood, mat.stone, mat.quartz, mat.plasterCeil];
 
   const colliders = new Colliders(8);
+  let BF = 0; // the floor being built
+  let cur = 0; // the floor you're on
   const solid = (x1: number, z1: number, x2: number, z2: number, maxY = 3) =>
-    colliders.add({ minX: Math.min(x1, x2), maxX: Math.max(x1, x2), minZ: Math.min(z1, z2), maxZ: Math.max(z1, z2), maxY });
+    colliders.add({ minX: Math.min(x1, x2), maxX: Math.max(x1, x2), minZ: Math.min(z1, z2), maxZ: Math.max(z1, z2), minY: fy(BF) - 0.1, maxY: fy(BF) + maxY });
 
-  const b = new Batch();
-  const root = new THREE.Group();
-  scene.add(root);
+  // Each floor is its own group (only the floor you're on is drawn) with its own merged batch.
+  const floorGroups: THREE.Group[] = [];
+  let root = new THREE.Group();
+  let b = new Batch();
+  const beginFloor = (f: number) => {
+    BF = f;
+    root = new THREE.Group();
+    root.position.y = fy(f);
+    root.visible = f === cur;
+    scene.add(root);
+    floorGroups[f] = root;
+    b = new Batch();
+    for (const m of worldUV) b.worldUV.add(m);
+  };
+  const endFloor = () => b.build(root, casters, geos);
 
   // ---------- floors ----------
-  const floorMesh = (m: THREE.Material, x1: number, z1: number, x2: number, z2: number, y: number) => {
+  /** A flat surface (floor, or ceiling when `down`) with UVs in meters, so its texture is to scale. */
+  const flat = (m: THREE.Material, x1: number, z1: number, x2: number, z2: number, y: number, down = false) => {
     const g = new THREE.PlaneGeometry(x2 - x1, z2 - z1);
+    g.rotateX(down ? Math.PI / 2 : -Math.PI / 2);
+    g.translate((x1 + x2) / 2, y, (z1 + z2) / 2);
+    planarUV(g);
     geos.push(g);
     const mesh = new THREE.Mesh(g, m);
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.position.set((x1 + x2) / 2, y, (z1 + z2) / 2);
     mesh.receiveShadow = true;
+    mesh.castShadow = down; // ceilings keep the sun out except through the windows
     root.add(mesh);
+    return mesh;
   };
-  const tiled = (t: THREE.Texture, rx: number, rz: number) => { const c = T(t.clone()); c.repeat.set(rx, rz); c.needsUpdate = true; return c; };
-  const marble = T(marbleTexture());
-  const carpet = T(carpetTexture());
-  const oak = T(woodTexture('#7a5a3e'));
-  floorMesh(M(new THREE.MeshStandardMaterial({ map: tiled(marble, W / 4, (LOBBY + 1.5) / 4), roughness: 0.08, metalness: 0.0 })), -W / 2, 0, W / 2, LOBBY + 1.5, 0);
-  floorMesh(M(new THREE.MeshStandardMaterial({ map: tiled(carpet, W / 2, (D - LOBBY - 1.5) / 2), roughness: 0.97 })), -W / 2, LOBBY + 1.5, W / 2, D, 0.002);
-  floorMesh(M(new THREE.MeshStandardMaterial({ map: tiled(oak, ROOM_W / 2, ROOM_D / 2), roughness: 0.25 })), -W / 2, zRooms, -W / 2 + ROOM_W, D, 0.004);
-  floorMesh(M(new THREE.MeshStandardMaterial({ color: 0x3a414d, roughness: 0.22, metalness: 0.1 })), W / 2 - ROOM_W, zRooms, W / 2, D, 0.004);
-  // Brand-colored inlay runner from the door to reception
-  b.box(mat.accent, 0.12, 0.01, LOBBY - 4.2, [-1.4, 0.006, (LOBBY - 4.2) / 2]);
-  b.box(mat.accent, 0.12, 0.01, LOBBY - 4.2, [1.4, 0.006, (LOBBY - 4.2) / 2]);
+  const floorMesh = (m: THREE.Material, x1: number, z1: number, x2: number, z2: number, y: number) => flat(m, x1, z1, x2, z2, y);
+  const marbleFloor = S('marble');
+  const carpetFloor = S('carpet');
+  const carpetWarm = S('carpetWarm');
+  const oakFloor = S('oak');
+  const walnutFloor = S('walnut');
+  const concreteFloor = S('concrete');
+  const carpetMat = (_d: number) => carpetFloor;
+  const oakMat = (_w: number, _d: number) => oakFloor;
 
-  // ---------- ceiling & lights ----------
-  {
-    const g = new THREE.PlaneGeometry(W, D);
-    geos.push(g);
-    const c = new THREE.Mesh(g, mat.ceiling);
-    c.rotation.x = Math.PI / 2;
-    c.position.set(0, H, D / 2);
-    root.add(c);
-    for (let x = -W / 2 + 4; x <= W / 2 - 4; x += 4) for (let z = 3; z < D - 1; z += 5) b.box(mat.light, 1.3, 0.04, 2.6, [x, H - 0.03, z]);
-    // Lobby feature: a ring of linear lights above reception
-    b.box(mat.light, 8, 0.05, 0.12, [0, H - 0.05, 4.2]);
-    b.box(mat.light, 8, 0.05, 0.12, [0, H - 0.05, 7.2]);
-  }
-
-  // ---------- outer walls with floor-to-ceiling windows ----------
+  // ---------- outer walls: a floor-to-ceiling curtain wall ----------
   const windowWall = (x1: number, z1: number, x2: number, z2: number) => {
     const len = Math.hypot(x2 - x1, z2 - z1);
     const cx = (x1 + x2) / 2, cz = (z1 + z2) / 2;
     const rot = Math.atan2(x2 - x1, z2 - z1) - Math.PI / 2; // box X axis along the wall
-    b.box(mat.wall, len, 0.5, 0.25, [cx, 0.25, cz], rot);
-    b.box(mat.wall, len, 0.45, 0.25, [cx, H - 0.225, cz], rot);
-    b.box(mat.window, len, H - 0.95, 0.02, [cx, 0.5 + (H - 0.95) / 2, cz], rot);
-    const n = Math.max(1, Math.round(len / 2.5));
+    b.box(mat.trim, len, 0.1, 0.22, [cx, 0.05, cz], rot); // base channel
+    b.box(mat.wall, len, 0.42, 0.34, [cx, H - 0.21, cz], rot); // head soffit
+    b.box(mat.black, len, 0.1, 0.16, [cx, H - 0.47, cz], rot); // roller-shade pocket
+    b.box(mat.window, len, H - 0.6, 0.02, [cx, 0.1 + (H - 0.6) / 2, cz], rot);
+    const n = Math.max(1, Math.round(len / 1.5));
     for (let i = 0; i <= n; i++) {
       const t = i / n;
-      b.box(mat.metal, 0.08, H, 0.12, [x1 + (x2 - x1) * t, H / 2, z1 + (z2 - z1) * t]);
+      b.box(mat.metal, 0.055, H - 0.42, 0.16, [x1 + (x2 - x1) * t, (H - 0.42) / 2, z1 + (z2 - z1) * t], rot);
     }
-    b.box(mat.metal, len, 0.05, 0.1, [cx, 0.52, cz], rot); // sill
   };
-  windowWall(-W / 2, 0, -W / 2, D);
-  windowWall(W / 2, 0, W / 2, D);
-  windowWall(-W / 2, D, W / 2, D);
-  // Front wall with glass entrance doors
-  b.box(mat.wall, W / 2 - 2, H, 0.3, [-(W / 2 + 2) / 2, H / 2, 0]);
-  b.box(mat.wall, W / 2 - 2, H, 0.3, [(W / 2 + 2) / 2, H / 2, 0]);
-  b.box(mat.wall, 4, H - 3, 0.3, [0, 3 + (H - 3) / 2, 0]);
-  b.box(mat.glass, 1.95, 2.95, 0.04, [-1, 1.5, 0.02]);
-  b.box(mat.glass, 1.95, 2.95, 0.04, [1, 1.5, 0.02]);
-  b.box(mat.steel, 0.06, 3, 0.1, [0, 1.5, 0.02]);
-  b.box(mat.steel, 0.06, 3, 0.1, [-2, 1.5, 0.02]);
-  b.box(mat.steel, 0.06, 3, 0.1, [2, 1.5, 0.02]);
-  b.box(mat.steel, 0.6, 0.04, 0.04, [-0.4, 1.1, 0.1]);
-  b.box(mat.steel, 0.6, 0.04, 0.04, [0.4, 1.1, 0.1]);
-  {
-    const { c } = canvas(512, 128);
-    drawPlate(c, 'EXIT', '#3ddc97');
-    const t = T(texFrom(c));
-    const g = new THREE.PlaneGeometry(0.9, 0.22);
-    geos.push(g);
-    const m = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: t })));
-    m.position.set(0, 3.25, 0.17);
-    root.add(m);
-  }
-  solid(-W / 2, -0.4, W / 2, 0.15, 5);
+  /**
+   * Ceiling (acoustic tiles with recessed linear lights, an exposed services ceiling, or smooth plaster
+   * with downlights and a lit cove) and the curtain walls on the sides and back (and front, upstairs).
+   */
+  const shell = (f: number, glassFront: boolean, kind: 'acoustic' | 'exposed' | 'plaster' = 'acoustic') => {
+    const Df = DEPTH[f];
+    const inShaft = (x: number, z: number) => Math.abs(x) < 2.4 && Math.abs(z - LIFT_Z) < 2.2;
+    if (kind === 'acoustic') {
+      flat(mat.ceiling, -W / 2, 0, W / 2, Df, H, true);
+      for (let x = -W / 2 + 3; x <= W / 2 - 3; x += 3) for (let z = 2.4; z < Df - 1.4; z += 3.6) {
+        if (inShaft(x, z)) continue;
+        b.box(mat.trim, 0.16, 0.02, 2.44, [x, H - 0.012, z]);
+        b.box(mat.light, 0.07, 0.02, 2.3, [x, H - 0.02, z]);
+      }
+    } else if (kind === 'plaster') {
+      flat(mat.plasterCeil, -W / 2, 0, W / 2, Df, H, true);
+      for (let x = -W / 2 + 2.5; x <= W / 2 - 2.5; x += 2.5) for (let z = 2; z < Df - 1; z += 2.5) {
+        if (inShaft(x, z)) continue;
+        b.cyl(mat.trim, 0.11, 0.11, 0.02, [x, H - 0.012, z], 16);
+        b.cyl(mat.light, 0.075, 0.075, 0.02, [x, H - 0.02, z], 16);
+      }
+      // Lit cove around the edge.
+      b.box(mat.light, W - 1.2, 0.03, 0.06, [0, H - 0.5, Df - 0.6]);
+      b.box(mat.light, 0.06, 0.03, Df - 1.2, [-W / 2 + 0.6, H - 0.5, Df / 2]);
+      b.box(mat.light, 0.06, 0.03, Df - 1.2, [W / 2 - 0.6, H - 0.5, Df / 2]);
+    } else {
+      // Exposed: dark deck, round ducts, a cable tray, and linear pendants on wires.
+      flat(mat.exposed, -W / 2, 0, W / 2, Df, H + 0.6, true);
+      for (const x of [-W / 4, W / 4]) {
+        const g = new THREE.CylinderGeometry(0.32, 0.32, Df - 1, 20);
+        g.rotateX(Math.PI / 2);
+        b.add(mat.duct, g, [x, H + 0.1, Df / 2]);
+        for (let z = 3; z < Df - 2; z += 4) b.add(mat.duct, new THREE.CylinderGeometry(0.14, 0.14, 0.3, 14), [x, H - 0.3, z]);
+      }
+      b.box(mat.metal, 0.4, 0.06, Df - 1, [0, H + 0.2, Df / 2]);
+      for (let x = -W / 2 + 4; x <= W / 2 - 4; x += 4) for (let z = 3; z < Df - 2; z += 4.5) {
+        if (inShaft(x, z)) continue;
+        b.box(mat.metal, 0.012, 0.9, 0.012, [x, H + 0.15, z - 1]);
+        b.box(mat.metal, 0.012, 0.9, 0.012, [x, H + 0.15, z + 1]);
+        b.box(mat.black, 0.1, 0.07, 2.4, [x, H - 0.33, z]);
+        b.box(mat.light, 0.07, 0.02, 2.3, [x, H - 0.375, z]);
+      }
+    }
+    windowWall(-W / 2, 0, -W / 2, Df);
+    windowWall(W / 2, 0, W / 2, Df);
+    windowWall(-W / 2, Df, W / 2, Df);
+    if (glassFront) windowWall(-W / 2, 0, W / 2, 0);
+    solid(-W / 2, -0.4, W / 2, 0.15, 5);
+    solid(-W / 2, Df - 0.15, W / 2, Df + 0.4, 5);
+    // Light: six warm ceiling lights on every floor (the same count, so floors share shaders).
+    const spots: [number, number][] = [[-W / 4, 4], [W / 4, 4], [-W / 4, Df * 0.62], [W / 4, Df * 0.62], [-W / 2 + 3, Df - 3], [W / 2 - 3, Df - 3]];
+    for (const [x, z] of spots) {
+      const p = new THREE.PointLight(0xffe6c8, 26, 18, 2);
+      p.position.set(x, H - 0.4, z);
+      root.add(p);
+    }
+  };
 
-  // ---------- skyline backdrops beyond the windows ----------
+  // ---------- skyline backdrops beyond the windows (they follow you from floor to floor) ----------
+  const backdrop = new THREE.Group();
+  scene.add(backdrop);
   {
     const seed = hashStr(repo.name);
     const day = T(skylineTexture(false, seed)), night = T(skylineTexture(true, seed));
@@ -256,11 +352,12 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
       const m = new THREE.Mesh(g, sky);
       m.position.set(x, 6, z);
       m.rotation.y = ry;
-      root.add(m);
+      backdrop.add(m);
     };
     put(W + 70, 0, D + 22, Math.PI);
     put(D + 70, -W / 2 - 22, D / 2, Math.PI / 2);
     put(D + 70, W / 2 + 22, D / 2, -Math.PI / 2);
+    put(W + 70, 0, -22, 0);
   }
 
   // ---------- glass partitions ----------
@@ -287,76 +384,269 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
     }
     if (gapAt !== undefined) b.box(mat.metal, gapW, H - 3, 0.1, [x1 + dx * gapAt, 3 + (H - 3) / 2, z1 + dz * gapAt], rot);
   };
-  // Agent Lab (back right) and Boardroom (back left)
-  glassWall(W / 2 - ROOM_W, zRooms, W / 2, zRooms, ROOM_W / 2);
-  glassWall(W / 2 - ROOM_W, zRooms, W / 2 - ROOM_W, D);
-  glassWall(-W / 2, zRooms, -W / 2 + ROOM_W, zRooms, ROOM_W / 2);
-  glassWall(-W / 2 + ROOM_W, zRooms, -W / 2 + ROOM_W, D);
 
-  const plate = (text: string, color: string, x: number, z: number) => {
+  const plate = (text: string, color: string, x: number, z: number, y = 3.25) => {
     const { c } = canvas(1024, 160);
     drawPlate(c, text, color);
     const g = new THREE.PlaneGeometry(2.4, 0.38);
     geos.push(g);
     const m = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: T(texFrom(c)) })));
-    m.position.set(x, 3.25, z - 0.08);
+    m.position.set(x, y, z - 0.08);
     m.rotation.y = Math.PI;
     root.add(m);
   };
-  plate('AGENT LAB', '#3ddc97', labCx, zRooms);
-  plate('BOARDROOM', '#ffcc33', brdCx, zRooms);
 
-  // ---------- columns ----------
-  for (const [x, z] of [[-(W / 2 - 3), LOBBY + 0.8], [W / 2 - 3, LOBBY + 0.8], [-(W / 2 - ROOM_W - 1.6), zRooms - 1], [W / 2 - ROOM_W - 1.6, zRooms - 1]] as [number, number][]) {
-    b.cyl(mat.white, 0.36, 0.36, H, [x, H / 2, z], 24);
-    b.cyl(mat.steel, 0.4, 0.4, 0.08, [x, 0.04, z], 24);
+  const column = (x: number, z: number) => {
+    b.cyl(mat.wall, 0.36, 0.36, H, [x, H / 2, z], 28);
+    b.cyl(mat.trim, 0.38, 0.38, 0.1, [x, 0.05, z], 28);
     solid(x - 0.4, z - 0.4, x + 0.4, z + 0.4, 5);
-  }
+  };
 
-  // ---------- plants ----------
+  // ---------- plants: a pot, soil, stems and many leaves (fiddle-leaf figs and palms) ----------
+  const leafGeo = (len: number, wid: number) => {
+    const g = new THREE.SphereGeometry(1, 8, 4);
+    g.scale(wid, 0.012, len);
+    g.translate(0, 0, len * 0.9);
+    return g;
+  };
   const plant = (x: number, z: number, s = 1) => {
-    const r = rng(hashStr(`${x},${z}`));
-    b.cyl(mat.pot, 0.32 * s, 0.24 * s, 0.6 * s, [x, 0.3 * s, z], 14);
-    b.cyl(mat.black, 0.3 * s, 0.3 * s, 0.02, [x, 0.6 * s, z], 14);
-    for (let i = 0; i < 5; i++) {
-      const a = r() * Math.PI * 2, d = r() * 0.25 * s;
-      b.add(i % 2 ? mat.leaf : mat.leaf2, new THREE.IcosahedronGeometry((0.28 + r() * 0.25) * s, 0), [x + Math.cos(a) * d, (0.85 + r() * 0.9) * s, z + Math.sin(a) * d], r() * 3, r() * 3);
+    const r = rng(hashStr(`${x},${z},${BF}`));
+    const ph = 0.55 * s, pr = 0.3 * s;
+    const dark = r() < 0.5;
+    b.add(dark ? mat.potDark : mat.pot, new THREE.CylinderGeometry(pr, pr * 0.8, ph, 24), [x, ph / 2, z]);
+    b.cyl(mat.soil, pr * 0.92, pr * 0.92, 0.02, [x, ph - 0.03, z], 20);
+    const stems = 3 + Math.floor(r() * 3);
+    for (let i = 0; i < stems; i++) {
+      const a = (i / stems) * Math.PI * 2 + r(), lean = 0.12 + r() * 0.18, h = (0.9 + r() * 0.9) * s;
+      const g = new THREE.CylinderGeometry(0.012 * s, 0.02 * s, h, 5);
+      g.translate(0, h / 2, 0);
+      g.rotateX(lean);
+      g.rotateY(a);
+      b.add(mat.stem, g, [x, ph - 0.02, z]);
+      const tipX = Math.sin(a) * Math.sin(lean) * h, tipZ = Math.cos(a) * Math.sin(lean) * h, tipY = Math.cos(lean) * h;
+      const leaves = 6 + Math.floor(r() * 5);
+      for (let k = 0; k < leaves; k++) {
+        const t = 0.35 + (k / leaves) * 0.65;
+        const lg = leafGeo((0.16 + r() * 0.1) * s, (0.08 + r() * 0.05) * s);
+        b.add(r() < 0.5 ? mat.leaf : mat.leaf2, lg, [x + tipX * t, ph + tipY * t, z + tipZ * t], r() * Math.PI * 2, -0.2 - r() * 0.9, (r() - 0.5) * 0.6);
+      }
     }
     solid(x - 0.35 * s, z - 0.35 * s, x + 0.35 * s, z + 0.35 * s, 2);
   };
-  plant(-W / 2 + 1.2, 1.2, 1.3); plant(W / 2 - 1.2, 1.2, 1.3);
-  plant(-W / 2 + 1.2, LOBBY - 0.5, 1.1); plant(W / 2 - 1.2, LOBBY - 0.5, 1.1);
-  plant(-(W / 2 - ROOM_W - 3), zRooms - 1); plant(W / 2 - ROOM_W - 3, zRooms - 1);
-  plant(-W / 2 + 0.9, zRooms + 0.9); plant(W / 2 - 0.9, D - 0.9); plant(-W / 2 + 0.9, D - 0.9);
 
-  // ---------- lobby ----------
+  // ---------- furniture ----------
+  /** Office task chair: five-star base, gas lift, seat and mesh back, arms. Faces +z rotated by yaw. */
+  const taskChair = (x: number, z: number, yaw: number, exec = false) => {
+    const c = Math.cos(yaw), sn = Math.sin(yaw);
+    const P = (lx: number, ly: number, lz: number): V3 => [x + lx * c + lz * sn, ly, z - lx * sn + lz * c];
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      b.box(mat.metal, 0.04, 0.035, 0.32, P(Math.sin(a) * 0.16, 0.07, Math.cos(a) * 0.16), yaw + a);
+      b.add(mat.black, new THREE.SphereGeometry(0.028, 8, 6), P(Math.sin(a) * 0.31, 0.03, Math.cos(a) * 0.31));
+    }
+    b.cyl(mat.steel, 0.025, 0.025, 0.36, P(0, 0.26, 0), 10);
+    b.rounded(exec ? mat.leather : mat.fabric, 0.5, 0.08, 0.48, 0.035, P(0, 0.47, 0), yaw);
+    b.rounded(exec ? mat.leather : mat.mesh, 0.46, exec ? 0.62 : 0.55, 0.05, 0.025, P(0, exec ? 0.83 : 0.8, -0.24), yaw);
+    b.box(mat.metal, 0.04, 0.3, 0.04, P(0, 0.6, -0.25), yaw);
+    for (const sx of [-0.26, 0.26]) {
+      b.box(mat.metal, 0.03, 0.2, 0.03, P(sx, 0.58, -0.02), yaw);
+      b.rounded(mat.black, 0.06, 0.03, 0.24, 0.012, P(sx, 0.69, 0.0), yaw);
+    }
+  };
+  /** Three-seat sofa (back toward -z, before rotation), on short legs. */
+  const sofa = (x: number, z: number, yaw: number, m: THREE.Material = mat.sofa, w = 2.3) => {
+    const c = Math.cos(yaw), sn = Math.sin(yaw);
+    const P = (lx: number, ly: number, lz: number): V3 => [x + lx * c + lz * sn, ly, z - lx * sn + lz * c];
+    b.rounded(m, w, 0.22, 0.9, 0.05, P(0, 0.22, 0), yaw);
+    const seats = w > 1.5 ? 3 : 1, sw = (w - 0.36) / seats;
+    for (let i = 0; i < seats; i++) {
+      const lx = -w / 2 + 0.18 + sw * (i + 0.5);
+      b.rounded(m, sw - 0.02, 0.14, 0.66, 0.06, P(lx, 0.4, 0.08), yaw);
+      b.rounded(m, sw - 0.02, 0.42, 0.18, 0.07, P(lx, 0.62, -0.3), yaw);
+    }
+    b.rounded(m, w, 0.5, 0.16, 0.05, P(0, 0.52, -0.38), yaw);
+    for (const sx of [-1, 1]) b.rounded(m, 0.18, 0.38, 0.9, 0.06, P(sx * (w / 2 - 0.09), 0.45, 0), yaw);
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) b.cyl(mat.darkWood, 0.022, 0.018, 0.12, P(sx * (w / 2 - 0.1), 0.06, sz * 0.36), 8);
+  };
+  const armchair = (x: number, z: number, yaw: number, m: THREE.Material = mat.sofa2) => sofa(x, z, yaw, m, 0.95);
+  const rug = (x: number, z: number, w: number, d: number) => {
+    b.rounded(mat.rug, w, 0.012, d, 0.005, [x, 0.006, z]);
+  };
+  /** Lounge: a rug, sofa, armchairs and a coffee table, either side of the floor. */
+  const lounge = (z: number) => {
+    for (const sx of [-1, 1]) {
+      const x = sx * (W / 2 - 4.5);
+      rug(x, z - 0.9, 3.6, 2.8);
+      sofa(x, z, Math.PI);
+      armchair(x - 1.55, z - 1.3, Math.PI / 2 + 0.35 * -sx * 0);
+      armchair(x + 1.55, z - 1.3, -Math.PI / 2);
+      b.cyl(mat.darkWood, 0.5, 0.5, 0.04, [x, 0.4, z - 1.3], 32);
+      b.cyl(mat.metal, 0.03, 0.03, 0.38, [x, 0.19, z - 1.3], 8);
+      b.cyl(mat.metal, 0.22, 0.22, 0.015, [x, 0.008, z - 1.3], 20);
+      // A few books and a vase on the table.
+      b.box(mat.book, 0.24, 0.04, 0.17, [x - 0.15, 0.44, z - 1.25], 0.3);
+      b.add(mat.ceramic, new THREE.CylinderGeometry(0.05, 0.07, 0.22, 16), [x + 0.18, 0.53, z - 1.4]);
+      solid(x - 1.3, z - 0.5, x + 1.3, z + 0.5, 1.2);
+      solid(x - 0.6, z - 1.85, x + 0.6, z - 0.75, 1);
+      solid(x - 2.05, z - 1.8, x - 1.05, z - 0.8, 1.1);
+      solid(x + 1.05, z - 1.8, x + 2.05, z - 0.8, 1.1);
+    }
+  };
+  /** A glass-fronted phone booth with felt walls, a stool and a shelf. Door faces -z. */
+  const pod = (x: number, z: number) => {
+    const w = 1.3, d = 1.2, h = 2.3;
+    b.box(mat.felt, w, h, 0.05, [x, h / 2, z + d / 2]);
+    b.box(mat.felt, 0.05, h, d, [x - w / 2, h / 2, z]);
+    b.box(mat.felt, 0.05, h, d, [x + w / 2, h / 2, z]);
+    b.box(mat.whiteSteel, w + 0.06, 0.06, d + 0.06, [x, h, z]);
+    b.box(mat.glass, w, h - 0.08, 0.02, [x, h / 2, z - d / 2]);
+    b.box(mat.metal, 0.03, h, 0.05, [x - w / 2, h / 2, z - d / 2]);
+    b.box(mat.metal, 0.03, h, 0.05, [x + w / 2, h / 2, z - d / 2]);
+    b.box(mat.steel, 0.02, 0.4, 0.03, [x + w / 2 - 0.12, 1.05, z - d / 2 - 0.03]);
+    b.rounded(mat.wood, w - 0.15, 0.04, 0.4, 0.01, [x, 1.05, z + d / 2 - 0.25]);
+    b.cyl(mat.sofa2, 0.2, 0.2, 0.08, [x, 0.66, z], 18);
+    b.cyl(mat.metal, 0.03, 0.03, 0.62, [x, 0.31, z], 8);
+    b.box(mat.light, w - 0.2, 0.02, 0.06, [x, h - 0.04, z]);
+    solid(x - w / 2 - 0.05, z - d / 2 - 0.05, x + w / 2 + 0.05, z + d / 2 + 0.05, 2.5);
+  };
+  /** A kitchen run: base cabinets, quartz top, sink, espresso machine, open shelves; stools at an island. */
+  const kitchen = (cx: number, cz: number, len: number, face: 1 | -1 = -1, shelves = true) => {
+    b.box(mat.white, len, 0.86, 0.62, [cx, 0.43, cz]);
+    for (let x = -len / 2 + 0.3; x < len / 2; x += 0.6) b.box(mat.black, 0.006, 0.7, 0.01, [cx + x, 0.45, cz + face * 0.315]); // door gaps
+    b.box(mat.black, len, 0.1, 0.56, [cx, 0.05, cz + 0.02]); // toe kick
+    b.box(mat.quartz, len + 0.04, 0.04, 0.66, [cx, 0.88, cz]);
+    b.box(mat.steel, 0.5, 0.02, 0.4, [cx + len * 0.2, 0.9, cz]); // sink
+    b.cyl(mat.steel, 0.012, 0.012, 0.3, [cx + len * 0.2, 1.05, cz + 0.22], 8);
+    b.box(mat.steel, 0.36, 0.42, 0.4, [cx - len * 0.3, 1.11, cz + 0.05]); // espresso machine
+    b.box(mat.black, 0.3, 0.06, 0.06, [cx - len * 0.3, 1.18, cz + face * 0.16]);
+    for (let i = 0; i < 4; i++) b.add(mat.ceramic, new THREE.CylinderGeometry(0.04, 0.035, 0.09, 12), [cx - len * 0.3 + 0.3 + i * 0.1, 0.945, cz + face * 0.1]);
+    if (shelves) {
+      b.box(mat.wood, len, 0.03, 0.3, [cx, 1.6, cz - face * 0.17]);
+      b.box(mat.wood, len, 0.03, 0.3, [cx, 2.0, cz - face * 0.17]);
+      for (let i = 0; i < Math.floor(len / 0.18); i++) b.add(mat.ceramic, new THREE.CylinderGeometry(0.05, 0.05, 0.1 + (i % 3) * 0.05, 10), [cx - len / 2 + 0.15 + i * 0.18, 1.67 + (i % 3) * 0.025, cz - face * 0.17]);
+    }
+    b.box(mat.steel, 0.8, 2.0, 0.66, [cx + len / 2 + 0.42, 1.0, cz]); // fridge
+    b.box(mat.black, 0.02, 0.6, 0.03, [cx + len / 2 + 0.12, 1.3, cz + face * 0.34]);
+    solid(cx - len / 2 - 0.05, cz - 0.35, cx + len / 2 + 0.85, cz + 0.35, 2.2);
+  };
+
+  // ---------- people, labels, interactions (each belongs to a floor) ----------
   const npcs: Npc[] = [];
   const labelIds: string[] = [];
   const interactIds: string[] = [];
-  const addLabel = (id: string, pos: THREE.Vector3, html: string, opts: { cls?: string; maxDist?: number } = {}) => {
-    ctx.labels.set(id, pos, html, opts);
+  const labelDefs = new Map<string, { floor: number; pos: THREE.Vector3; html: string; opts: { cls?: string; maxDist?: number } }>();
+  const addLabel = (id: string, pos: THREE.Vector3, html: string, opts: { cls?: string; maxDist?: number } = {}, floor = BF) => {
+    const p = pos.clone();
+    p.y += fy(floor);
+    labelDefs.set(id, { floor, pos: p, html, opts });
+    if (floor === cur) ctx.labels.set(id, p, html, opts);
     if (!labelIds.includes(id)) labelIds.push(id);
   };
-  const addInteract = (id: string, pos: THREE.Vector3, radius: number, label: string, sub: string | undefined, action: () => void) => {
-    ctx.interactions.add({ id, position: pos, radius, label, sub, action });
+  const removeLabel = (id: string) => { labelDefs.delete(id); ctx.labels.remove(id); };
+  const addInteract = (id: string, pos: THREE.Vector3, radius: number, label: string, sub: string | undefined, action: () => void, floor = BF) => {
+    ctx.interactions.add({ id, position: pos.clone().setY(pos.y + fy(floor)), radius, label, sub, action });
     if (!interactIds.includes(id)) interactIds.push(id);
   };
-  const spawnNpc = (id: string, kind: Npc['kind'], ch: Character, x: number, z: number, facing: number, turnToPlayer = true) => {
+  const spawnNpc = (id: string, kind: Npc['kind'], ch: Character, x: number, z: number, facing: number, turnToPlayer = true, floor = BF) => {
     ch.root.position.set(x, 0, z);
     ch.root.rotation.y = facing;
-    root.add(ch.root);
+    floorGroups[floor].add(ch.root);
+    const keep = BF;
+    BF = floor;
     solid(x - 0.25, z - 0.25, x + 0.25, z + 0.25, 2);
-    const n: Npc = { id, ch, base: facing, look: null, turnToPlayer, nextGesture: 3 + Math.random() * 10, kind };
+    BF = keep;
+    const n: Npc = { id, ch, base: facing, look: null, turnToPlayer, nextGesture: 3 + Math.random() * 10, kind, floor };
     npcs.push(n);
     return n;
   };
 
+  // ---------- desk factory ----------
+  const screens: THREE.Mesh[] = [];
+  const desk = (x: number, z: number) => {
+    // Height-adjustable desk: oak top on a white steel frame, monitor on an arm, keyboard, a mug.
+    b.rounded(mat.wood, 1.6, 0.035, 0.8, 0.012, [x, 1.05, z]);
+    for (const sx of [-0.68, 0.68]) {
+      b.box(mat.whiteSteel, 0.07, 0.98, 0.05, [x + sx, 0.53, z + 0.05]);
+      b.box(mat.whiteSteel, 0.07, 0.03, 0.7, [x + sx, 0.015, z + 0.05]);
+      b.box(mat.whiteSteel, 0.06, 0.03, 0.6, [x + sx, 1.02, z + 0.05]);
+    }
+    b.box(mat.whiteSteel, 1.36, 0.05, 0.05, [x, 0.98, z + 0.3]);
+    b.box(mat.metal, 1.3, 0.04, 0.12, [x, 0.9, z + 0.3]); // cable tray
+    b.box(mat.divider, 1.6, 0.5, 0.035, [x, 1.33, z + 0.42]);
+    b.rounded(mat.black, 0.9, 0.54, 0.025, 0.008, [x, 1.5, z + 0.22]);
+    b.box(mat.metal, 0.04, 0.2, 0.04, [x, 1.17, z + 0.3]);
+    b.box(mat.metal, 0.04, 0.04, 0.16, [x, 1.27, z + 0.26]);
+    b.rounded(mat.whiteSteel, 0.44, 0.015, 0.13, 0.005, [x, 1.075, z - 0.15]);
+    b.rounded(mat.whiteSteel, 0.06, 0.015, 0.1, 0.006, [x + 0.34, 1.075, z - 0.13]);
+    const rr = rng(hashStr(`${x}:${z}:${BF}`));
+    if (rr() < 0.6) b.add(mat.ceramic, new THREE.CylinderGeometry(0.04, 0.036, 0.1, 14), [x - 0.55, 1.12, z - 0.05]);
+    if (rr() < 0.35) b.box(mat.book, 0.22, 0.03, 0.3, [x + 0.55, 1.083, z], rr());
+    // Chair parked beside the standing desk
+    taskChair(x + 1.05, z - 0.35, Math.PI * 0.85);
+    solid(x - 0.85, z - 0.45, x + 0.85, z + 0.47, 2);
+    const { c } = canvas(512, 320);
+    const t = T(texFrom(c));
+    const g = new THREE.PlaneGeometry(0.86, 0.5);
+    geos.push(g);
+    const scr = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: t, toneMapped: false })));
+    scr.position.set(x, 1.5, z + 0.2);
+    scr.rotation.y = Math.PI;
+    root.add(scr);
+    screens.push(scr);
+    return { c, t };
+  };
+
+  // =============================== LOBBY (ground floor) ===============================
+  beginFloor(LOBBY_F);
+  floorMesh(marbleFloor, -W / 2, 0, W / 2, DEPTH[0], 0);
+  // Brass inlay lines from the door to reception
+  b.box(mat.brass, 0.05, 0.004, LOBBY - 4.2, [-1.4, 0.002, (LOBBY - 4.2) / 2]);
+  b.box(mat.brass, 0.05, 0.004, LOBBY - 4.2, [1.4, 0.002, (LOBBY - 4.2) / 2]);
+  shell(LOBBY_F, false, 'plaster');
+  // Lobby feature: two linear light slots above reception
+  b.box(mat.trim, 8.2, 0.02, 0.2, [0, H - 0.012, 4.2]);
+  b.box(mat.light, 8, 0.02, 0.1, [0, H - 0.02, 4.2]);
+  b.box(mat.trim, 8.2, 0.02, 0.2, [0, H - 0.012, 7.2]);
+  b.box(mat.light, 8, 0.02, 0.1, [0, H - 0.02, 7.2]);
+  // Glass front with the entrance doors in the middle
+  windowWall(-W / 2, 0, -2, 0);
+  windowWall(2, 0, W / 2, 0);
+  b.box(mat.wall, 4, H - 3, 0.34, [0, 3 + (H - 3) / 2, 0]);
+  b.box(mat.glass, 1.95, 2.95, 0.04, [-1, 1.5, 0.02]);
+  b.box(mat.glass, 1.95, 2.95, 0.04, [1, 1.5, 0.02]);
+  b.box(mat.steel, 0.06, 3, 0.1, [0, 1.5, 0.02]);
+  b.box(mat.steel, 0.06, 3, 0.1, [-2, 1.5, 0.02]);
+  b.box(mat.steel, 0.06, 3, 0.1, [2, 1.5, 0.02]);
+  b.box(mat.steel, 0.6, 0.04, 0.04, [-0.4, 1.1, 0.1]);
+  b.box(mat.steel, 0.6, 0.04, 0.04, [0.4, 1.1, 0.1]);
+  {
+    const { c } = canvas(512, 128);
+    drawPlate(c, 'EXIT', '#3ddc97');
+    const t = T(texFrom(c));
+    const g = new THREE.PlaneGeometry(0.9, 0.22);
+    geos.push(g);
+    const m = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: t })));
+    m.position.set(0, 3.25, 0.17);
+    root.add(m);
+  }
+  column(-(W / 2 - 3), LOBBY + 0.8); column(W / 2 - 3, LOBBY + 0.8);
+  plant(-W / 2 + 1.2, 1.2, 1.3); plant(W / 2 - 1.2, 1.2, 1.3);
+  plant(-W / 2 + 1.2, LOBBY - 0.5, 1.1); plant(W / 2 - 1.2, LOBBY - 0.5, 1.1);
+  plant(-W / 2 + 0.9, DEPTH[0] - 0.9); plant(W / 2 - 0.9, DEPTH[0] - 0.9);
+  plant(-2.6, LIFT_FRONT - 0.5, 0.9); plant(2.6, LIFT_FRONT - 0.5, 0.9);
+  plate('LIFTS', '#e9ecef', 0, LIFT_FRONT);
+
   // Reception desk
   const recZ = 5.3;
-  b.box(mat.white, 4.6, 1.05, 0.8, [0, 0.525, recZ]);
-  b.box(mat.darkWood, 4.9, 0.06, 1.0, [0, 1.08, recZ + 0.05]);
-  b.box(mat.accent, 4.6, 0.05, 0.02, [0, 0.12, recZ - 0.41]);
-  b.box(mat.black, 0.55, 0.36, 0.03, [0.9, 1.33, recZ + 0.25]);
+  // Stone-clad reception desk with a walnut top, floating on a lit plinth.
+  b.box(mat.stone, 4.6, 1.0, 0.8, [0, 0.58, recZ]);
+  b.box(mat.light, 4.4, 0.04, 0.02, [0, 0.07, recZ - 0.36]);
+  b.box(mat.black, 4.4, 0.08, 0.7, [0, 0.04, recZ]);
+  b.rounded(mat.darkWood, 4.9, 0.06, 1.0, 0.015, [0, 1.11, recZ + 0.05]);
+  b.box(mat.wood, 4.4, 0.04, 0.5, [0, 0.78, recZ + 0.3]); // work surface behind
+  b.rounded(mat.black, 0.55, 0.36, 0.02, 0.008, [0.9, 1.33, recZ + 0.25]);
+  b.add(mat.ceramic, new THREE.CylinderGeometry(0.06, 0.05, 0.28, 18), [-1.7, 1.28, recZ + 0.1]);
+  for (let i = 0; i < 5; i++) b.add(i % 2 ? mat.leaf : mat.leaf2, leafGeo(0.14, 0.05), [-1.7, 1.42, recZ + 0.1], i * 1.3, -0.9, 0);
   b.box(mat.metal, 0.05, 0.16, 0.05, [0.9, 1.15, recZ + 0.28]);
   solid(-2.45, recZ - 0.5, 2.45, recZ + 0.55, 2);
   const receptionist = spawnNpc('reception', 'reception', makeNpc(0x2b3a55, 0xffcc33), 0, recZ + 1.05, Math.PI);
@@ -366,6 +656,10 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
   {
     const wz = LOBBY - 0.6;
     b.box(mat.darkWood, 11, 3.7, 0.3, [0, 1.85, wz]);
+    // Vertical walnut slats either side of the logo panel, and a lit reveal at the top.
+    for (const sx of [-1, 1]) for (let k = 0; k < 12; k++) b.box(mat.darkWood, 0.05, H - 0.05, 0.08, [sx * (5.62 + k * 0.12), (H - 0.05) / 2, wz]);
+    b.box(mat.light, 10.6, 0.02, 0.04, [0, 3.75, wz - 0.2]);
+    solid(-7.1, wz - 0.1, 7.1, wz + 0.1, 5);
     solid(-5.5, wz - 0.2, 5.5, wz + 0.2, 5);
     const { c } = canvas(2048, 680);
     drawLogoWall(c, repo, null);
@@ -376,7 +670,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
     m.position.set(0, 1.88, wz - 0.16);
     m.rotation.y = Math.PI;
     root.add(m);
-    // Back side of the wall faces the work floor: a big brand stripe.
+    // Back side of the wall faces the lift lobby: a big brand stripe.
     b.box(mat.accent, 10.6, 0.08, 0.02, [0, 3.4, wz + 0.16]);
     if (repo.hasLogo) {
       const img = new Image();
@@ -392,11 +686,11 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
     solid(x - 0.7, z - 0.15, x + 0.7, z + 0.15, 3);
     const { c } = canvas(560, 1000);
     drawSign(c, repo.name, [
-      ['Front desk', 'Ask about the project'],
-      ['Work floor', `${detail.workers.length} desks · past PRs & commits`],
-      ['Agent Lab →', 'Back right · hire Claude agents'],
-      ['← Boardroom', 'Back left · big decisions'],
-      ['Exit', 'Behind you'],
+      ['L  Lobby', 'Front desk · ask about the project'],
+      ['2  Work floor', `${detail.workers.length} desks · past PRs & commits`],
+      ['3  Agent Lab', 'Hire Claude agents'],
+      ['4  Boardroom', 'Big decisions'],
+      ['R  Roof', 'Lifts are behind the logo wall'],
     ]);
     const g = new THREE.PlaneGeometry(1.2, 2.14);
     geos.push(g);
@@ -405,55 +699,117 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
     m.rotation.y = Math.PI;
     root.add(m);
   }
-
-  // Lounge: sofas + coffee tables
-  for (const sx of [-1, 1]) {
-    const x = sx * (W / 2 - 4.5), z = 3.6;
-    b.box(mat.sofa, 2.4, 0.45, 0.9, [x, 0.225, z]);
-    b.box(mat.sofa, 2.4, 0.5, 0.22, [x, 0.6, z + 0.45]);
-    b.box(mat.sofa, 0.22, 0.35, 0.9, [x - 1.2, 0.55, z]);
-    b.box(mat.sofa, 0.22, 0.35, 0.9, [x + 1.2, 0.55, z]);
-    b.cyl(mat.darkWood, 0.55, 0.55, 0.05, [x, 0.42, z - 1.3], 28);
-    b.cyl(mat.steel, 0.05, 0.05, 0.4, [x, 0.2, z - 1.3], 8);
-    solid(x - 1.35, z - 0.5, x + 1.35, z + 0.6, 1.2);
-    solid(x - 0.6, z - 1.85, x + 0.6, z - 0.75, 1);
+  lounge(3.6);
+  {
+    const lobbyGlow = new THREE.PointLight(brand, 8, 9, 2);
+    lobbyGlow.position.set(0, 2, LOBBY - 1.5);
+    root.add(lobbyGlow);
   }
-
-  // ---------- desk factory ----------
-  const screens: THREE.Mesh[] = [];
-  const desk = (x: number, z: number) => {
-    b.box(mat.white, 1.6, 0.05, 0.8, [x, 1.05, z]);
-    b.box(mat.metal, 0.06, 1.03, 0.66, [x - 0.74, 0.515, z]);
-    b.box(mat.metal, 0.06, 1.03, 0.66, [x + 0.74, 0.515, z]);
-    b.box(mat.metal, 1.44, 0.08, 0.04, [x, 0.9, z + 0.3]);
-    b.box(mat.divider, 1.6, 0.5, 0.04, [x, 1.32, z + 0.42]);
-    b.box(mat.black, 0.92, 0.56, 0.035, [x, 1.5, z + 0.22]);
-    b.box(mat.metal, 0.06, 0.2, 0.06, [x, 1.17, z + 0.25]);
-    b.box(mat.metal, 0.3, 0.015, 0.2, [x, 1.08, z + 0.25]);
-    b.box(mat.black, 0.45, 0.02, 0.15, [x, 1.085, z - 0.15]);
-    // Chair parked beside the standing desk
-    const cx = x + 1.05, cz = z - 0.35;
-    b.box(mat.fabric, 0.5, 0.08, 0.5, [cx, 0.5, cz]);
-    b.box(mat.fabric, 0.48, 0.55, 0.06, [cx, 0.83, cz + 0.24]);
-    b.cyl(mat.metal, 0.03, 0.03, 0.45, [cx, 0.25, cz], 8);
-    b.cyl(mat.metal, 0.3, 0.3, 0.03, [cx, 0.05, cz], 10);
-    solid(x - 0.85, z - 0.45, x + 0.85, z + 0.47, 2);
-    const { c } = canvas(512, 320);
-    const t = T(texFrom(c));
-    const g = new THREE.PlaneGeometry(0.86, 0.5);
+  // The work, waiting for you: a parcel shelf of open pull requests on the right, and on the left
+  // the table where agents drop what they finished for your review. (Parcels are rebuilt live below.)
+  const shelf = { x: 7.4, z: 7.2, w: 3.3, tiers: [0.05, 0.62, 1.19] };
+  const desk2 = { x: -4.6, z: 7.0, w: 2.5, h: 0.76 };
+  {
+    const { x, z, w } = shelf;
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) b.box(mat.metal, 0.04, 1.78, 0.04, [x + sx * (w / 2 - 0.02), 0.89, z + sz * 0.26]);
+    for (const y of shelf.tiers) b.box(mat.wood, w, 0.035, 0.56, [x, y + 0.0, z]);
+    b.box(mat.wood, w, 0.035, 0.56, [x, 1.76, z]);
+    b.box(mat.metal, w, 0.02, 0.02, [x, 1.5, z + 0.27]);
+    solid(x - w / 2, z - 0.3, x + w / 2, z + 0.3, 2);
+    const { c } = canvas(640, 128);
+    drawShelfSign(c, 'Pull requests', 'Open on GitHub · press E on a parcel', '#4fd1ff');
+    const g = new THREE.PlaneGeometry(1.6, 0.32);
     geos.push(g);
-    const scr = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: t, toneMapped: false })));
-    scr.position.set(x, 1.5, z + 0.2);
-    scr.rotation.y = Math.PI;
-    root.add(scr);
-    screens.push(scr);
-    return { c, t };
-  };
+    const m = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: T(texFrom(c)), toneMapped: false })));
+    m.position.set(x, 2.3, z - 0.05);
+    m.rotation.y = Math.PI;
+    root.add(m);
+    b.box(mat.metal, 0.01, H - 2.46, 0.01, [x - 0.7, 2.46 + (H - 2.46) / 2, z - 0.05]);
+    b.box(mat.metal, 0.01, H - 2.46, 0.01, [x + 0.7, 2.46 + (H - 2.46) / 2, z - 0.05]);
+  }
+  {
+    const { x, z, w, h } = desk2;
+    b.rounded(mat.darkWood, w, 0.05, 0.8, 0.012, [x, h, z]);
+    b.box(mat.stone, w - 0.1, h - 0.03, 0.06, [x, (h - 0.03) / 2, z - 0.34]);
+    for (const sx of [-1, 1]) b.box(mat.stone, 0.06, h - 0.03, 0.74, [x + sx * (w / 2 - 0.05), (h - 0.03) / 2, z]);
+    b.box(mat.light, w - 0.2, 0.02, 0.02, [x, 0.05, z - 0.38]);
+    solid(x - w / 2, z - 0.42, x + w / 2, z + 0.42, 1.2);
+    const { c } = canvas(640, 128);
+    drawShelfSign(c, 'Ready for review', 'Finished agent runs · press E', '#2ee6c9');
+    const g = new THREE.PlaneGeometry(1.6, 0.32);
+    geos.push(g);
+    const m = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: T(texFrom(c)), toneMapped: false })));
+    m.position.set(x, 2.3, z);
+    m.rotation.y = Math.PI;
+    root.add(m);
+    b.box(mat.metal, 0.01, H - 2.46, 0.01, [x - 0.7, 2.46 + (H - 2.46) / 2, z]);
+    b.box(mat.metal, 0.01, H - 2.46, 0.01, [x + 0.7, 2.46 + (H - 2.46) / 2, z]);
+  }
+  const lobbyWork = new THREE.Group();
+  root.add(lobbyWork);
+  addInteract('exit', new THREE.Vector3(0, 0, 0.8), 1.7, 'Exit to the street', repo.name, () => ctx.exitBuilding());
+  endFloor();
 
-  // ---------- work floor ----------
+  // =============================== WORK FLOOR ===============================
+  beginFloor(WORK_F);
+  floorMesh(carpetFloor, -W / 2, 6.5, W / 2, DEPTH[WORK_F], 0);
+  floorMesh(carpetWarm, -4, 0, W / 2, 6.5, 0);
+  floorMesh(oakFloor, -W / 2, 0, -4, 6.5, 0);
+  b.box(mat.trim, 0.03, 0.006, 6.5, [-4, 0.003, 3.25]);
+  shell(WORK_F, true);
+  plate('WORK FLOOR', '#4fd1ff', 0, LIFT_FRONT);
+  // A coffee bar by the front windows, off to one side. (Keep the middle clear: the lobby's spawn
+  // point is below it, and the player is dropped onto the highest thing under it.)
+  {
+    const cx = -9.4, cz = 1.0;
+    kitchen(cx, cz, 4.6, 1, false);
+    // Island with a quartz top and stools.
+    const iz = cz + 2.2;
+    b.box(mat.wood, 4.2, 0.92, 0.9, [cx, 0.46, iz]);
+    b.box(mat.quartz, 4.5, 0.04, 1.1, [cx, 0.94, iz + 0.05]);
+    for (const x of [-1.5, -0.5, 0.5, 1.5]) {
+      b.cyl(mat.leather, 0.19, 0.19, 0.06, [cx + x, 0.74, iz + 0.95], 18);
+      b.cyl(mat.metal, 0.025, 0.025, 0.7, [cx + x, 0.36, iz + 0.95], 8);
+      b.cyl(mat.metal, 0.2, 0.2, 0.02, [cx + x, 0.01, iz + 0.95], 16);
+    }
+    for (const x of [-1.4, 0, 1.4]) {
+      b.cyl(mat.metal, 0.005, 0.005, H - 2.2, [cx + x, 2.2 + (H - 2.2) / 2, iz], 4);
+      b.add(mat.black, new THREE.ConeGeometry(0.2, 0.22, 20, 1, true), [cx + x, 2.15, iz]);
+      b.cyl(mat.light, 0.17, 0.17, 0.01, [cx + x, 2.04, iz], 16);
+    }
+    solid(cx - 2.3, iz - 0.5, cx + 2.3, iz + 0.6, 1.2);
+  }
+  lounge(6.2);
+  pod(W / 2 - 2.0, 12.6); pod(W / 2 - 3.6, 12.6);
+  // The issues board: a freestanding glass board facing the lifts, one sticky note per open issue.
+  const issueC = canvas(1600, 900).c;
+  const issueT = T(texFrom(issueC));
+  const board = { x: 6.6, z: 8.4 };
+  {
+    const { x, z } = board;
+    const bw = 3.6, bh = 2.02;
+    b.box(mat.whiteSteel, bw + 0.08, bh + 0.08, 0.04, [x, 1.95, z]);
+    for (const sx of [-1, 1]) {
+      b.box(mat.whiteSteel, 0.05, 2.0, 0.05, [x + sx * (bw / 2 - 0.1), 1.0, z]);
+      b.box(mat.whiteSteel, 0.05, 0.03, 0.6, [x + sx * (bw / 2 - 0.1), 0.02, z]);
+    }
+    b.box(mat.whiteSteel, bw - 0.4, 0.03, 0.08, [x, 0.92, z + 0.05]); // marker ledge
+    solid(x - bw / 2, z - 0.3, x + bw / 2, z + 0.3, 3);
+    const g = new THREE.PlaneGeometry(bw, bh);
+    geos.push(g);
+    const m = new THREE.Mesh(g, M(new THREE.MeshStandardMaterial({ map: issueT, roughness: 0.25 })));
+    m.position.set(x, 1.95, z + 0.025);
+    root.add(m);
+    addInteract('issues', new THREE.Vector3(x, 0, z + 1.0), 2.2, 'Open issues', `${repo.name} on GitHub`, () => { window.open(`${repo.url}/issues`, '_blank', 'noopener'); });
+  }
+  for (const z of [9, 21]) { column(-(W / 2 - 3), z); column(W / 2 - 3, z); }
+  plant(-W / 2 + 1.2, 1.2, 1.3); plant(W / 2 - 1.2, 1.2, 1.3);
+  plant(-W / 2 + 0.9, DEPTH[WORK_F] - 0.9); plant(W / 2 - 0.9, DEPTH[WORK_F] - 0.9);
+  plant(-2.6, LIFT_FRONT - 0.5, 0.9); plant(2.6, LIFT_FRONT - 0.5, 0.9);
+
   const workers = detail.workers.slice(0, 24);
   const COLS = 6;
-  const rowsZ = [12.4, 15.9, 19.4, 22.9];
+  const rowsZ = [16.8, 20.3, 23.8, 27.3];
   const nDesks = Math.min(24, Math.max(12, Math.ceil(workers.length / COLS) * COLS));
   const colX = (i: number) => -(W / 2 - 5) + (i * (W - 10)) / (COLS - 1);
   const workerNpcs = new Map<string, Npc>();
@@ -476,10 +832,21 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
     addLabel(`lbl-${w.id}`, new THREE.Vector3(nx, 2.12, nz), `${esc(name)} <small>${esc(ref)}</small>${w.isAgent ? ' <span class="tag agent">AI agent</span>' : ''}`, { cls: w.isAgent ? 'agent' : '', maxDist: 14 });
     addInteract(`w-${w.id}`, new THREE.Vector3(nx, 0, nz), 2.1, `Talk to ${name}`, `${ref} · ${w.title.slice(0, 48)}`, () => talkTo(n, w));
   }
+  endFloor();
 
-  // ---------- Agent Lab ----------
+  // =============================== AGENT LAB ===============================
+  beginFloor(LAB_F);
+  floorMesh(carpetWarm, -W / 2, 0, W / 2, 14, 0);
+  floorMesh(concreteFloor, -W / 2, 14, W / 2, DEPTH[LAB_F], 0);
+  b.box(mat.brass, W, 0.006, 0.04, [0, 0.003, 14]);
+  shell(LAB_F, true, 'exposed');
+  plate('AGENT LAB', '#3ddc97', 0, LIFT_FRONT);
+  lounge(4);
+  for (const z of [9]) { column(-(W / 2 - 3), z); column(W / 2 - 3, z); }
+  plant(-W / 2 + 1.2, 1.2, 1.3); plant(W / 2 - 1.2, 1.2, 1.3);
+  plant(-W / 2 + 0.9, DEPTH[LAB_F] - 0.9); plant(W / 2 - 0.9, DEPTH[LAB_F] - 0.9);
   const labSlots: { x: number; z: number; c: HTMLCanvasElement; t: THREE.CanvasTexture; agentId: string | null }[] = [];
-  for (const z of [zRooms + 5.4, zRooms + 9.6]) for (const dx of [-4, 0, 4]) {
+  for (const z of [17.6, 21.6]) for (const dx of [-4, 0, 4]) {
     const x = labCx + dx;
     const { c, t } = desk(x, z);
     drawIdleMonitor(c, Math.floor(x * 13 + z), 'Free desk — hire an agent');
@@ -487,7 +854,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
     labSlots.push({ x, z, c, t, agentId: null });
   }
   // Kiosk
-  const kiosk = new THREE.Vector3(labCx - 4.2, 0, zRooms + 1.7);
+  const kiosk = new THREE.Vector3(labCx - 4.6, 0, 14.8);
   {
     b.box(mat.black, 0.6, 1.1, 0.4, [kiosk.x, 0.55, kiosk.z]);
     b.box(mat.accent, 0.62, 0.04, 0.42, [kiosk.x, 0.03, kiosk.z]);
@@ -511,47 +878,64 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
   const feedC = canvas(1600, 620).c;
   const feedT = T(texFrom(feedC));
   {
+    const Dl = DEPTH[LAB_F];
     const g = new THREE.PlaneGeometry(8.4, 3.25);
     geos.push(g);
     const m = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: feedT, toneMapped: false })));
-    m.position.set(labCx, 2.25, D - 0.3);
+    m.position.set(labCx, 2.25, Dl - 0.3);
     m.rotation.y = Math.PI;
     root.add(m);
-    b.box(mat.black, 8.6, 3.45, 0.1, [labCx, 2.25, D - 0.22]);
+    b.box(mat.black, 8.6, 3.45, 0.1, [labCx, 2.25, Dl - 0.22]);
   }
+  endFloor();
 
-  // ---------- Boardroom ----------
+  // =============================== BOARDROOM ===============================
+  beginFloor(BOARD_F);
+  const brdZ0 = 14.2, brdHalf = 6.5;
+  floorMesh(carpetWarm, -W / 2, 0, W / 2, brdZ0, 0);
+  floorMesh(carpetWarm, -W / 2, brdZ0, -brdHalf, DEPTH[BOARD_F], 0);
+  floorMesh(carpetWarm, brdHalf, brdZ0, W / 2, DEPTH[BOARD_F], 0);
+  floorMesh(walnutFloor, -brdHalf, brdZ0, brdHalf, DEPTH[BOARD_F], 0);
+  rug(brdCx, brdCz, 4.6, 9.2);
+  shell(BOARD_F, true);
+  plate('BOARDROOM', '#ffcc33', 0, LIFT_FRONT);
+  glassWall(-brdHalf, brdZ0, brdHalf, brdZ0, 2 * brdHalf - 2);
+  glassWall(-brdHalf, brdZ0, -brdHalf, DEPTH[BOARD_F]);
+  glassWall(brdHalf, brdZ0, brdHalf, DEPTH[BOARD_F]);
+  lounge(4);
+  column(-(W / 2 - 3), 9); column(W / 2 - 3, 9);
+  plant(-W / 2 + 1.2, 1.2, 1.3); plant(W / 2 - 1.2, 1.2, 1.3);
+  plant(-brdHalf - 1, brdZ0 + 1); plant(brdHalf + 1, brdZ0 + 1);
+  plant(-W / 2 + 0.9, DEPTH[BOARD_F] - 0.9); plant(W / 2 - 0.9, DEPTH[BOARD_F] - 0.9);
   {
-    b.box(mat.darkWood, 2.4, 0.08, 7.2, [brdCx, 0.76, brdCz]);
+    b.rounded(mat.darkWood, 2.4, 0.07, 7.2, 0.03, [brdCx, 0.76, brdCz]);
     b.box(mat.metal, 0.5, 0.72, 2.2, [brdCx, 0.36, brdCz - 2]);
     b.box(mat.metal, 0.5, 0.72, 2.2, [brdCx, 0.36, brdCz + 2]);
-    b.box(mat.accent, 0.04, 0.01, 6.8, [brdCx, 0.805, brdCz]);
+    b.box(mat.brass, 0.03, 0.004, 6.8, [brdCx, 0.797, brdCz]);
+    for (const dz of [-2.4, 0, 2.4]) b.rounded(mat.black, 0.32, 0.01, 0.12, 0.004, [brdCx, 0.8, brdCz + dz]); // power modules
     solid(brdCx - 1.25, brdCz - 3.65, brdCx + 1.25, brdCz + 3.65, 1.2);
-    for (const sx of [-1, 1]) for (const dz of [-2.7, 0, 2.7]) {
-      const cx = brdCx + sx * 1.65, cz = brdCz + dz;
-      b.box(mat.fabric, 0.55, 0.09, 0.55, [cx, 0.5, cz]);
-      b.box(mat.fabric, 0.06, 0.6, 0.52, [cx + sx * 0.27, 0.85, cz]);
-      b.cyl(mat.metal, 0.03, 0.03, 0.45, [cx, 0.25, cz], 8);
-      b.cyl(mat.metal, 0.3, 0.3, 0.03, [cx, 0.05, cz], 10);
-    }
-    // Pendant lights over the table
-    for (const dz of [-2.4, 0, 2.4]) {
-      b.cyl(mat.metal, 0.01, 0.01, H - 2.5, [brdCx, 2.5 + (H - 2.5) / 2, brdCz + dz], 4);
-      b.cyl(mat.light, 0.35, 0.35, 0.04, [brdCx, 2.48, brdCz + dz], 24);
-    }
+    for (const sx of [-1, 1]) for (const dz of [-2.7, 0, 2.7]) taskChair(brdCx + sx * 1.65, brdCz + dz, sx > 0 ? -Math.PI / 2 : Math.PI / 2, true);
+    // A long linear pendant over the table
+    b.box(mat.metal, 0.006, H - 2.3, 0.006, [brdCx, 2.3 + (H - 2.3) / 2, brdCz - 2.6]);
+    b.box(mat.metal, 0.006, H - 2.3, 0.006, [brdCx, 2.3 + (H - 2.3) / 2, brdCz + 2.6]);
+    b.box(mat.black, 0.12, 0.06, 6.2, [brdCx, 2.3, brdCz]);
+    b.box(mat.light, 0.08, 0.01, 6.1, [brdCx, 2.267, brdCz]);
+    // Credenza along the back wall and a pair of plants.
+    b.box(mat.darkWood, 4.4, 0.7, 0.5, [brdCx, 0.35, DEPTH[BOARD_F] - 1.1]);
   }
   const decC = canvas(1400, 520).c;
   const decT = T(texFrom(decC));
   drawDecisions(decC, detail.decisions);
   decT.needsUpdate = true;
   {
+    const Db = DEPTH[BOARD_F];
     const g = new THREE.PlaneGeometry(5.6, 2.08);
     geos.push(g);
     const m = new THREE.Mesh(g, M(new THREE.MeshBasicMaterial({ map: decT, toneMapped: false })));
-    m.position.set(brdCx, 2.85, D - 0.3);
+    m.position.set(brdCx, 2.85, Db - 0.3);
     m.rotation.y = Math.PI;
     root.add(m);
-    b.box(mat.black, 5.8, 2.25, 0.1, [brdCx, 2.85, D - 0.22]);
+    b.box(mat.black, 5.8, 2.25, 0.1, [brdCx, 2.85, Db - 0.22]);
   }
   const boardNpcs = new Map<string, Npc>();
   const seats: Record<string, [number, number, number]> = {
@@ -570,32 +954,71 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
   }
   const headSpot = new THREE.Vector3(brdCx, 0, brdCz - 4.4);
   addInteract('boardroom', headSpot, 2.2, 'Convene the board', `${detail.decisions.length} past decisions`, () => convene());
+  endFloor();
 
-  // ---------- exit ----------
-  addInteract('exit', new THREE.Vector3(0, 0, 0.8), 1.7, 'Exit to the street', repo.name, () => ctx.exitBuilding());
-
-  b.build(root, casters, geos);
+  // ---------- the lift: lobby, work floor, lab, boardroom, roof ----------
+  const lift = new Lift({
+    parent: scene, colliders, x: 0, z: LIFT_Z, yaw: Math.PI, wallColor: 0xe4e1db, id: 'hq',
+    stops: [
+      { y: fy(LOBBY_F), label: 'L', title: 'Lobby · reception' },
+      { y: fy(WORK_F), label: '2', title: `Work floor · ${detail.workers.length} desks` },
+      { y: fy(LAB_F), label: '3', title: 'Agent Lab · hire agents' },
+      { y: fy(BOARD_F), label: '4', title: 'Boardroom · big decisions' },
+      { y: fy(FLOORS), label: 'R', title: 'Roof · step out on top' },
+    ],
+    onDepart: (to) => { if (to < FLOORS) showFloor(to); },
+    onArrive: (to) => { if (to === FLOORS) ctx.exitBuilding('roof'); },
+  });
+  for (let f = 0; f < FLOORS; f++) for (const it of lift.interactions(f)) {
+    ctx.interactions.add(it);
+    interactIds.push(it.id);
+  }
 
   // ---------- lights ----------
-  scene.add(new THREE.HemisphereLight(0xfff4e6, 0x3a3a40, 0.55));
+  const hemi = new THREE.HemisphereLight(0xfff4e6, 0xa59d90, 0.95);
+  scene.add(hemi);
+  // The real sun (or moon), shining in through the curtain walls: the ceilings and mullions cast
+  // shadows, so daylight lands on the floor in window-shaped patches.
   const sun = new THREE.DirectionalLight(0xfff1dd, 1.0);
-  sun.position.set(W * 0.15, 14, D * 0.35);
-  sun.target.position.set(0, 0, D * 0.55);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  const ext = Math.max(W, D) * 0.62;
-  Object.assign(sun.shadow.camera, { left: -ext, right: ext, top: ext, bottom: -ext, near: 1, far: 40 });
-  sun.shadow.bias = -0.0005;
+  sun.shadow.mapSize.set(lite ? 1024 : 2048, lite ? 1024 : 2048);
+  const ext = Math.max(W, D) * 0.75;
+  Object.assign(sun.shadow.camera, { left: -ext, right: ext, top: ext, bottom: -ext, near: 1, far: 120 });
+  sun.shadow.bias = -0.0004;
   sun.shadow.normalBias = 0.03;
   scene.add(sun, sun.target);
-  for (const [x, z] of [[-W / 4, 4], [W / 4, 4], [-W / 4, 17], [W / 4, 17], [brdCx, brdCz], [labCx, brdCz]] as [number, number][]) {
-    const p = new THREE.PointLight(0xffe6c8, 28, 18, 2);
-    p.position.set(x, H - 0.4, z);
-    scene.add(p);
+  const sunDir = new THREE.Vector3(0.4, 0.7, 0.3).normalize();
+  const yAxis = new THREE.Vector3(0, 1, 0);
+  const aimSun = () => {
+    const out = ctx.dayNight?.sun;
+    if (out) {
+      sunDir.subVectors(out.position, out.target.position).normalize().applyAxisAngle(yAxis, -(view?.yaw ?? 0));
+      sun.color.copy(out.color);
+      sun.intensity = sunDir.y > 0.02 ? out.intensity * 0.95 : 0;
+    }
+    const cy = fy(cur) + H / 2, cz = DEPTH[cur] / 2;
+    sun.target.position.set(0, cy, cz);
+    sun.position.set(sunDir.x * 60, cy + sunDir.y * 60, cz + sunDir.z * 60);
+  };
+  // The city outside, captured from inside the tower at each floor's height.
+  const views = new FloorViews(scene, view, (f) => new THREE.Vector3(0, fy(f) + 1.7, D * 0.5), 0.55);
+
+  const bounds = { minX: -W / 2 + 0.45, maxX: W / 2 - 0.45, minZ: 0.5, maxZ: DEPTH[0] - 0.45 };
+  /** Make floor f the one you're on: draw it, light it, show its labels. */
+  function showFloor(f: number) {
+    cur = f;
+    floorGroups.forEach((g, i) => { g.visible = i === f; });
+    bounds.maxZ = DEPTH[f] - 0.45;
+    aimSun();
+    backdrop.position.y = fy(f);
+    if (views.show(f)) { backdrop.visible = false; hemi.intensity = 0.7; }
+    lift.view(f);
+    for (const [id, l] of labelDefs) {
+      if (l.floor === f) ctx.labels.set(id, l.pos, l.html, l.opts);
+      else ctx.labels.remove(id);
+    }
   }
-  const lobbyGlow = new THREE.PointLight(brand, 8, 9, 2);
-  lobbyGlow.position.set(0, 2, LOBBY - 1.5);
-  scene.add(lobbyGlow);
+  showFloor(LOBBY_F);
 
   // ---------- speech bubbles ----------
   const speechTokens = new Map<string, number>();
@@ -604,12 +1027,12 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
     if (!t) return;
     const show = t.length > 120 ? `…${t.slice(-120)}` : t;
     speechTokens.set(n.id, (speechTokens.get(n.id) ?? 0) + 1);
-    addLabel(`speech-${n.id}`, new THREE.Vector3(n.ch.root.position.x, 2.5, n.ch.root.position.z), esc(show), { cls: 'speech', maxDist: 20 });
+    addLabel(`speech-${n.id}`, new THREE.Vector3(n.ch.root.position.x, 2.5, n.ch.root.position.z), esc(show), { cls: 'speech', maxDist: 20 }, n.floor);
   };
   const hush = (n: Npc, delay = 3500) => {
     const tok = (speechTokens.get(n.id) ?? 0) + 1;
     speechTokens.set(n.id, tok);
-    setTimeout(() => { if (speechTokens.get(n.id) === tok) ctx.labels.remove(`speech-${n.id}`); }, delay);
+    setTimeout(() => { if (speechTokens.get(n.id) === tok) removeLabel(`speech-${n.id}`); }, delay);
   };
 
   let talking: Npc | null = null;
@@ -621,7 +1044,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
       onEnd: () => { hush(n); if (talking === n) talking = null; },
     });
   }
-  addInteract('reception', new THREE.Vector3(0, 0, recZ - 0.8), 2.2, 'Talk to the receptionist', `Overview of ${repo.name}`, () => talkTo(receptionist, 'reception'));
+  addInteract('reception', new THREE.Vector3(0, 0, recZ - 0.8), 2.2, 'Talk to the receptionist', `Overview of ${repo.name}`, () => talkTo(receptionist, 'reception'), LOBBY_F);
 
   // ---------- boardroom debate ----------
   let debating = false;
@@ -653,16 +1076,29 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
   }
 
   // ---------- live agents ----------
-  interface AgentSlot { info: AgentInfo; npc: Npc; slot: (typeof labSlots)[number]; diff: string; recent: string[]; dirty: boolean }
+  interface AgentSlot { info: AgentInfo; npc: Npc; slot: (typeof labSlots)[number]; diff: string; recent: string[]; dirty: boolean; leaving?: boolean }
   const agentSlots = new Map<string, AgentSlot>();
+  /** Agents with a hand up (they're blocked on a question for you). */
+  const hands = new Map<Npc, boolean>();
   const feed: { who: string; text: string; color: string }[] = [];
   let feedDirty = true;
-  const isActive = (a: AgentInfo) => a.status === 'running' || a.status === 'preparing';
+  const isActive = (a: AgentInfo) => a.status === 'running' || a.status === 'preparing' || a.status === 'needs_input';
 
   function agentLabel(s: AgentSlot) {
     const a = s.info;
     addLabel(`lbl-a-${a.id}`, new THREE.Vector3(s.npc.ch.root.position.x, 2.12, s.npc.ch.root.position.z),
-      `🤖 ${esc(a.name)} <small>${esc(a.status)}</small><br><small>${esc((a.lastAction || a.task).slice(0, 60))}</small>`, { cls: 'agent', maxDist: 16 });
+      `🤖 ${esc(a.name)} <small>${esc(a.status)}</small><br><small>${esc((a.lastAction || a.task).slice(0, 60))}</small>`, { cls: 'agent', maxDist: 16 }, LAB_F);
+  }
+
+  /** Walk up to an agent: watch it work, answer its question, or review what it finished. */
+  function agentInteract(s: AgentSlot) {
+    const a = s.info;
+    const asking = a.status === 'needs_input';
+    const review = a.review === 'pending';
+    addInteract(`a-${a.id}`, new THREE.Vector3(s.slot.x, 0, s.slot.z - 0.78), 2.1,
+      asking ? `Answer ${a.name}` : review ? `Review ${a.name}'s work` : `Watch ${a.name}`,
+      asking ? `Asks: ${(a.question ?? '').slice(0, 60)}` : review ? `${a.diffStat ?? 'Finished'} · ${a.task.slice(0, 40)}` : `${a.status} · ${a.task.slice(0, 50)}`,
+      () => (s.info.status === 'needs_input' || s.info.review === 'pending' ? openReview(s.info.id) : openAgentLivePanel(ctx, s.info)), LAB_F);
   }
 
   function upsertAgent(a: AgentInfo) {
@@ -676,9 +1112,16 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
         setPose(existing.npc.ch, 'sad', a.status === 'error');
         if (a.status === 'done') gesture(existing.npc.ch, 'agree');
       }
+      if (existing.leaving) return;
       agentLabel(existing);
+      agentInteract(existing);
+      askBubble(existing);
+      // The run is over: the agent packs up (carrying its work down to the lobby when there is some).
+      if (!isActive(a)) leave(existing);
       return;
     }
+    // Desks are for agents at work; finished runs live on as parcels in the lobby.
+    if (!isActive(a)) return;
     let slot = labSlots.find((s) => !s.agentId);
     if (!slot) {
       // Evict the oldest finished agent.
@@ -689,21 +1132,22 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
     }
     slot.agentId = a.id;
     const ch = makeNpc(0xe2e8ef, 0x34e0c8, { glow: true });
-    const n = spawnNpc(`a-${a.id}`, 'agent', ch, slot.x, slot.z - 0.78, 0);
+    const n = spawnNpc(`a-${a.id}`, 'agent', ch, slot.x, slot.z - 0.78, 0, true, LAB_F);
     const s: AgentSlot = { info: a, npc: n, slot, diff: '', recent: [], dirty: true };
     agentSlots.set(a.id, s);
     if (a.status === 'error') setPose(ch, 'sad', true);
     agentLabel(s);
-    addInteract(`a-${a.id}`, new THREE.Vector3(slot.x, 0, slot.z - 0.78), 2.1, `Watch ${a.name}`, `${a.status} · ${a.task.slice(0, 50)}`, () => openAgentLivePanel(ctx, s.info));
+    agentInteract(s);
+    askBubble(s);
     api.agentLog(a.id).then(({ events }) => { events.forEach((e) => onAgentEvent(a.id, e.event, false)); feedDirty = true; }).catch(() => {});
   }
 
   function removeAgent(id: string) {
     const s = agentSlots.get(id);
     if (!s) return;
-    root.remove(s.npc.ch.root);
+    s.npc.ch.root.parent?.remove(s.npc.ch.root);
     npcs.splice(npcs.indexOf(s.npc), 1);
-    ctx.labels.remove(`lbl-a-${id}`);
+    removeLabel(`lbl-a-${id}`);
     ctx.interactions.remove(`a-${id}`);
     s.slot.agentId = null;
     drawIdleMonitor(s.slot.c, 3, 'Free desk — hire an agent');
@@ -736,12 +1180,140 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
   const initial = new Map<string, AgentInfo>();
   for (const a of detail.agents) initial.set(a.id, a);
   for (const a of ctx.agents.values()) if (a.repo === repo.name) initial.set(a.id, a);
-  [...initial.values()].sort((x, y) => y.startedAt.localeCompare(x.startedAt)).slice(0, labSlots.length).reverse().forEach(upsertAgent);
+  [...initial.values()].filter(isActive).sort((x, y) => y.startedAt.localeCompare(x.startedAt)).slice(0, labSlots.length).reverse().forEach(upsertAgent);
 
   const offLive = onLive((msg) => {
-    if (msg.type === 'agent:update') { if (msg.agent.repo === repo.name) upsertAgent(msg.agent); }
+    if (msg.type === 'agent:update') { if (msg.agent.repo === repo.name) { upsertAgent(msg.agent); rebuildParcels(); } }
     else if (msg.type === 'agent:event') onAgentEvent(msg.agentId, msg.event);
   });
+
+  // ---------- agents with a question: a raised hand and a speech bubble ----------
+  function askBubble(s: AgentSlot) {
+    const a = s.info;
+    const asking = a.status === 'needs_input' && !s.leaving;
+    hands.set(s.npc, asking);
+    if (asking) {
+      addLabel(`q-${a.id}`, new THREE.Vector3(s.npc.ch.root.position.x, 2.6, s.npc.ch.root.position.z),
+        `✋ <b>${esc(a.name.replace(/^Agent\s+/, ''))} has a question</b><br><small>${esc((a.question ?? 'Needs your input').slice(0, 110))}</small>`, { cls: 'speech', maxDist: 24 }, LAB_F);
+    } else removeLabel(`q-${a.id}`);
+  }
+
+  // ---------- walking: finished agents carry their work down to the lobby ----------
+  interface Walk { n: Npc; pts: THREE.Vector3[]; i: number; done: () => void }
+  const walks: Walk[] = [];
+  const walk = (n: Npc, pts: [number, number][], done: () => void) => {
+    n.turnToPlayer = false;
+    n.ch.play('walk', 0.3);
+    walks.push({ n, pts: pts.map(([x, z]) => new THREE.Vector3(x, 0, z)), i: 0, done });
+  };
+  /** Someone who is only passing through (no desk, no collider). */
+  const passerby = (id: string, floor: number, x: number, z: number) => {
+    const ch = makeNpc(0xe2e8ef, 0x34e0c8, { glow: true });
+    ch.root.position.set(x, 0, z);
+    floorGroups[floor].add(ch.root);
+    const n: Npc = { id, ch, base: Math.PI, look: null, turnToPlayer: false, nextGesture: 99, kind: 'agent', floor };
+    npcs.push(n);
+    return n;
+  };
+  const dropNpc = (n: Npc) => { n.ch.root.parent?.remove(n.ch.root); const i = npcs.indexOf(n); if (i >= 0) npcs.splice(i, 1); ctx.labels.remove(`speech-${n.id}`); };
+  const liftDoor = LIFT_FRONT - 0.2;
+  const wantsReview = (a: AgentInfo) => a.review === 'pending' || (a.review == null && a.status === 'done' && a.filesChanged.length > 0 && !a.prUrl);
+  /** Agent ids still on their way down with a parcel (it lands on the table when they get there). */
+  const arriving = new Set<string>();
+
+  function leave(s: AgentSlot) {
+    if (s.leaving) return;
+    s.leaving = true;
+    const a = s.info;
+    const carrying = wantsReview(a);
+    hands.set(s.npc, false);
+    removeLabel(`q-${a.id}`);
+    removeLabel(`lbl-a-${a.id}`);
+    ctx.interactions.remove(`a-${a.id}`);
+    setPose(s.npc.ch, 'sad', false);
+    if (carrying) {
+      arriving.add(a.id);
+      const box = makeCarryBox();
+      box.position.set(0, 1.02, 0.34);
+      s.npc.ch.root.add(box);
+    }
+    // Out from behind the desk, round the lift shaft, into the lift.
+    const aisle = s.slot.x + (s.slot.x >= labCx ? 2 : -2);
+    walk(s.npc, [[aisle, s.npc.ch.root.position.z], [aisle, 15.2], [3.2, 15.2], [3.2, 10.0], [0, 10.0], [0, liftDoor]], () => {
+      dropNpc(s.npc);
+      agentSlots.delete(a.id);
+      s.slot.agentId = null;
+      drawIdleMonitor(s.slot.c, 3, 'Free desk — hire an agent');
+      s.slot.t.needsUpdate = true;
+      if (carrying) deliver(a);
+    });
+  }
+
+  /** Out of the lift in the lobby, round the logo wall, and the parcel goes on the review table. */
+  function deliver(a: AgentInfo) {
+    const n = passerby(`d-${a.id}`, LOBBY_F, 0, liftDoor);
+    const box = makeCarryBox();
+    box.position.set(0, 1.02, 0.34);
+    n.ch.root.add(box);
+    const behind = desk2.z + 0.85;
+    walk(n, [[0, 10.0], [-7.9, 10.0], [-7.9, behind], [desk2.x, behind]], () => {
+      n.ch.play('idle', 0.3);
+      n.look = Math.PI;
+      setTimeout(() => {
+        n.ch.root.remove(box);
+        arriving.delete(a.id);
+        rebuildParcels();
+        gesture(n.ch, 'agree');
+        setTimeout(() => walk(n, [[-7.9, behind], [-7.9, 10.0], [0, 10.0], [0, liftDoor]], () => dropNpc(n)), 1400);
+      }, 700);
+    });
+  }
+
+  // ---------- parcels in the lobby (open PRs, runs to review) and issues on the work floor ----------
+  const parcelIds: string[] = [];
+  function rebuildParcels() {
+    for (const c of lobbyWork.children) (c.userData.dispose as (() => void) | undefined)?.();
+    lobbyWork.clear();
+    for (const id of parcelIds.splice(0)) ctx.interactions.remove(id);
+    const p = pulse.get(repo.name);
+    const prs = p?.openPrs ?? [];
+    const per = 5, gap = shelf.w / per;
+    prs.slice(0, per * shelf.tiers.length).forEach((pr, i) => {
+      const x = shelf.x - shelf.w / 2 + gap * ((i % per) + 0.5), y = shelf.tiers[Math.floor(i / per)] + 0.02;
+      const crate = makeCrate(pr.isAgent ? 'agent-pr' : 'pr', `#${pr.number}`, pr.title);
+      crate.position.set(x, y, shelf.z);
+      crate.rotation.y = Math.PI + ((pr.number * 37) % 9 - 4) * 0.025;
+      lobbyWork.add(crate);
+    });
+    // Up close the shelf lists them all (parcels stacked three high share a spot on the floor).
+    for (let col = 0; col < per && col < prs.length; col++) {
+      const x = shelf.x - shelf.w / 2 + gap * (col + 0.5);
+      const id = `prs-${col}`;
+      const pick = prs[col];
+      addInteract(id, new THREE.Vector3(x, 0, shelf.z - 0.75), 0.7, `Pull requests · ${prs.length} open`, `#${pick.number} ${pick.title.slice(0, 44)}`, () => openPrShelf(repo.name, prs, pick.number), LOBBY_F);
+      parcelIds.push(id);
+    }
+    const runs = [...ctx.agents.values()]
+      .filter((a) => a.repo === repo.name && wantsReview(a) && !arriving.has(a.id))
+      .sort((x, y) => (y.endedAt ?? '').localeCompare(x.endedAt ?? ''))
+      .slice(0, 4);
+    runs.forEach((a, i) => {
+      const x = desk2.x - desk2.w / 2 + 0.34 + i * 0.6;
+      const crate = makeCrate('review', a.name.replace(/^Agent\s+/, ''), a.task);
+      crate.position.set(x, desk2.h + 0.025, desk2.z);
+      crate.rotation.y = Math.PI;
+      lobbyWork.add(crate);
+      const id = `rv-${a.id}`;
+      addInteract(id, new THREE.Vector3(x, 0, desk2.z - 0.85), 0.75, `Review ${a.name}'s work`, a.diffStat ?? `${a.filesChanged.length} file${a.filesChanged.length === 1 ? '' : 's'} changed · ${a.task.slice(0, 40)}`, () => openReview(a.id), LOBBY_F);
+      parcelIds.push(id);
+    });
+    addLabel('lbl-prs', new THREE.Vector3(shelf.x, 2.75, shelf.z), `Pull requests <small>${prs.length ? `${prs.length} open` : 'none open'}</small>`, { maxDist: 14 }, LOBBY_F);
+    addLabel('lbl-review', new THREE.Vector3(desk2.x, 2.75, desk2.z), `Ready for review <small>${runs.length ? `${runs.length} waiting` : 'nothing yet'}</small>`, { cls: runs.length ? 'agent' : '', maxDist: 14 }, LOBBY_F);
+    drawIssueBoard(issueC, repo.name, p?.openIssues ?? []);
+    issueT.needsUpdate = true;
+  }
+  rebuildParcels();
+  const offPulse = pulse.onChange((next) => { if (next.repo === repo.name) rebuildParcels(); });
 
   // ---------- per-frame ----------
   const prevExposure = ctx.engine.renderer.toneMappingExposure;
@@ -755,16 +1327,25 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
     detail,
     spawn: new THREE.Vector3(0, 0, 2.6),
     spawnFacing: 0,
+    debugFloor(f: number) {
+      showFloor(f);
+      ctx.player.position.set(0, fy(f), LIFT_FRONT - 2.5);
+      ctx.player.vel.set(0, 0, 0);
+    },
     world: {
       colliders,
-      groundY: () => 0,
-      bounds: { minX: -W / 2 + 0.45, maxX: W / 2 - 0.45, minZ: 0.5, maxZ: D - 0.45 },
+      groundY: () => fy(cur),
+      support: (x, z) => lift.floorAt(x, z) ?? fy(cur),
+      bounds,
     },
     update(dt: number) {
-      ctx.engine.renderer.toneMappingExposure = 0.78;
+      ctx.engine.renderer.toneMappingExposure = 0.95;
       ctx.engine.bloom.strength = 0.16;
+      lift.update(dt, ctx.player);
+      aimSun();
       const pp = ctx.player.position;
       for (const n of npcs) {
+        if (n.floor !== cur) continue;
         const pos = n.ch.root.position;
         const d = tmp.copy(pp).sub(pos).setY(0).length();
         if (d > 45) continue;
@@ -780,6 +1361,26 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
           else if (n.kind === 'board') { if (!debating && Math.random() < 0.3) gesture(n.ch, Math.random() < 0.7 ? 'agree' : 'headShake'); n.nextGesture = 6 + Math.random() * 10; }
           else { if (Math.random() < 0.4) gesture(n.ch, 'agree'); n.nextGesture = 8 + Math.random() * 14; }
         }
+      }
+      // Walkers: along their path at an office pace, turning into each leg.
+      for (let k = walks.length - 1; k >= 0; k--) {
+        const w = walks[k], pos = w.n.ch.root.position, to = w.pts[w.i];
+        const dx = to.x - pos.x, dz = to.z - pos.z, d = Math.hypot(dx, dz), step = 1.35 * dt;
+        if (d <= step) {
+          pos.set(to.x, 0, to.z);
+          if (++w.i >= w.pts.length) { walks.splice(k, 1); w.done(); }
+          continue;
+        }
+        pos.x += (dx / d) * step; pos.z += (dz / d) * step;
+        w.n.look = Math.atan2(dx, dz);
+      }
+      // A raised hand on top of whatever the animation is doing: aim the upper arm and forearm up.
+      for (const [n, up] of hands) {
+        if (!up || n.floor !== cur) continue;
+        const f = n.ch.root.rotation.y, wave = Math.sin(performance.now() / 160) * 0.12;
+        handDir.set(-Math.cos(f) * (0.28 + wave) + Math.sin(f) * 0.12, 1, Math.sin(f) * (0.28 + wave) + Math.cos(f) * 0.12).normalize();
+        aimBone(n.ch.root.getObjectByName('mixamorigRightArm'), n.ch.root.getObjectByName('mixamorigRightForeArm'), handDir);
+        aimBone(n.ch.root.getObjectByName('mixamorigRightForeArm'), n.ch.root.getObjectByName('mixamorigRightHand'), handDir);
       }
       redrawClock -= dt;
       if (redrawClock <= 0) {
@@ -799,6 +1400,9 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
     },
     dispose() {
       offLive();
+      offPulse();
+      for (const c of lobbyWork.children) (c.userData.dispose as (() => void) | undefined)?.();
+      lift.dispose();
       for (const id of interactIds) ctx.interactions.remove(id);
       for (const id of labelIds) ctx.labels.remove(id);
       for (const s of agentSlots.values()) ctx.labels.remove(`lbl-a-${s.info.id}`);
@@ -807,6 +1411,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo): Promise<Interior>
       mats.forEach((m) => m.dispose());
       texs.forEach((t) => t.dispose());
       envRT.dispose();
+      views.dispose();
       scene.environment = null;
       ctx.engine.renderer.toneMappingExposure = prevExposure;
       ctx.engine.bloom.strength = prevBloom;

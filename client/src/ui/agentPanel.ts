@@ -1,8 +1,10 @@
 import type { AgentEvent, AgentInfo, Repo, RepoDetail } from '../../../shared/types.ts';
 import type { GameCtx } from '../ctx.ts';
-import { api, onLive, track } from '../api.ts';
+import { api, onLive } from '../api.ts';
 import { esc } from '../interact.ts';
 import { openPanel, toast } from './panel.ts';
+import { assignTask } from './assign.ts';
+import { openReview } from './review.ts';
 
 /** Task ideas tailored a little to the repo. */
 export function agentSuggestions(repo: Repo, detail?: RepoDetail | null): string[] {
@@ -24,13 +26,15 @@ export function openHireAgentPanel(ctx: GameCtx, repo: Repo, detail: RepoDetail 
   const panel = openPanel({ title: 'Hire an agent', subtitle: `Claude Code will work in a fresh branch of <b>${esc(repo.fullName)}</b>. Nothing is pushed until you open a PR.`, avatar: '🤖', color: '#3ddc97' });
   panel.body.innerHTML = `
     <div class="section-title">What should the agent do?</div>
-    <textarea class="task" placeholder="e.g. Add a dark mode toggle to the settings page"></textarea>
+    <textarea class="task" placeholder="e.g. Add a dark mode toggle to the settings page (Enter to launch)"></textarea>
     <div class="section-title">Ideas</div>
     <div class="chips">${agentSuggestions(repo, detail).map((s) => `<button class="chip">${esc(s)}</button>`).join('')}</div>
     <p class="hint">The agent can read and edit files and run tests/builds in an isolated git worktree. You can watch it live at its desk in the Agent Lab.</p>
     <div class="err hidden"></div>`;
   const ta = panel.body.querySelector('textarea')!;
   panel.body.querySelectorAll<HTMLButtonElement>('.chip').forEach((b) => b.addEventListener('click', () => { ta.value = b.textContent ?? ''; ta.focus(); }));
+  // One step: Enter launches (Shift+Enter for a new line).
+  ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); launch.click(); } });
   panel.footer.innerHTML = `<button class="btn">Cancel</button><div style="flex:1"></div><button class="btn primary">Launch agent</button>`;
   const [cancel, launch] = panel.footer.querySelectorAll('button');
   cancel.addEventListener('click', () => panel.close());
@@ -41,10 +45,7 @@ export function openHireAgentPanel(ctx: GameCtx, repo: Repo, detail: RepoDetail 
     launch.disabled = true;
     launch.textContent = 'Launching…';
     try {
-      const agent = await api.startAgent(repo.name, task);
-      ctx.agents.set(agent.id, agent);
-      track('agent_started', { repo: repo.name, taskLen: task.length });
-      toast(`<b>${esc(agent.name)}</b> started on ${esc(repo.name)}`);
+      const agent = await assignTask(ctx, repo, task, 'kiosk');
       panel.close();
       onLaunched(agent);
       openAgentLivePanel(ctx, agent);
@@ -100,16 +101,18 @@ export function openAgentLivePanel(ctx: GameCtx, agent: AgentInfo) {
   }));
   let lastDiff = '';
 
-  panel.footer.innerHTML = `<button class="btn danger stop">Stop</button><div class="pr-link" style="flex:1;align-self:center"></div><button class="btn primary pr">Open pull request</button>`;
+  panel.footer.innerHTML = `<button class="btn danger stop">Stop</button><div class="pr-link" style="flex:1;align-self:center"></div><button class="btn primary pr">Review changes</button>`;
   const stopBtn = panel.footer.querySelector<HTMLButtonElement>('.stop')!;
   const prBtn = panel.footer.querySelector<HTMLButtonElement>('.pr')!;
   const prLink = panel.footer.querySelector<HTMLDivElement>('.pr-link')!;
 
   function refresh() {
-    const active = a.status === 'running' || a.status === 'preparing';
+    const active = a.status === 'running' || a.status === 'preparing' || a.status === 'needs_input';
     sub.innerHTML = `<span class="tag ${a.status === 'running' ? 'open' : a.status === 'error' ? 'closed' : ''}">${esc(a.status)}</span><span class="tag">${esc(a.repo)}</span><span class="tag">${esc(a.branch)}</span><span class="tag">${a.filesChanged.length} files</span>`;
     stopBtn.classList.toggle('hidden', !active);
-    prBtn.classList.toggle('hidden', active || !!a.prUrl || a.filesChanged.length === 0);
+    const asking = a.status === 'needs_input';
+    prBtn.textContent = asking ? 'Answer' : 'Review changes';
+    prBtn.classList.toggle('hidden', asking ? false : active || !!a.prUrl || a.review === 'discarded' || a.filesChanged.length === 0);
     prLink.innerHTML = a.prUrl ? `<a href="${esc(a.prUrl)}" target="_blank" rel="noopener">Pull request ↗</a>` : '';
   }
 
@@ -126,20 +129,8 @@ export function openAgentLivePanel(ctx: GameCtx, agent: AgentInfo) {
     stopBtn.disabled = false;
     refresh();
   });
-  prBtn.addEventListener('click', async () => {
-    if (!confirm(`Push branch "${a.branch}" to GitHub and open a pull request on ${a.repo}?`)) return;
-    prBtn.disabled = true;
-    prBtn.textContent = 'Opening PR…';
-    try {
-      a = await api.openPr(a.id);
-      ctx.agents.set(a.id, a);
-      track('agent_pr_opened', { repo: a.repo });
-      toast(`PR opened for <b>${esc(a.repo)}</b>`);
-    } catch (e) { toast(`PR failed: ${esc((e as Error).message)}`, 8000); }
-    prBtn.disabled = false;
-    prBtn.textContent = 'Open pull request';
-    refresh();
-  });
+  // Shipping goes through the review station: diff, summary, then Approve / Ask for changes / Discard.
+  prBtn.addEventListener('click', () => openReview(a.id));
 
   refresh();
   diffEl.innerHTML = renderDiff('');

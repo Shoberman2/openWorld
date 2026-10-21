@@ -2,15 +2,19 @@
 // further out (buildings and painted ground), swapped as you move. Meshes come from the workers.
 import * as THREE from 'three';
 import type { Colliders } from '../player.ts';
-import { palmGeometry, radialTex } from '../city/streets.ts';
+import { radialTex } from '../city/streets.ts';
 import { shared } from '../engine.ts';
 import type { GeoFrame } from './frame.ts';
 import type { Pool } from './pool.ts';
 import type { ChunkOut, FootprintData, MeshData } from './build/types.ts';
 import { RoadNet, signalState } from './net.ts';
-import { MATS, buildingMaterial, coniferTree, farMask, groundMaterial, lampGeometries, lollipopTree, treeMat, waterMaterial } from './style.ts';
+import { MATS, buildingMaterial, coniferTree, farMask, groundMaterial, ironMaterial, lampGeometries, lampPoolTexture, lollipopTree, palmTree, PROP_COLLIDE, propGeometries, propMat, shoreMaterial, treeMat, waterMaterial } from './style.ts';
+import { ParkLayer, setParkViewer } from './parks.ts';
+import { LandmarkLayer } from './landmarks/index.ts';
 
 export const Z = 14;
+/** Raised sidewalks stand this far above the road (matches the chunk builder). */
+export const CURB = 0.14;
 
 export interface Chunk {
   key: string; tx: number; ty: number; lod: 0 | 1;
@@ -27,8 +31,16 @@ export interface Chunk {
   bulbInfo: { sig: number; group: number }[];
   decks: { pts: number[]; ys: number[]; w: number }[];
   stats: ChunkOut['stats'];
+  /** Raised sidewalk stretches (chunk-local, 6 per segment), bucketed by 25 m cell. */
+  curbGrid?: Map<string, number[]>;
+  /** Trees and street furniture, split by distance from the viewer. */
+  scatters: Scatter[];
+  /** Park and wood trees in tiers, boulders, park walls (parks.ts). */
+  parks?: ParkLayer;
   /** Footprints by 40 m cell (chunk-local), for "which building am I standing at". */
   fpGrid?: Map<string, FootprintData[]>;
+  /** Benches in world space [x, y, z, rotY, …], for robots taking a break. */
+  benches: number[];
 }
 
 export interface BuildingHit {
@@ -62,18 +74,43 @@ export function meshGeometry(m: MeshData, keepCpu = false) {
   return keepCpu ? g : freeOnUpload(g);
 }
 
+const LAMP = new THREE.Color(1.0, 0.72, 0.42);
 const RED = new THREE.Color(0xff3020), AMB = new THREE.Color(0xffb020), GRN = new THREE.Color(0x30ff7a), OFF = new THREE.Color(0x1a1a1a);
+
+/**
+ * Lamp light on the ground: multiplies what's there (dst * (1 + light)), so it lights the asphalt and
+ * paint instead of laying a glow over them. Fades with distance, or it would brighten the haze too.
+ */
+function litPoolMaterial() {
+  const m = new THREE.MeshBasicMaterial({
+    color: 0x000000, map: lampPoolTexture(), transparent: true, depthWrite: false, fog: true, toneMapped: false,
+    blending: THREE.CustomBlending, blendSrc: THREE.DstColorFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
+    polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -12,
+  });
+  m.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <fog_fragment>', `
+      #ifdef USE_FOG
+        gl_FragColor.rgb *= exp(-vFogDepth / 140.0);
+      #endif`);
+  };
+  m.customProgramCacheKey = () => 'earth-lamp-pool';
+  return m;
+}
 
 let shared3: ReturnType<typeof makeShared> | null = null;
 function makeShared() {
   const lamp = lampGeometries();
   return {
-    trees: [lollipopTree(), coniferTree(), palmGeometry()],
+    trees: [lollipopTree(), coniferTree(), palmTree()],
+    treesFar: [lollipopTree(true), coniferTree(true), null],
     lampPole: lamp.pole, lampHead: lamp.head,
     poleMat: new THREE.MeshStandardMaterial({ color: 0x3b4046, metalness: 0.5, roughness: 0.5 }),
     headMat: new THREE.MeshStandardMaterial({ color: 0x2a2a2a, emissive: 0xffd9a0, emissiveIntensity: 0 }),
     poolMat: new THREE.MeshBasicMaterial({ color: 0xffc98a, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, map: radialTex(), polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -12 }),
     pool: new THREE.PlaneGeometry(13, 13).rotateX(-Math.PI / 2),
+    litMat: litPoolMaterial(),
+    litPool: new THREE.PlaneGeometry(30, 30).rotateX(-Math.PI / 2),
+    props: propGeometries(),
     sigPole: new THREE.CylinderGeometry(0.1, 0.12, 4.4, 8).translate(0, 2.2, 0).toNonIndexed(),
     sigBox: new THREE.BoxGeometry(0.42, 1.25, 0.34).translate(0, 4.5, 0),
     sigMat: new THREE.MeshStandardMaterial({ color: 0x2b3530, roughness: 0.6, metalness: 0.3 }),
@@ -81,6 +118,66 @@ function makeShared() {
     bulbMat: new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }),
     pillar: new THREE.CylinderGeometry(0.85, 1.05, 1, 10).translate(0, 0.5, 0),
   };
+}
+
+/** Trees (full leaf cards) within this distance of the viewer; cheaper trees beyond. */
+const TREE_NEAR = 140;
+function benchesOf(props: Float32Array, x0: number, z0: number) {
+  const out: number[] = [];
+  for (let i = 0; i < props.length; i += 5) if (props[i + 4] === 0) out.push(props[i] + x0, props[i + 1], props[i + 2] + z0, props[i + 3]);
+  return out;
+}
+
+/** Street furniture is drawn within this distance. */
+const PROP_NEAR = 220;
+
+/**
+ * Instances split by distance from the viewer into a detailed mesh near and a cheap one (or nothing)
+ * beyond. Both keep the bounding sphere of all instances, so the chunk's frustum culling still works.
+ */
+class Scatter {
+  near: THREE.InstancedMesh;
+  far: THREE.InstancedMesh | null;
+  private allFar = false;
+  constructor(private pos: Float32Array, private mats: Float32Array, private cols: Float32Array | null, nearGeo: THREE.BufferGeometry, farGeo: THREE.BufferGeometry | null, mat: THREE.Material, public radius: number, shadow: boolean) {
+    const n = pos.length / 3;
+    const make = (g: THREE.BufferGeometry) => {
+      const im = new THREE.InstancedMesh(g, mat, n);
+      (im.instanceMatrix.array as Float32Array).set(mats);
+      if (cols) { im.instanceColor = new THREE.InstancedBufferAttribute(cols.slice(), 3); }
+      im.computeBoundingSphere();
+      im.castShadow = shadow; im.receiveShadow = true;
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      return im;
+    };
+    this.near = make(nearGeo);
+    this.far = farGeo ? make(farGeo) : null;
+    this.near.count = 0;
+  }
+  /** Re-sort around the viewer (chunk-local coordinates). */
+  split(x: number, y: number, z: number) {
+    const r2 = this.radius * this.radius, P = this.pos, n = P.length / 3;
+    const nm = this.near.instanceMatrix.array as Float32Array, fm = this.far?.instanceMatrix.array as Float32Array | undefined;
+    const nc = this.near.instanceColor?.array as Float32Array | undefined, fc = this.far?.instanceColor?.array as Float32Array | undefined;
+    let ni = 0, fi = 0;
+    for (let i = 0; i < n; i++) {
+      const dx = P[i * 3] - x, dy = P[i * 3 + 1] - y, dz = P[i * 3 + 2] - z;
+      const m = this.mats.subarray(i * 16, i * 16 + 16), c = this.cols?.subarray(i * 3, i * 3 + 3);
+      if (dx * dx + dy * dy + dz * dz < r2) { nm.set(m, ni * 16); if (nc && c) nc.set(c, ni * 3); ni++; }
+      else if (fm) { fm.set(m, fi * 16); if (fc && c) fc.set(c, fi * 3); fi++; }
+    }
+    if (ni === 0 && this.allFar) return;
+    this.allFar = ni === 0;
+    this.near.count = ni;
+    this.near.instanceMatrix.needsUpdate = true;
+    if (this.near.instanceColor) this.near.instanceColor.needsUpdate = true;
+    if (this.far) {
+      this.far.count = fi;
+      this.far.instanceMatrix.needsUpdate = true;
+      if (this.far.instanceColor) this.far.instanceColor.needsUpdate = true;
+    }
+  }
+  add(g: THREE.Group) { g.add(this.near); if (this.far) g.add(this.far); }
 }
 
 export class Chunks {
@@ -108,11 +205,20 @@ export class Chunks {
   constructor(public frame: GeoFrame, public e0: number, private pool: Pool, private colliders: Colliders, private country: string) {
     shared3 ??= makeShared();
     const n = farMask.n;
-    farMask.tex = new THREE.DataTexture(new Uint8Array(n * n * 4), n, n, THREE.RGBAFormat);
+    // One mask for the session (a long flight re-centers, and so rebuilds this, many times).
+    if (!farMask.tex || farMask.tex.image.width !== n) {
+      farMask.tex?.dispose();
+      farMask.tex = new THREE.DataTexture(new Uint8Array(n * n * 4), n, n, THREE.RGBAFormat);
+    }
     farMask.tex.magFilter = farMask.tex.minFilter = THREE.NearestFilter;
     farMask.uMask.value = farMask.tex;
     farMask.uN.value = n;
+    this.landmarks = new LandmarkLayer(this, colliders, country);
+    this.group.add(this.landmarks.group);
   }
+
+  /** Hand-built landmarks, Times Square's screens, street signs, look-at (landmarks/). */
+  landmarks: LandmarkLayer;
 
   key(tx: number, ty: number) { return `${tx},${ty}`; }
 
@@ -140,6 +246,23 @@ export class Chunks {
     const i = Math.floor(((x - c.x0) / c.size) * c.wetN), j = Math.floor(((z - c.z0) / c.size) * c.wetN);
     if (i < 0 || j < 0 || i >= c.wetN || j >= c.wetN) return NaN;
     return c.wet[j * c.wetN + i];
+  }
+
+  /** How far a raised sidewalk lifts the ground at (x, z) (0 off the sidewalks). */
+  curbAt(x: number, z: number) {
+    const c = this.chunkAt(x, z);
+    if (!c?.curbGrid) return 0;
+    const lx = x - c.x0, lz = z - c.z0;
+    const l = c.curbGrid.get(`${Math.floor(lx / 25)},${Math.floor(lz / 25)}`);
+    if (!l) return 0;
+    for (let i = 0; i < l.length; i += 6) {
+      const ax = l[i], az = l[i + 1], ex = l[i + 2] - ax, ez = l[i + 3] - az, l2 = ex * ex + ez * ez;
+      const t = l2 > 0 ? ((lx - ax) * ex + (lz - az) * ez) / l2 : 0;
+      if (t < 0 || t > 1) continue;
+      const d = Math.hypot(lx - (ax + ex * t), lz - (az + ez * t));
+      if (d >= l[i + 4] && d <= l[i + 5]) return CURB;
+    }
+    return 0;
   }
 
   /** Highest bridge deck under (x,z) at or below y + step. */
@@ -205,24 +328,33 @@ export class Chunks {
       });
   }
 
-  /** Decide what should be loaded for a player at p (with `agl` meters of altitude). */
-  update(p: THREE.Vector3, agl: number, time: number) {
+  /**
+   * Decide what should be loaded for a player at p (with `agl` meters of altitude). `lead` is where
+   * they'll be in a few seconds: the light ring centers there, so a fast flight streams ahead of
+   * itself instead of behind; `speed` (m/s) thins it out when tiles can't keep up anyway.
+   */
+  update(p: THREE.Vector3, agl: number, time: number, lead: { x: number; z: number } = p, speed = 0) {
     const s = this.frame.tileSize(Z);
     const high = Math.max(0, agl);
     const r0 = this.radius0 + Math.min(high, 500) * 0.6;
-    const r1 = this.radius1 + Math.min(high, 1500) * 1.4;
-    const c = this.frame.tileAt(Z, p.x, p.z);
-    const R = Math.ceil(r1 / s) + 1;
+    // Way up (or going like a rocket) the satellite horizon carries the view: fewer, nearer light chunks,
+    // and none at all above ~6 km, where a building is a pixel.
+    const fast = THREE.MathUtils.clamp((speed - 150) / 600, 0, 0.6);
+    const r1 = high > 6000 ? 0 : (this.radius1 + Math.min(high, 1500) * 1.4) * (1 - fast) * (high > 3000 ? 0.6 : 1);
+    const c = this.frame.tileAt(Z, (p.x + lead.x) / 2, (p.z + lead.z) / 2);
+    const R = Math.ceil((r1 + Math.hypot(lead.x - p.x, lead.z - p.z)) / s) + 1;
     const next = new Map<string, 0 | 1>();
     for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
       const tx = c.tx + dx, ty = c.ty + dy;
       const key = this.key(tx, ty);
-      const d = this.distRect(p.x, p.z, this.frame.tileRect(Z, tx, ty));
+      const rect = this.frame.tileRect(Z, tx, ty);
+      const d = this.distRect(p.x, p.z, rect);
+      const dl = Math.min(d, this.distRect(lead.x, lead.z, rect));
       const cur = this.chunks.get(key);
       // Flying high: no need for street detail far below.
       const lod0 = high < 900 && (d < r0 || (cur?.lod === 0 && d < r0 + 400));
       if (lod0) next.set(key, 0);
-      else if (d < r1 || (cur && d < r1 + 700)) next.set(key, 1);
+      else if (dl < r1 || (cur && dl < r1 + 700)) next.set(key, 1);
     }
     this.want = next;
     for (const [key, lod] of next) {
@@ -230,14 +362,33 @@ export class Chunks {
       if (cur?.lod === lod || this.loading.get(key) === lod) continue;
       const [tx, ty] = key.split(',').map(Number);
       const rect = this.frame.tileRect(Z, tx, ty);
-      this.request(tx, ty, lod, () => this.distRect(p.x, p.z, rect) + (lod === 1 ? 1500 : 0) + (this.chunks.has(key) ? 800 : 0));
+      // Nearest to where you're going first (the lead point), detail before scenery.
+      this.request(tx, ty, lod, () => Math.min(this.distRect(p.x, p.z, rect), this.distRect(lead.x, lead.z, rect) * 0.8) + (lod === 1 ? 1500 : 0) + (this.chunks.has(key) ? 800 : 0));
     }
     for (const [key, ch] of this.chunks) if (!next.has(key)) this.remove(ch);
     this.pump(p);
+    this.splitScatters(p);
+    this.landmarks.update(p, time);
     this.tick(time);
   }
 
   get pending() { return this.loading.size; }
+
+  private splitAt = new THREE.Vector3(1e9, 0, 0);
+  private scattersDirty = true;
+  /** Every 8 m of movement (or when chunks arrive), re-split trees and furniture around the viewer. */
+  private splitScatters(p: THREE.Vector3) {
+    if (!this.scattersDirty && this.splitAt.distanceToSquared(p) < 64) return;
+    this.splitAt.copy(p);
+    this.scattersDirty = false;
+    setParkViewer(p);
+    for (const ch of this.chunks.values()) {
+      ch.parks?.split(p.x - ch.x0, p.y, p.z - ch.z0);
+      if (!ch.scatters.length) continue;
+      const near = this.distRect(p.x, p.z, ch) < Math.max(TREE_NEAR, PROP_NEAR) + 20;
+      for (const s of ch.scatters) s.split(near ? p.x - ch.x0 : 1e9, p.y, near ? p.z - ch.z0 : 1e9);
+    }
+  }
 
   private install(o: ChunkOut) {
     const key = this.key(o.tx, o.ty);
@@ -267,6 +418,15 @@ export class Chunks {
       w.receiveShadow = true;
       group.add(w);
     }
+    if (o.shore) {
+      const g = meshGeometry(o.shore);
+      g.setAttribute('aShore', g.getAttribute('uv'));
+      g.setAttribute('aStr', g.getAttribute('color'));
+      const m = new THREE.Mesh(g, shoreMaterial());
+      m.receiveShadow = true;
+      m.renderOrder = 2;
+      group.add(m);
+    }
     const buildings = o.buildings.map((bm) => {
       if (!bm) return null;
       const m = new THREE.Mesh(meshGeometry(bm, this.keepCpu), buildingMaterial());
@@ -275,6 +435,11 @@ export class Chunks {
       group.add(m);
       return m;
     });
+    if (o.iron) {
+      const m = new THREE.Mesh(meshGeometry(o.iron), ironMaterial());
+      m.receiveShadow = true;
+      group.add(m);
+    }
     const hide = this.hidden.get(key);
     if (hide) for (const f of o.footprints) if (hide.has(f.key) && buildings[f.cell]) collapse(buildings[f.cell]!, f.start, f.count);
     for (const [m, mat] of [[o.walk, MATS.walk], [o.road, MATS.road], [o.paintW, MATS.paintW], [o.paintY, MATS.paintY], [o.deck, MATS.deck]] as const) {
@@ -286,39 +451,42 @@ export class Chunks {
     }
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), sc = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
     const tint = new THREE.Color();
-    // Trees by kind.
+    // Trees by kind: full leaf cards near the viewer, a light version further out.
+    const scatters: Scatter[] = [];
     for (let kind = 0; kind < 3; kind++) {
       const idx: number[] = [];
       for (let i = 0; i < o.trees.length; i += 6) if (o.trees[i + 5] === kind) idx.push(i);
       if (!idx.length) continue;
-      const im = new THREE.InstancedMesh(sh.trees[kind], treeMat, idx.length);
+      const pos = new Float32Array(idx.length * 3), mats = new Float32Array(idx.length * 16), cols = new Float32Array(idx.length * 3);
       idx.forEach((i, n) => {
         const s = o.trees[i + 4];
         q.setFromAxisAngle(up, o.trees[i + 3]);
         m4.compose(v.set(o.trees[i], o.trees[i + 1] - 0.1, o.trees[i + 2]), q, sc.set(s, s * (0.9 + (n % 5) * 0.05), s));
-        im.setMatrixAt(n, m4);
+        m4.toArray(mats, n * 16);
+        pos.set([o.trees[i], o.trees[i + 1] + 4, o.trees[i + 2]], n * 3);
         const h = (n * 0.137) % 1;
-        im.setColorAt(n, tint.setRGB(0.88 + h * 0.2, 0.92 + ((n * 0.31) % 1) * 0.16, 0.85 + h * 0.15));
+        tint.setRGB(0.88 + h * 0.2, 0.92 + ((n * 0.31) % 1) * 0.16, 0.85 + h * 0.15).toArray(cols, n * 3);
       });
-      im.castShadow = o.lod === 0;
-      im.computeBoundingSphere();
-      group.add(im);
+      const far = sh.treesFar[kind];
+      const sct = new Scatter(pos, mats, cols, sh.trees[kind], far, treeMat, far ? TREE_NEAR : 1e9, o.lod === 0);
+      sct.add(group);
+      scatters.push(sct);
     }
     // Street lights.
     const nl = o.lamps.length / 4;
     if (nl) {
       const poles = new THREE.InstancedMesh(sh.lampPole, sh.poleMat, nl), heads = new THREE.InstancedMesh(sh.lampHead, sh.headMat, nl);
-      const pools = new THREE.InstancedMesh(sh.pool, sh.poolMat, nl);
+      const pools = new THREE.InstancedMesh(sh.pool, sh.poolMat, nl), lit = new THREE.InstancedMesh(sh.litPool, sh.litMat, nl);
       for (let i = 0; i < nl; i++) {
         const x = o.lamps[i * 4], y = o.lamps[i * 4 + 1], zz = o.lamps[i * 4 + 2], r = o.lamps[i * 4 + 3];
         m4.makeRotationY(r).setPosition(x, y, zz);
         poles.setMatrixAt(i, m4); heads.setMatrixAt(i, m4);
-        m4.makeTranslation(x + Math.sin(r) * 2.1, y + 0.2, zz + Math.cos(r) * 2.1);
-        pools.setMatrixAt(i, m4);
+        m4.makeTranslation(x + Math.sin(r) * 2.1, y + 0.32, zz + Math.cos(r) * 2.1);
+        pools.setMatrixAt(i, m4); lit.setMatrixAt(i, m4);
       }
       poles.castShadow = true;
-      pools.renderOrder = 1;
-      for (const im of [poles, heads, pools]) { im.computeBoundingSphere(); group.add(im); }
+      pools.renderOrder = 1; lit.renderOrder = 1;
+      for (const im of [poles, heads, pools, lit]) { im.computeBoundingSphere(); group.add(im); }
     }
     // Traffic signals.
     let bulbs: THREE.InstancedMesh | null = null;
@@ -351,18 +519,36 @@ export class Chunks {
       group.add(im);
     }
 
+    // Street furniture, one instanced mesh per kind, drawn near the viewer only.
+    for (let kind = 0; kind < sh.props.length; kind++) {
+      const idx: number[] = [];
+      for (let i = 0; i < o.props.length; i += 5) if (o.props[i + 4] === kind) idx.push(i);
+      if (!idx.length) continue;
+      const pos = new Float32Array(idx.length * 3), mats = new Float32Array(idx.length * 16);
+      idx.forEach((i, n) => {
+        m4.makeRotationY(o.props[i + 3]).setPosition(o.props[i], o.props[i + 1], o.props[i + 2]).toArray(mats, n * 16);
+        pos.set([o.props[i], o.props[i + 1], o.props[i + 2]], n * 3);
+      });
+      const sct = new Scatter(pos, mats, null, sh.props[kind], null, propMat, PROP_NEAR, kind !== 3);
+      sct.add(group);
+      scatters.push(sct);
+    }
+
+    const parks = o.parks ? new ParkLayer(o.parks, group, o.lod) : undefined;
     const ch: Chunk = {
       key, tx: o.tx, ty: o.ty, lod: o.lod, x0: rect.x0, z0: rect.z0, size: rect.size, group,
       n: o.n, heights: o.heights, wetN: o.wetN, wet: o.wet, footprints: o.footprints, buildings,
       names: o.names.map((nm) => ({ ...nm, pts: nm.pts.map((val, i) => val + (i % 2 ? rect.z0 : rect.x0)) })),
       places: o.places.map((p) => ({ ...p, x: p.x + rect.x0, z: p.z + rect.z0 })),
       signals: o.signals.map((sg) => ({ phase: sg.phase })),
-      bulbs, bulbInfo,
+      bulbs, bulbInfo, scatters, parks,
+      benches: benchesOf(o.props, rect.x0, rect.z0),
       decks: o.edges.filter((e) => e.bridge).map((e) => ({ pts: e.pts.map((val, i) => val + (i % 2 ? rect.z0 : rect.x0)), ys: e.ys, w: e.width })),
       stats: o.stats,
     };
     if (old) this.remove(old, true);
     this.chunks.set(key, ch);
+    this.landmarks.install(o, ch);
     // Static: compute matrices once instead of every frame.
     group.traverse((obj) => { obj.matrixAutoUpdate = false; obj.updateMatrix(); });
     this.group.add(group);
@@ -379,9 +565,29 @@ export class Chunks {
         const x = o.trees[i] + rect.x0, zz = o.trees[i + 2] + rect.z0;
         this.colliders.add({ minX: x - 0.3, maxX: x + 0.3, minZ: zz - 0.3, maxZ: zz + 0.3, maxY: o.trees[i + 1] + 2.5 }, key);
       }
+      parks?.colliders(rect.x0, rect.z0, (b) => this.colliders.add(b, key));
       for (let i = 0; i < o.lamps.length; i += 4) {
         const x = o.lamps[i] + rect.x0, zz = o.lamps[i + 2] + rect.z0;
         this.colliders.add({ minX: x - 0.18, maxX: x + 0.18, minZ: zz - 0.18, maxZ: zz + 0.18, maxY: o.lamps[i + 1] + 7.5 }, key);
+      }
+      for (let i = 0; i < o.props.length; i += 5) {
+        const [r, ht] = PROP_COLLIDE[o.props[i + 4]] ?? [0.28, 0.9];
+        if (!r) continue;
+        const x = o.props[i] + rect.x0, zz = o.props[i + 2] + rect.z0;
+        this.colliders.add({ minX: x - r, maxX: x + r, minZ: zz - r, maxZ: zz + r, maxY: o.props[i + 1] + ht }, key);
+      }
+      if (o.curbs.length) {
+        ch.curbGrid = new Map();
+        for (let i = 0; i < o.curbs.length; i += 6) {
+          const ax = o.curbs[i], az = o.curbs[i + 1], bx = o.curbs[i + 2], bz = o.curbs[i + 3], w = o.curbs[i + 5];
+          for (let gx = Math.floor((Math.min(ax, bx) - w) / 25); gx <= Math.floor((Math.max(ax, bx) + w) / 25); gx++)
+            for (let gz = Math.floor((Math.min(az, bz) - w) / 25); gz <= Math.floor((Math.max(az, bz) + w) / 25); gz++) {
+              const k = `${gx},${gz}`;
+              let l = ch.curbGrid.get(k);
+              if (!l) ch.curbGrid.set(k, (l = []));
+              for (let j = 0; j < 6; j++) l.push(o.curbs[i + j]);
+            }
+        }
       }
       for (let i = 0; i < o.pillars.length; i += 4) {
         const x = o.pillars[i] + rect.x0, zz = o.pillars[i + 2] + rect.z0;
@@ -400,11 +606,13 @@ export class Chunks {
       }
     }
     this.maskDirty = true;
+    this.scattersDirty = true;
     this.onChange?.();
   }
 
   private remove(ch: Chunk, replacing = false) {
     this.group.remove(ch.group);
+    this.landmarks.remove(ch.key);
     ch.group.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
@@ -413,7 +621,7 @@ export class Chunks {
       const mat = m.material as THREE.MeshStandardMaterial;
       if (mat.userData.perChunk) { mat.map?.dispose(); mat.dispose(); }
     });
-    if (ch.lod === 0) {
+    if (ch.lod === 0 && !this.ghost) {
       this.colliders.removeOwner(ch.key);
       this.net.remove(ch.key);
       for (const [k, l] of this.deckGrid) {
@@ -492,7 +700,8 @@ export class Chunks {
     const sh = shared3!;
     const n = shared.uNight.value;
     sh.headMat.emissiveIntensity = n * 3;
-    sh.poolMat.opacity = n * 0.36;
+    sh.poolMat.opacity = n * 0.3;
+    sh.litMat.color.copy(LAMP).multiplyScalar(n * 3);
     const tick = Math.floor(time * 4);
     if (tick !== this.lastBulb) {
       this.lastBulb = tick;
@@ -527,9 +736,31 @@ export class Chunks {
     farMask.uCell.value = r.size;
   }
 
+  /**
+   * Stop being the world and become scenery: after a rebase the old chunks stay on screen (moved into
+   * the new frame by the caller) until the new ones arrive, but they no longer collide, route traffic
+   * or stream. Their tile keys are shared with the new world's, so removing them later must not touch
+   * colliders or the road network.
+   */
+  private ghost = false;
+  freeze() {
+    for (const ch of this.chunks.values()) if (ch.lod === 0) { this.colliders.removeOwner(ch.key); this.net.remove(ch.key); }
+    this.ghost = true;
+    this.disposed = true;
+    this.want.clear();
+    for (const r of this.ready) { r.out.tex?.close(); r.done(); }
+    this.ready = [];
+  }
+
+  /** Drop ghost chunks the new world has covered (any detail level), keeping the rest as stand-ins. */
+  pruneUnder(cover: (key: string) => boolean) {
+    for (const ch of [...this.chunks.values()]) if (cover(ch.key)) this.remove(ch);
+  }
+
   dispose() {
     this.disposed = true;
     for (const ch of [...this.chunks.values()]) this.remove(ch);
+    this.landmarks.dispose();
     this.want.clear();
     for (const r of this.ready) { r.out.tex?.close(); r.done(); }
     this.ready = [];

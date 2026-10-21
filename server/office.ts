@@ -4,14 +4,15 @@ import type { AgentInfo, OfficeChannel, OfficeDispatch, OfficeMessage, OfficeReq
 import { PATHS, readJson, writeJson, logEvent } from './config.ts';
 import { listRepos, findRepo } from './github.ts';
 import { streamClaude } from './llm.ts';
-import { listAgents, startAgent, stopAgent, openPr, agentLog, onAgentUpdate } from './agents.ts';
+import { listAgents, onAgentUpdate } from './agents.ts';
+import { visibleText, parseAction, applyActions, composeReport, agentLine, ago, MAX_DISPATCH } from './actions.ts';
+import { delegate, mastersDigest } from './masters.ts';
 
 // "HQ": the office as one orchestrator agent. You text or email it from the in-game phone; it answers,
-// dispatches worker agents into repo buildings, stops them, and reports back when they finish.
+// dispatches worker agents into repo buildings (directly, or by delegating to each project's lead in
+// masters.ts), stops them, and reports back when they finish.
 
 const FILE = join(PATHS.home, 'office.json');
-const ACTION_TAGS = ['dispatch', 'stop', 'pr'];
-const MAX_DISPATCH = 5;
 
 let messages: OfficeMessage[] = readJson<OfficeMessage[]>(FILE, []);
 let broadcast: (msg: ServerMsg) => void = () => {};
@@ -35,46 +36,11 @@ function post(m: Omit<OfficeMessage, 'id' | 'ts'>): OfficeMessage {
 
 const unread = () => messages.filter((m) => m.from === 'hq' && !m.read).length;
 
-/** Visible part of a streamed reply: everything before an action tag (or a partial one at the end). */
-export function visibleText(full: string): string {
-  const re = new RegExp(`<(${ACTION_TAGS.join('|')})>`, 'i');
-  const m = re.exec(full);
-  let out = m ? full.slice(0, m.index) : full;
-  const lt = out.lastIndexOf('<');
-  if (lt >= 0) {
-    const tail = out.slice(lt + 1).toLowerCase();
-    if (!tail.includes('>') && ACTION_TAGS.some((t) => (t + '>').startsWith(tail))) out = out.slice(0, lt);
-  }
-  return out;
-}
-
-/** Pull a JSON array out of <tag>[...]</tag>. */
-export function parseAction<T>(full: string, tag: string): T[] {
-  const m = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i').exec(full);
-  if (!m) return [];
-  try {
-    const v = JSON.parse(m[1].trim());
-    return Array.isArray(v) ? v : [];
-  } catch {
-    return [];
-  }
-}
-
-function ago(iso: string) {
-  const d = (Date.now() - new Date(iso).getTime()) / 86400000;
-  return d < 1 ? 'today' : d < 2 ? 'yesterday' : d < 60 ? `${Math.round(d)} days ago` : `${Math.round(d / 30)} months ago`;
-}
-
-function agentLine(a: AgentInfo) {
-  const cost = a.costUsd != null ? `, $${a.costUsd.toFixed(2)}` : '';
-  return `- [${a.id}] ${a.name} in ${a.repo} — ${a.status}${cost}. Task: "${a.task.slice(0, 140)}". Last: ${a.lastAction.slice(0, 120)}. Files changed: ${a.filesChanged.slice(0, 8).join(', ') || 'none'}${a.prUrl ? `. PR: ${a.prUrl}` : ''}`;
-}
-
 function threadText(limit = 18) {
   return messages.slice(-limit).map((m) => {
     const who = m.from === 'me' ? 'Boss' : 'HQ';
     const via = m.channel === 'email' ? `email${m.subject ? ` "${m.subject}"` : ''}` : 'text';
-    const extra = m.dispatched?.length ? ` [dispatched: ${m.dispatched.map((d) => `${d.agentName}→${d.repo}`).join(', ')}]` : '';
+    const extra = (m.dispatched?.length ? ` [dispatched: ${m.dispatched.map((d) => `${d.agentName}→${d.repo}`).join(', ')}]` : '') + (m.delegated?.length ? ` [delegated to leads: ${m.delegated.join(', ')}]` : '');
     return `${who} (${via}): ${m.text}${extra}`;
   }).join('\n');
 }
@@ -82,7 +48,7 @@ function threadText(limit = 18) {
 async function systemPrompt(channel: OfficeChannel) {
   const repos = await listRepos().catch(() => []);
   const agents = listAgents();
-  const active = agents.filter((a) => a.status === 'running' || a.status === 'preparing');
+  const active = agents.filter((a) => a.status === 'running' || a.status === 'preparing' || a.status === 'needs_input');
   const recent = agents.filter((a) => !active.includes(a)).slice(0, 12);
   return [
     `You are HQ, the head office in OpenWorld: a game where each of the boss's GitHub repositories is a building in a city. You are one agent connected to many others — you run every building and can dispatch AI coding agents (Claude Code) to work inside any repo. The boss is out walking the city and contacts you from their phone.`,
@@ -94,6 +60,8 @@ async function systemPrompt(channel: OfficeChannel) {
     `- Dispatch worker agents: <dispatch>[{"repo":"exact-repo-name","task":"clear, self-contained instructions for the agent"}]</dispatch>`,
     `  One entry per agent; several repos or several agents per repo are fine (max ${MAX_DISPATCH}). Write tasks the way a good engineering manager briefs an engineer: goal, where to look, constraints, what "done" means. If the boss says not to change anything, say so in the task ("read-only: do not edit files").`,
     `  Agents work on their own git branch in an isolated worktree, never push, and you report back when they finish.`,
+    `- Delegate to a project's lead (its master agent, who knows that repo in depth and texts the boss directly from its own thread): <delegate>[{"repo":"exact-repo-name","brief":"what you need from them"}]</delegate>`,
+    `  Prefer delegating when the work needs judgment about one repo's code ("have the calendar-hub lead sort out the flaky tests"); dispatch directly for simple, well-defined tasks or work spread across many repos. Don't both delegate and dispatch for the same repo.`,
     `- Stop agents: <stop>["agentId"]</stop>`,
     `- Open a pull request for a finished agent: <pr>["agentId"]</pr> — ONLY when the boss explicitly asks for a PR in their latest message. Never on your own initiative.`,
     `Only dispatch when the boss is asking for work to be done. If the request is ambiguous about which repo, ask a quick question instead of guessing (unless one repo is an obvious match). For status questions, answer from the agent list below. Refer to agents by name (e.g. "Nova"), not id. Never claim work is done that isn't. When you dispatch, say who you're sending where in plain words.`,
@@ -101,6 +69,7 @@ async function systemPrompt(channel: OfficeChannel) {
     `Repos (buildings), biggest first:`,
     ...repos.slice(0, 80).map((r) => `- ${r.name} (${r.tier}${r.language ? `, ${r.language}` : ''}, ${r.commits} commits, pushed ${ago(r.pushedAt)})${r.description ? `: ${r.description.slice(0, 120)}` : ''}`),
     ``,
+    mastersDigest() ? `Project leads, latest in their threads:\n${mastersDigest()}` : '',
     active.length ? `Agents working right now:\n${active.map(agentLine).join('\n')}` : 'No agents are working right now.',
     recent.length ? `Recently finished agents:\n${recent.map(agentLine).join('\n')}` : '',
   ].filter((l) => l !== undefined).join('\n');
@@ -138,48 +107,29 @@ async function handleMessage(req: OfficeRequest, send: (d: unknown) => void, sig
   }
 
   // ---- actions ----
-  const dispatched: OfficeDispatch[] = [];
-  const refs: NonNullable<OfficeMessage['refs']> = [];
-  const notes: string[] = [];
-  for (const d of parseAction<{ repo?: string; task?: string }>(full, 'dispatch').slice(0, MAX_DISPATCH)) {
+  const { dispatched, refs, notes } = await applyActions(full, { askedText: text, by: 'HQ' });
+  const delegated: string[] = [];
+  for (const d of parseAction<{ repo?: string; brief?: string }>(full, 'delegate').slice(0, MAX_DISPATCH)) {
     try {
       const repo = await findRepo(String(d.repo || ''));
-      const task = String(d.task || '').trim();
-      if (!task) continue;
-      const a = await startAgent(repo, `${task}\n\n(Dispatched by HQ for the boss, who asked: "${text.slice(0, 600)}")`);
-      dispatched.push({ agentId: a.id, agentName: a.name, repo: repo.name, task });
+      const brief = String(d.brief || '').trim();
+      if (!brief) continue;
+      delegate(repo.name, `${brief}\n\n(The boss asked HQ: "${text.slice(0, 600)}")`, text);
+      delegated.push(repo.name);
     } catch (e: any) {
-      notes.push(`Couldn't dispatch to ${d.repo}: ${e.message}`);
+      notes.push(`Couldn't reach the ${d.repo} lead: ${e.message}`);
     }
   }
-  for (const id of parseAction<string>(full, 'stop')) {
-    try {
-      stopAgent(String(id));
-      refs.push({ agentId: String(id), action: 'stopped' });
-    } catch (e: any) {
-      notes.push(`Couldn't stop ${id}: ${e.message}`);
-    }
-  }
-  const prIds = parseAction<string>(full, 'pr');
-  if (prIds.length && /\b(pr|prs|pull request|pull-request)\b/i.test(text)) {
-    for (const id of prIds) {
-      try {
-        const a = await openPr(String(id));
-        refs.push({ agentId: a.id, action: 'pr' });
-        notes.push(`PR opened for ${a.name}: ${a.prUrl}`);
-      } catch (e: any) {
-        notes.push(`Couldn't open a PR for ${id}: ${e.message}`);
-      }
-    }
-  }
+  if (delegated.length) logEvent('office_delegate', { channel, session, repos: delegated });
   if (dispatched.length) logEvent('office_dispatch', { channel, session, count: dispatched.length, repos: dispatched.map((d) => d.repo) });
 
-  let visible = visibleText(full).trim() || (dispatched.length ? 'On it.' : '…');
+  let visible = visibleText(full).trim() || (dispatched.length || delegated.length ? 'On it.' : '…');
   if (notes.length) visible += `\n\n${notes.join('\n')}`;
   const reply = post({
     from: 'hq', channel, text: visible,
     subject: subject ? (subject.toLowerCase().startsWith('re:') ? subject : `Re: ${subject}`) : undefined,
     dispatched: dispatched.length ? dispatched : undefined,
+    delegated: delegated.length ? delegated : undefined,
     refs: refs.length ? refs : undefined,
     read: true,
   });
@@ -196,32 +146,11 @@ async function reportOn(info: AgentInfo) {
   if (messages.some((m) => m.refs?.some((r) => r.agentId === info.id && r.action === 'report'))) return;
   reporting.add(info.id);
 
-  const log = agentLog(info.id).events;
-  const result = [...log].reverse().find((e) => e.event.kind === 'result')?.event as { text?: string } | undefined;
-  const diff = [...log].reverse().find((e) => e.event.kind === 'diff')?.event as { stat?: string } | undefined;
-  const cost = info.costUsd != null ? `$${info.costUsd.toFixed(2)}` : 'unknown cost';
   const channel = origin.channel;
-  const fallback = info.status === 'done'
-    ? `${info.name} finished in ${info.repo}. ${info.filesChanged.length ? `Changed ${info.filesChanged.length} file(s): ${info.filesChanged.slice(0, 5).join(', ')}.` : 'No files changed.'} ${result?.text ? result.text.slice(0, 400) : ''} (${cost})`
-    : `${info.name} hit a problem in ${info.repo}: ${info.lastAction}`;
-
   broadcast({ type: 'office:typing', on: true, channel });
-  let text = fallback;
+  let text: string;
   try {
-    const out = await streamClaude({
-      system: `You are HQ, the head office in OpenWorld, reporting to the boss on their phone about work a worker agent just completed. ${channel === 'text' ? 'Write a TEXT: 2-3 short sentences, under 60 words, casual, no markdown (no backticks or asterisks).' : 'Write a brief EMAIL body: "Hi," then 1-3 short paragraphs, sign off "— HQ". Plain text, no markdown (no backticks, asterisks or headings).'} Be concrete: what the agent found or changed, anything to review, and the next step (e.g. walk into the building to see the diff, or ask you to open a PR). Never invent details that are not below.`,
-      prompt: [
-        `Agent: ${info.name} in repo ${info.repo}. Status: ${info.status}. Cost: ${cost}. Branch: ${info.branch}.`,
-        `Task: ${info.task.slice(0, 1500)}`,
-        `Files changed: ${info.filesChanged.join(', ') || 'none'}`,
-        diff?.stat ? `Diff stat:\n${diff.stat.slice(0, 1500)}` : '',
-        `Agent's final message:\n${(result?.text || info.lastAction).slice(0, 4000)}`,
-      ].filter(Boolean).join('\n\n'),
-      fallback,
-    });
-    if (out.trim()) text = out.trim();
-  } catch {
-    /* template fallback */
+    text = await composeReport(info, 'HQ', channel);
   } finally {
     broadcast({ type: 'office:typing', on: false, channel });
   }

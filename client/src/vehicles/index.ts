@@ -4,9 +4,9 @@
 import * as THREE from 'three';
 import type { Colliders } from '../player.ts';
 import type { RobotState } from '../robot.ts';
-import { bikeModel, boatModel, jeepModel, kayakModel, planeModel, skateboardModel, type Model } from './models.ts';
+import { bikeModel, boatModel, jeepModel, kayakModel, planeModel, shuttleModel, skateboardModel, type Model } from './models.ts';
 
-export type VehicleId = 'foot' | 'skate' | 'bike' | 'jeep' | 'plane' | 'kayak' | 'boat';
+export type VehicleId = 'foot' | 'skate' | 'bike' | 'jeep' | 'plane' | 'kayak' | 'boat' | 'shuttle';
 
 export interface VehicleInput {
   throttle: number; // -1..1 (W/S)
@@ -298,6 +298,143 @@ export class Plane extends Vehicle {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The space shuttle: the way to cross a continent. Rocket thrust along the nose against drag that
+// thins with altitude (Mach ~1 on the mains, ~1.9 on the boosters up high), wings that bend the flight
+// path toward where the nose points once you're fast, and a vertical launch from anywhere.
+
+const SOUND = 340;
+
+export class Shuttle extends Vehicle {
+  readonly id = 'shuttle' as const;
+  // The pilot sits in the flight deck, out of sight; the chase camera stands well back.
+  readonly seat = new THREE.Vector3(0, 2.4, 6.2);
+  readonly pose = 'pilot' as const;
+  readonly cam = { dist: 30, height: 6, pitch: 0.1 };
+  throttle = 0;
+  booster = false;
+  /** Velocity (m/s, world). `speed` mirrors its length. */
+  readonly v3 = new THREE.Vector3();
+  /** Felt acceleration in g (for the HUD). */
+  g = 1;
+  private bank = 0;
+  private flick = 0;
+  /** Launched from the ground: stand on the tail and go straight up until clear of the towers. */
+  private climbOut = -Infinity;
+  constructor() { super(shuttleModel()); }
+
+  get mach() { return this.speed / SOUND; }
+
+  step(dt: number, inp: VehicleInput, w: VehicleWorld): StepResult {
+    this.throttle = THREE.MathUtils.clamp(this.throttle + inp.throttle * 0.55 * dt, 0, 1);
+    this.booster = inp.shift && this.throttle > 0.05;
+    const f = this.nose(new THREE.Vector3());
+    const rho = Math.exp(-Math.max(0, this.pos.y) / 8500);
+    const thrust = this.throttle * 38 + (this.booster ? 60 : 0);
+    const v = this.v3, sp = v.length();
+
+    if (this.grounded) {
+      // Light the mains and pull up (Space), or just open the throttle wide: she stands up and goes.
+      this.bank = THREE.MathUtils.damp(this.bank, 0, 6, dt);
+      if (this.throttle > 0.12 && (inp.space || this.throttle > 0.55 || this.booster)) {
+        this.grounded = false;
+        this.pitch = 1.4;
+        this.climbOut = this.pos.y;
+        v.copy(this.nose(f)).multiplyScalar(6);
+      } else {
+        // Rolling out after a landing: brakes.
+        v.multiplyScalar(Math.exp(-dt * (inp.throttle < 0 ? 1.6 : 0.5)));
+        this.heading -= inp.steer * 0.4 * THREE.MathUtils.clamp(sp / 20, 0, 1) * dt;
+        this.pitch = THREE.MathUtils.damp(this.pitch, 0, 3, dt);
+        const fl = this.forward;
+        v.set(fl.x * v.length(), 0, fl.z * v.length());
+      }
+    }
+    if (!this.grounded) {
+      // Attitude: A/D bank (the bank turns you, like a plane), Space/C pitch.
+      this.bank = THREE.MathUtils.damp(this.bank, inp.steer * 1.0, 2.2, dt);
+      const pr = (inp.space ? 0.75 : 0) - (inp.dive ? 0.75 : 0);
+      this.pitch = THREE.MathUtils.clamp(this.pitch + pr * dt * Math.cos(this.bank), -1.45, 1.45);
+      // Climb-out: nose up until ~220 m above the pad (or you push it over yourself), then a gentle pitch-over.
+      if (this.pos.y - this.climbOut < 220 && !inp.dive) this.pitch = THREE.MathUtils.damp(this.pitch, 1.4, 3, dt);
+      else if (this.pos.y - this.climbOut < 900 && !inp.space && !inp.dive && this.pitch > 0.35) this.pitch -= 0.25 * dt;
+      else this.climbOut = -Infinity;
+      this.heading -= (9.8 * Math.tan(this.bank) / Math.max(sp, 60)) * dt + inp.steer * 0.12 * dt;
+      // Forces: thrust along the nose, drag, gravity, and lift that holds you up once you're fast.
+      const acc = new THREE.Vector3().copy(this.nose(f)).multiplyScalar(thrust);
+      acc.addScaledVector(v, -3.3e-4 * rho * sp);
+      acc.y -= 9.8;
+      const liftK = THREE.MathUtils.clamp((sp - 60) / 90, 0, 1);
+      acc.y += 9.8 * liftK * Math.cos(this.bank) * Math.cos(this.pitch);
+      v.addScaledVector(acc, dt);
+      // The wings turn the flight path toward the nose (faster the faster you go).
+      const n = v.length();
+      if (n > 1) {
+        const dir = v.clone().divideScalar(n).lerp(this.nose(f), 1 - Math.exp(-dt * n / 70)).normalize();
+        v.copy(dir).multiplyScalar(n);
+      }
+      this.g = THREE.MathUtils.damp(this.g, acc.length() / 9.8, 4, dt);
+    }
+    this.roll = this.bank;
+    this.steerLook = inp.steer;
+    this.pos.addScaledVector(v, dt);
+    this.speed = v.length();
+    this.vy = v.y;
+
+    // Buildings: a crash at speed; while climbing out (slow across the ground) it just slides off
+    // lamp posts and walls. Ground: a landing if it's gentle enough, otherwise a crash.
+    const test = tmpV.set(this.pos.x, this.pos.y + 2.6, this.pos.z);
+    w.colliders.resolve(test, 3);
+    if (Math.hypot(test.x - this.pos.x, test.z - this.pos.z) > 0.05) {
+      if (Math.hypot(v.x, v.z) > 25) return 'crash';
+      this.pos.x = test.x; this.pos.z = test.z;
+    }
+    const gnd = w.surface(this.pos.x, this.pos.z, this.pos.y + 2);
+    const wy = w.water(this.pos.x, this.pos.z);
+    const floor = !Number.isNaN(wy) && wy > gnd ? wy : gnd;
+    if (!this.grounded && this.pos.y <= floor) {
+      if (floor !== gnd || v.y < -8 || this.speed > 120 || Math.abs(this.roll) > 0.35 || this.pitch < -0.25) return 'crash';
+      this.pos.y = gnd; this.grounded = true; v.y = 0; this.pitch = 0;
+    } else if (this.grounded) this.pos.y = gnd;
+    this.air = this.grounded ? 0 : 1;
+    this.animate(dt);
+    return 'ok';
+  }
+
+  /** Unit vector out of the nose. */
+  nose(out: THREE.Vector3) {
+    const cp = Math.cos(this.pitch);
+    return out.set(Math.sin(this.heading) * cp, Math.sin(this.pitch), Math.cos(this.heading) * cp);
+  }
+
+  /** Flames follow the throttle (and the boosters); called by step and by the autopilot. */
+  animate(dt: number) {
+    this.flick += dt;
+    const k = this.throttle + (this.booster ? 0.8 : 0);
+    const flames = this.model.parts.flames;
+    flames.visible = k > 0.02;
+    flames.children.forEach((c, i) => {
+      if (!(c instanceof THREE.Group)) return;
+      const fl = 0.86 + 0.14 * Math.sin(this.flick * 41 + i * 2.1) * Math.sin(this.flick * 23 + i);
+      c.scale.set(0.8 + 0.5 * Math.min(k, 1), 0.8 + 0.5 * Math.min(k, 1), (2 + 16 * k) * fl);
+    });
+    (this.model.parts.glow as THREE.PointLight).intensity = k * 900;
+  }
+
+  /** Called up in the air (or for a fresh launch): start moving with the nose. */
+  launch(airborne: boolean, speed = 0) {
+    if (airborne) {
+      this.grounded = false;
+      this.throttle = 0.8;
+      this.v3.copy(this.nose(new THREE.Vector3())).multiplyScalar(Math.max(speed, 140));
+      this.speed = this.v3.length();
+    } else {
+      this.throttle = 0.7;
+      this.pitch = 0;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Boats
 
 abstract class Boat extends Vehicle {
@@ -372,9 +509,10 @@ export function makeVehicle(id: Exclude<VehicleId, 'foot'>): Vehicle {
     case 'plane': return new Plane();
     case 'kayak': return new Kayak();
     case 'boat': return new Motorboat();
+    case 'shuttle': return new Shuttle();
   }
 }
 
 export const VEHICLE_LABELS: Record<VehicleId, string> = {
-  foot: 'On foot', skate: 'Skateboard', bike: 'Bike', jeep: 'Jeep', plane: 'Prop plane', kayak: 'Kayak', boat: 'Boat',
+  foot: 'On foot', skate: 'Skateboard', bike: 'Bike', jeep: 'Jeep', plane: 'Prop plane', kayak: 'Kayak', boat: 'Boat', shuttle: 'Space shuttle',
 };

@@ -166,3 +166,12 @@ body.photo-mode #hud, body.photo-mode #labels, body.photo-mode #phone-btn, body.
 .ow-mode { min-width: 50px; padding: 4px 6px 5px; font-size: 10px; }
 .ow-mode-i { font-size: 14px; }
 @media (max-width: 1150px) { .ow-mode span:not(.ow-mode-i) { display: none; } .ow-mode { min-width: 34px; } }
+
+/* What you're looking at: a quiet caption under the compass. */
+.ow-look { position: absolute; left: 50%; top: 74px; transform: translate(-50%, -4px); max-width: min(560px, 80vw); padding: 6px 13px; border-radius: 9px;
+  background: rgba(28,30,36,.5); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); color: #fff; text-align: center;
+  display: flex; flex-direction: column; gap: 1px; opacity: 0; transition: opacity .35s ease, transform .35s ease; pointer-events: none; }
+.ow-look.on { opacity: 1; transform: translate(-50%, 0); }
+.ow-look b { font-size: 14px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ow-look span { font-size: 11.5px; color: rgba(255,255,255,.78); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ow-look span:empty { display: none; }

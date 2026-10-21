@@ -18,8 +18,11 @@ Search any place on the title screen (or pick Times Square, Russian Hill, the Jo
 - **The horizon**: low-detail terrain draped with Sentinel-2 cloudless satellite imagery, so you can fly up and see the coast 20 km away.
 - **Look**: regional building styles (Amsterdam brick with gabled roofs, Paris sandstone and zinc, Manhattan brick, limestone and glass, Tokyo tile and glass), lit windows at night, a cartoon sky with big puffy clouds, golden sunsets, a starry night.
 - **Life**: cars on the correct side of the road for the country (taxis in New York), stopping at signals and pitching over hills, and white caretaker robots walking the sidewalks, a few carrying packages.
-- **Getting around**: walk, run, jump, or hold **Space** in the air for rocket shoes (**Shift** to burst, **C** to dive). Land on roofs and bridges; swim if you come down in the water. Press **M** for the map of the world: search, browse famous places, then **Drop here** to be anywhere on Earth in a few seconds, or **Navigate here** for a waypoint on the compass and minimap.
-- **Vehicles** (keys **1–7** or the mode bar): skateboard, bike, jeep, prop plane (needs ~45 m of clear ground, or switch to it mid-air), kayak and motorboat (they find water within ~60 m).
+- **Getting around**: walk, run, jump, or hold **Space** in the air to light the rocket shoes: they kick you up and burn against gravity, you fly where you look, **Shift** is the afterburner, **C** cuts them, and a hard landing ends in a roll. Land on roofs and bridges; swim if you come down in the water. Press **M** for the map of the world: search, browse famous places, then **Drop here** to be anywhere on Earth in a few seconds, or **Navigate here** for a waypoint on the compass and minimap.
+- **Vehicles** (keys **1–8** or the mode bar): skateboard, bike, jeep, prop plane (needs ~45 m of clear ground, or switch to it mid-air), kayak and motorboat (they find water within ~60 m), and the **space shuttle**: it stands on its tail and launches from anywhere dry, then flies at Mach 1 on the mains and close to Mach 2 on the boosters (**Shift**).
+- **Wingsuit** (**Q** in the air): glide at about 2.5:1, steer with the mouse and **A**/**D**, **W** to dive and **S** to flare; the rocket shoes still burn (**Space**) for a wingsuit-and-rockets run. Bail out of the shuttle high up and open it.
+- **Autopilot** (**O**, or **Autopilot** on a place in the map): the shuttle (or the plane you're in) climbs out, turns onto the great-circle course and cruises with time running up to **40×**, so the sun and clouds race past, then slows, descends and hands you the controls overhead. Any flying key takes over. New York to London takes about five minutes. It holds back the time compression while the horizon is still streaming in, and the HUD says so.
+- **The whole planet**: fly anywhere without a loading screen. Far from where you started, the world quietly re-centers under you (an exact change of coordinates: the old tiles stay on screen until the new ones cover them). From altitude, satellite terrain rings reach about 30, 200 and 600 km and bend with the Earth's curvature; the haze thins as you climb. Streaming looks ahead along your flight path. Zoom the map all the way out for a **globe** lit by the real sun, with live **clouds**, **rain and storms** and **wind** from Open-Meteo (a 15° grid of current conditions, refreshed every 30 minutes: where the weather is, not its exact shape). Container ships sail the open sea; bikes ride with the traffic (lots of them in Amsterdam), and cars switch sides of the road with the country.
 - **Go inside anything**: walk up to any building's wall and press **E**. It gets an interior that fits its real footprint: house, apartments, offices or an office tower (stairs, and a lift above three floors), shop, mall, church, warehouse, named from the map when it can ("Saint Patrick's Cathedral"). Leave by the door, or jump out a window and catch yourself on the rocket shoes.
 - **Live weather** for wherever you are (Open-Meteo): rain, snow, fog, thunderstorms, dust, auroras up north at night, big waves with whitecaps at sea when it's stormy. **L** runs a time-lapse; the map's Settings can force any weather.
 - **Photo mode** (**F**): free camera, depth of field, zoom, time of day, time-lapse, a thirds grid; **Space** saves the picture to `~/.openworld/photos`.
@@ -54,15 +57,49 @@ npm run dev        # development: Vite on :5317 with hot reload, API on :4317
 
 Everything runs locally. Your token never leaves your machine except to call GitHub. State lives in `~/.openworld/` (logo cache, agent worktrees, boardroom minutes, local analytics).
 
+## VR on Quest
+
+OpenWorld runs in a Meta Quest's browser (WebXR). WebXR only works on a secure page, so the headset needs either an HTTPS address or a USB tunnel to `localhost`.
+
+**Over Wi-Fi (HTTPS):**
+
+1. On the Mac: `npm run vr`. This serves the game as usual on http://localhost:4317 and also over HTTPS on port 4318, using a self-signed certificate it makes once in `~/.openworld/certs`. It prints a line like `On your Quest, open: https://192.168.1.20:4318/?key=…`.
+2. Put the Quest on the same Wi-Fi, open the Browser, and type that full address, including `?key=…`. The key keeps other people on the network out, since the server drives agents with your GitHub token. You only need it once; it's remembered after that.
+3. The browser warns about the certificate the first time: **Advanced → Proceed**.
+4. Pick a place, enter the world, then press **Enter VR** at the top of the screen.
+
+**Over USB instead (no certificate):** with the Quest in developer mode and plugged in, run `adb reverse tcp:4317 tcp:4317` and open http://localhost:4317 on the Quest. `localhost` counts as secure, so plain `npm start` is enough.
+
+**Controls:**
+
+| Controller | Action |
+| --- | --- |
+| Left stick | Walk (same speeds as the keyboard); steer vehicles |
+| Left stick click / left grip / left trigger | Run (stick click toggles it) |
+| Right stick left/right | Turn (snap 30°, or smooth) |
+| Right stick down | Dive (in the air) |
+| Right stick click | Switch view: first person or behind the robot |
+| A | Jump; hold in the air for rocket shoes |
+| B, or right trigger | Use / enter / talk (the game's E); B closes a panel |
+| Right trigger at a panel | Click |
+| X | Wrist phone |
+| Y | Next vehicle |
+
+The **wrist phone** on your left hand has every thread: HQ and each project's lead (master) agent. There's no keyboard, so it offers canned replies ("What's the latest here?", "Start on the most useful next thing. No PR."). It also has the agent roster with Stop buttons, vehicles, and VR settings (view, snap or smooth turning, comfort vignette, time of day, Exit VR). When the game opens a panel (desk conversations, the Agent Lab, the boardroom), a copy floats in front of you with its buttons and a few canned questions.
+
+To keep it smooth on the headset, VR streams a smaller area, uses a smaller shadow map and foveated rendering, and skips bloom and color grading. The map screen's Settings have **VR headset** (hide the button) and **VR view**; `?vr=0` in the URL also turns VR off.
+
 ## Controls
 
 | Key | Action |
 | --- | --- |
 | WASD / arrows | Move (steer while flying) |
 | Shift | Run (burst while flying) |
-| **Space** | Jump; hold in the air for rocket shoes, then climb (let go to hover) |
+| **Space** | Jump; hold in the air to light the rocket shoes and burn (let go and gravity takes over) |
 | C | Dive (drop out of rocket flight); pitch down in the plane |
-| 1–7 | On foot, skateboard, bike, jeep, prop plane, kayak, motorboat |
+| 1–8 | On foot, skateboard, bike, jeep, prop plane, kayak, motorboat, space shuttle |
+| Q | Wingsuit (in the air) |
+| O | Autopilot to the waypoint (shuttle or plane) |
 | F | Photo mode |
 | L | Time-lapse |
 | Mouse (click to capture) | Look |
@@ -81,8 +118,9 @@ Everything runs locally. Your token never leaves your machine except to call Git
   - `src/earth/`: the streaming world. `frame.ts` (local meters ↔ lat/lon ↔ tiles), `worker.ts` + `build/` (decode a vector tile and its terrain into meshes off the main thread: draped ground with a painted land-use texture, water, buildings with facade coordinates and gabled roofs, roads, bridges, markings, signals, lights, trees), `chunks.ts` (what to load at which detail as you move, physics, the road network), `far.ts` (satellite horizon), `traffic.ts` + `crowd.ts` (cars and robots), `sites.ts` (project HQs), `style.ts` (the look: facade, ground, water and tree materials).
   - `src/robot.ts` (the player), `player.ts` (walk, jump, rocket shoes, roofs, swimming), `sky.ts` + `engine.ts` (sky dome, clouds, light, grading).
   - `src/ui/`: HUD (compass, info panel, navigation card, hints, mode bar), the heading-up minimap and the world map (`tilemap.ts` renders vector tiles in a worker), the phone, panels.
+  - `src/xr/`: VR (WebXR on Meta Quest): controllers, play space, wrist phone, panel mirror, comfort vignette.
   - Classic cities (`src/city/`), interiors (`interior.ts`), aircraft (`aircraft.ts`).
-- `server/`: Express + WebSocket. Map tiles proxied and cached (`tiles.ts`), place search (`geo.ts`, Nominatim), the HQ office agent (`office.ts`), GitHub GraphQL/REST (`github.ts`), the `claude` CLI for conversations (`llm.ts`), agent runs in git worktrees streamed over the socket (`agents.ts`), and the boardroom (`boardroom.ts`).
+- `server/`: Express + WebSocket. Map tiles proxied and cached (`tiles.ts`), place search (`geo.ts`, Nominatim), the HQ office agent (`office.ts`), GitHub GraphQL/REST (`github.ts`), the `claude` CLI for conversations (`llm.ts`), agent runs in git worktrees streamed over the socket (`agents.ts`), the boardroom (`boardroom.ts`), and HTTPS for VR headsets (`https.ts`, with `OPENWORLD_HTTPS=1`).
 - `shared/types.ts`: the contract between them.
 
 Building size comes from a score of commits, PRs, repo size, a live homepage and recency, ranked into landmark, tower, mid-rise and storefront tiers.

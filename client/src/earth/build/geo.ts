@@ -164,7 +164,12 @@ export function alongY(pts: number[], ys: number[], cum: number[], s: number, ou
  * A ribbon of `width` along a polyline, mitered at corners. `yAt(x, z, i)` gives each edge vertex
  * its height (draped on terrain, or the bridge deck at point i). Faces up.
  */
-export function ribbon(b: Buf, pts: number[], width: number, yAt: (x: number, z: number, i: number) => number, uvLen = 0) {
+/**
+ * A strip of `width` along a polyline, draped by yAt. With uvLen, uv = (0|1 across, length / uvLen);
+ * with uvx, uv = (uvx(0)|uvx(width) across, meters along or the constant uvy) for street surfaces
+ * that pattern themselves.
+ */
+export function ribbon(b: Buf, pts: number[], width: number, yAt: (x: number, z: number, i: number) => number, uvLen = 0, uvx: ((o: number) => number) | null = null, uvy: number | null = null) {
   const n = pts.length / 2;
   if (n < 2) return;
   const half = width / 2;
@@ -185,7 +190,8 @@ export function ribbon(b: Buf, pts: number[], width: number, yAt: (x: number, z:
     const rx = -tz * half * k, rz = tx * half * k;
     const lx = x - rx, lz = z - rz, qx = x + rx, qz = z + rz;
     const L = b.v(lx, yAt(lx, lz, i), lz), Rr = b.v(qx, yAt(qx, qz, i), qz);
-    if (uvLen > 0) b.uv.push(0, acc / uvLen, 1, acc / uvLen);
+    if (uvx) b.uv.push(uvx(0), uvy ?? acc, uvx(width), uvy ?? acc);
+    else if (uvLen > 0) b.uv.push(0, acc / uvLen, 1, acc / uvLen);
     if (prevL >= 0) {
       // Wound to face up (+y) with z pointing south.
       b.tri(prevL, prevR, Rr);
@@ -196,13 +202,15 @@ export function ribbon(b: Buf, pts: number[], width: number, yAt: (x: number, z:
 }
 
 /** Flat-ish disc (draped) for rounding intersections. */
-export function disc(b: Buf, x: number, z: number, r: number, yAt: (x: number, z: number) => number, seg = 14) {
+export function disc(b: Buf, x: number, z: number, r: number, yAt: (x: number, z: number) => number, seg = 14, uv: [number, number] | null = null) {
   const c = b.v(x, yAt(x, z), z);
+  if (uv) b.uv.push(uv[0], uv[1]);
   const first = b.count;
   for (let i = 0; i < seg; i++) {
     const a = (i / seg) * Math.PI * 2;
     const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
     b.v(px, yAt(px, pz), pz);
+    if (uv) b.uv.push(uv[0], uv[1]);
   }
   for (let i = 0; i < seg; i++) b.tri(c, first + ((i + 1) % seg), first + i);
 }

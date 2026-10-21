@@ -1,11 +1,13 @@
 /// <reference types="vite/client" />
-// The map screen (M): a full-screen slippy map of the whole planet. Pick any spot and drop in, or set
-// a waypoint; browse famous places and your project HQs; flip between the street map and satellite.
+// The map screen (M): a full-screen slippy map of the whole planet. Pick any spot and drop in, set a
+// waypoint or fly there on autopilot; browse famous places and your project HQs; flip between the
+// street map and satellite. Zoom out and it turns into a globe with live clouds, storms and wind.
 import type { TileMap } from './tilemap.ts';
 import type { MapMarker } from './earthMinimap.ts';
 import { setOverlayOpen } from './panel.ts';
 import { haversine } from '../earth/frame.ts';
 import { ATTRIBUTION, formatDistance } from './hud.ts';
+import { Globe, type GlobeLayer } from './globe.ts';
 import './hud.css';
 
 export interface WorldMapOpts {
@@ -16,6 +18,8 @@ export interface WorldMapOpts {
   search: (q: string) => Promise<{ name: string; label: string; lat: number; lon: number }[]>;
   onDrop: (lat: number, lon: number, name: string) => void;
   onNavigate: (lat: number, lon: number, name: string) => void;
+  /** Fly there on autopilot (the shuttle, unless you're already in an aircraft). */
+  onAutopilot?: (lat: number, lon: number, name: string) => void;
   settings?: { label: string; value: () => string; next: () => void }[];
   onClose?: () => void;
   /** Distances in miles/feet. */
@@ -69,6 +73,11 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
   el.className = 'ow-wmap';
   el.innerHTML = `
     <canvas></canvas>
+    <canvas class="ow-wm-ov" style="pointer-events:none"></canvas>
+    <div class="ow-wm-layers hidden">
+      <button data-l="clouds" class="on">☁ Clouds</button><button data-l="storms">⛈ Rain &amp; storms</button><button data-l="wind">🌬 Wind</button>
+      <small>Live conditions · Open-Meteo, 15° grid</small>
+    </div>
     <div class="ow-wm-bar">
       <button data-tab="map" class="on">Map</button><button data-tab="places">Places</button><button data-tab="settings">Settings</button>
       <button class="ow-wm-style" title="Street map / satellite">🛰 Satellite</button>
@@ -83,6 +92,25 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
   document.body.appendChild(el);
   const cv = el.querySelector('canvas')!;
   const g = cv.getContext('2d')!;
+  const ov = el.querySelector<HTMLCanvasElement>('.ow-wm-ov')!;
+  const og = ov.getContext('2d')!;
+  const layersEl = el.querySelector<HTMLDivElement>('.ow-wm-layers')!;
+  // The globe (zoomed out): made on first use, cross-fades with the flat map between z4.5 and z5.5.
+  let globe: Globe | null = null;
+  const globeAlpha = () => Math.max(0, Math.min(1, 5.5 - zoom));
+  const ensureGlobe = () => {
+    if (globe) return globe;
+    globe = new Globe(el, dpr, () => { dirty = true; });
+    globe.canvas.style.pointerEvents = 'none';
+    el.insertBefore(globe.canvas, ov);
+    return globe;
+  };
+  layersEl.querySelectorAll<HTMLButtonElement>('[data-l]').forEach((b) => b.addEventListener('click', () => {
+    const gl = ensureGlobe(), k = b.dataset.l as GlobeLayer;
+    gl.layers[k] = !gl.layers[k];
+    b.classList.toggle('on', gl.layers[k]);
+    dirty = true;
+  }));
   const card = el.querySelector<HTMLDivElement>('.ow-wm-card')!;
   const sheet = el.querySelector<HTMLDivElement>('.ow-wm-sheet')!;
   const results = el.querySelector<HTMLDivElement>('.ow-wm-results')!;
@@ -92,8 +120,8 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
   setOverlayOpen(true);
 
   const resize = () => {
-    cv.width = Math.round(window.innerWidth * dpr);
-    cv.height = Math.round(window.innerHeight * dpr);
+    cv.width = ov.width = Math.round(window.innerWidth * dpr);
+    cv.height = ov.height = Math.round(window.innerHeight * dpr);
     dirty = true;
   };
   let dirty = true;
@@ -112,6 +140,7 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
         <div class="ow-wm-acts">
           <button data-a="drop"><i>⤓</i>Drop here</button>
           <button data-a="nav"><i>➤</i>Navigate here</button>
+          ${opts.onAutopilot ? '<button data-a="auto"><i>✈</i>Autopilot</button>' : ''}
           <button data-a="back"><i>◎</i>Back to you</button>
         </div>
         <div class="ow-wm-help"><span><kbd>drag</kbd>Move</span><span><kbd>wheel</kbd>Zoom</span><span><kbd>click</kbd>Pick a spot</span><span><kbd>M</kbd>Close</span></div>`;
@@ -130,6 +159,7 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
     const s = selected;
     if (a === 'drop') { api.close(); opts.onDrop(s.lat, s.lon, s.name); }
     if (a === 'nav') { api.close(); opts.onNavigate(s.lat, s.lon, s.name); }
+    if (a === 'auto') { api.close(); opts.onAutopilot?.(s.lat, s.lon, s.name); }
   });
 
   const select = (la: number, lo: number, name?: string) => {
@@ -214,8 +244,13 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
   cv.addEventListener('pointerup', (e) => {
     cv.classList.remove('drag');
     if (drag && !drag.moved) {
-      const p = map.unproject(e.clientX - window.innerWidth / 2, e.clientY - window.innerHeight / 2, lat, lon, zoom);
-      select(p.lat, p.lon);
+      if (globe && globeAlpha() > 0.5) {
+        const p = globe.pick(e.clientX, e.clientY, window.innerWidth, window.innerHeight);
+        if (p) select(p.lat, p.lon, map.nearestName(p.lat, p.lon, zoom) ?? `${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`);
+      } else {
+        const p = map.unproject(e.clientX - window.innerWidth / 2, e.clientY - window.innerHeight / 2, lat, lon, zoom);
+        select(p.lat, p.lon);
+      }
     }
     drag = null;
   });
@@ -261,52 +296,71 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
     const h = opts.here();
     const hk = `${h.lat.toFixed(6)},${h.lon.toFixed(6)},${Math.round(h.heading)}`;
     if (hk !== lastHere) { lastHere = hk; dirty = true; }
-    if (!dirty && !pending) return;
+    const ga = globeAlpha();
+    // The globe's clouds drift: keep drawing while it shows.
+    if (!dirty && !pending && ga <= 0) return;
     dirty = false;
     const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2;
-    pending = !map.draw(g, lat, lon, zoom, cx, cy, 0, dpr);
+    if (ga < 1) pending = !map.draw(g, lat, lon, zoom, cx, cy, 0, dpr);
+    else { g.fillStyle = '#05070d'; g.fillRect(0, 0, W, H); pending = false; }
     zLabel.textContent = `z${zoom.toFixed(1)}`;
-    const toScreen = (la: number, lo: number) => { const p = map.project(la, lo, lat, lon, zoom); return { x: cx + p.x * dpr, y: cy + p.y * dpr }; };
+    og.clearRect(0, 0, W, H);
+    layersEl.classList.toggle('hidden', ga <= 0);
+    if (ga > 0) {
+      const gl = ensureGlobe();
+      gl.canvas.style.opacity = String(ga);
+      gl.canvas.style.display = '';
+      gl.setView(lat, lon, zoom, window.innerWidth, window.innerHeight);
+      gl.render();
+      if (gl.layers.wind && gl.weather) drawWind(og, gl, dpr);
+    } else if (globe) globe.canvas.style.display = 'none';
+    // Markers go on the overlay above the globe once it's the main view.
+    const onGlobe = ga > 0.5 && !!globe;
+    const gx = onGlobe ? og : g;
+    const toScreen = (la: number, lo: number) => {
+      if (onGlobe) { const p = globe!.project(la, lo, window.innerWidth, window.innerHeight); return { x: p.visible ? p.x * dpr : -1e4, y: p.y * dpr }; }
+      const p = map.project(la, lo, lat, lon, zoom); return { x: cx + p.x * dpr, y: cy + p.y * dpr };
+    };
 
     // Project HQs: dots for all, names where they fit (big ones first, never overlapping).
     const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
     const ms = opts.markers().slice().sort((a, b) => Number(!!b.big) - Number(!!a.big));
-    g.font = `700 ${12 * dpr}px Inter, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'bottom';
+    gx.font = `700 ${12 * dpr}px Inter, sans-serif`; gx.textAlign = 'center'; gx.textBaseline = 'bottom';
     for (const m of ms) {
       const p = toScreen(m.lat, m.lon);
       if (p.x < -20 || p.y < -20 || p.x > W + 20 || p.y > H + 20) continue;
-      g.beginPath(); g.arc(p.x, p.y, (m.big ? 7 : 5) * dpr, 0, Math.PI * 2);
-      g.fillStyle = m.color; g.fill();
-      g.lineWidth = 2 * dpr; g.strokeStyle = '#fff'; g.stroke();
+      gx.beginPath(); gx.arc(p.x, p.y, (m.big ? 7 : 5) * dpr, 0, Math.PI * 2);
+      gx.fillStyle = m.color; gx.fill();
+      gx.lineWidth = 2 * dpr; gx.strokeStyle = '#fff'; gx.stroke();
       if (!m.label || !(m.big || zoom >= 16)) continue;
-      const w = g.measureText(m.label).width / 2 + 3 * dpr;
+      const w = gx.measureText(m.label).width / 2 + 3 * dpr;
       const r = { x0: p.x - w, x1: p.x + w, y0: p.y - 24 * dpr, y1: p.y - 6 * dpr };
       if (placed.some((q) => r.x0 < q.x1 && q.x0 < r.x1 && r.y0 < q.y1 && q.y0 < r.y1)) continue;
       placed.push(r);
-      g.lineWidth = 3 * dpr; g.strokeStyle = 'rgba(255,255,255,.9)'; g.strokeText(m.label, p.x, p.y - 8 * dpr);
-      g.fillStyle = '#2b2622'; g.fillText(m.label, p.x, p.y - 8 * dpr);
+      gx.lineWidth = 3 * dpr; gx.strokeStyle = 'rgba(255,255,255,.9)'; gx.strokeText(m.label, p.x, p.y - 8 * dpr);
+      gx.fillStyle = '#2b2622'; gx.fillText(m.label, p.x, p.y - 8 * dpr);
     }
     // Selected spot.
     if (selected) {
       const p = toScreen(selected.lat, selected.lon);
-      g.save();
-      g.translate(p.x, p.y);
-      g.beginPath();
-      g.moveTo(0, 0); g.bezierCurveTo(-3 * dpr, -9 * dpr, -11 * dpr, -12 * dpr, -11 * dpr, -21 * dpr);
-      g.arc(0, -21 * dpr, 11 * dpr, Math.PI, 0); g.bezierCurveTo(11 * dpr, -12 * dpr, 3 * dpr, -9 * dpr, 0, 0);
-      g.fillStyle = '#ff5a1f'; g.shadowColor = 'rgba(0,0,0,.35)'; g.shadowBlur = 6 * dpr; g.fill();
-      g.shadowBlur = 0; g.beginPath(); g.arc(0, -21 * dpr, 4 * dpr, 0, Math.PI * 2); g.fillStyle = '#fff'; g.fill();
-      g.restore();
+      gx.save();
+      gx.translate(p.x, p.y);
+      gx.beginPath();
+      gx.moveTo(0, 0); gx.bezierCurveTo(-3 * dpr, -9 * dpr, -11 * dpr, -12 * dpr, -11 * dpr, -21 * dpr);
+      gx.arc(0, -21 * dpr, 11 * dpr, Math.PI, 0); gx.bezierCurveTo(11 * dpr, -12 * dpr, 3 * dpr, -9 * dpr, 0, 0);
+      gx.fillStyle = '#ff5a1f'; gx.shadowColor = 'rgba(0,0,0,.35)'; gx.shadowBlur = 6 * dpr; gx.fill();
+      gx.shadowBlur = 0; gx.beginPath(); gx.arc(0, -21 * dpr, 4 * dpr, 0, Math.PI * 2); gx.fillStyle = '#fff'; gx.fill();
+      gx.restore();
     }
     // You.
     const me = toScreen(h.lat, h.lon);
-    g.save();
-    g.translate(me.x, me.y);
-    g.beginPath(); g.arc(0, 0, 14 * dpr, 0, Math.PI * 2); g.fillStyle = 'rgba(31,124,242,.18)'; g.fill();
-    g.rotate((h.heading * Math.PI) / 180);
-    g.beginPath(); g.moveTo(0, -10 * dpr); g.lineTo(7.5 * dpr, 8 * dpr); g.lineTo(0, 4 * dpr); g.lineTo(-7.5 * dpr, 8 * dpr); g.closePath();
-    g.fillStyle = '#1f7cf2'; g.fill(); g.lineWidth = 2 * dpr; g.strokeStyle = '#fff'; g.stroke();
-    g.restore();
+    gx.save();
+    gx.translate(me.x, me.y);
+    gx.beginPath(); gx.arc(0, 0, 14 * dpr, 0, Math.PI * 2); gx.fillStyle = 'rgba(31,124,242,.18)'; gx.fill();
+    gx.rotate((h.heading * Math.PI) / 180);
+    gx.beginPath(); gx.moveTo(0, -10 * dpr); gx.lineTo(7.5 * dpr, 8 * dpr); gx.lineTo(0, 4 * dpr); gx.lineTo(-7.5 * dpr, 8 * dpr); gx.closePath();
+    gx.fillStyle = '#1f7cf2'; gx.fill(); gx.lineWidth = 2 * dpr; gx.strokeStyle = '#fff'; gx.stroke();
+    gx.restore();
   };
   raf = requestAnimationFrame(frame);
   renderCard();
@@ -319,6 +373,7 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', resize);
       map.style = prevStyle;
+      globe?.dispose();
       el.remove();
       setOverlayOpen(false);
       opts.onClose?.();
@@ -327,3 +382,42 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
   current = api;
   return api;
 }
+
+/** Wind arrows on the globe: one per grid point on the near side, longer and warmer for stronger wind. */
+function drawWind(g: CanvasRenderingContext2D, gl: Globe, dpr: number) {
+  const w = gl.weather!;
+  const W = window.innerWidth, H = window.innerHeight;
+  g.lineCap = 'round';
+  for (let r = 0; r < w.rows; r++) for (let c = 0; c < w.cols; c++) {
+    const i = r * w.cols + c, la = w.lat0 + r * w.step, lo = w.lon0 + c * w.step;
+    const p = gl.project(la, lo, W, H);
+    if (!p.visible) continue;
+    // The wind blows *from* windDir: draw it pointing downwind.
+    const to = ((w.windDir[i] + 180) * Math.PI) / 180;
+    const q = gl.project(la + Math.cos(to) * 2.5, lo + (Math.sin(to) * 2.5) / Math.max(0.2, Math.cos((la * Math.PI) / 180)), W, H);
+    const dx = q.x - p.x, dy = q.y - p.y, d = Math.hypot(dx, dy) || 1;
+    // Scaled to the globe's size on screen, so a small globe isn't buried in arrows.
+    const scale = Math.min(1, gl.radiusPx(W, H) / 320);
+    if (scale < 0.6 && (r + c) % 2) continue;
+    const len = Math.min(26, 6 + w.wind[i] * 0.45) * dpr * scale;
+    const ux = dx / d, uy = dy / d;
+    const x0 = p.x * dpr, y0 = p.y * dpr, x1 = x0 + ux * len, y1 = y0 + uy * len;
+    g.strokeStyle = w.wind[i] > 45 ? 'rgba(255,120,80,.95)' : w.wind[i] > 25 ? 'rgba(255,220,120,.9)' : 'rgba(220,240,255,.85)';
+    g.lineWidth = 1.6 * dpr;
+    g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1);
+    g.moveTo(x1, y1); g.lineTo(x1 - ux * 5 * dpr - uy * 3 * dpr, y1 - uy * 5 * dpr + ux * 3 * dpr);
+    g.moveTo(x1, y1); g.lineTo(x1 - ux * 5 * dpr + uy * 3 * dpr, y1 - uy * 5 * dpr - ux * 3 * dpr);
+    g.stroke();
+  }
+}
+
+const layerCss = document.createElement('style');
+layerCss.textContent = `
+.ow-wm-layers { position: absolute; left: 16px; top: 78px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: calc(100vw - 32px); padding: 5px;
+  border-radius: 12px; background: #f4ead8; border: 2px solid #2b2622; box-shadow: 0 6px 24px rgba(0,0,0,.3); }
+.ow-wm-layers.hidden { display: none; }
+.ow-wm-layers button { border: 0; background: transparent; padding: 6px 11px; border-radius: 9px; font: 600 13px Inter, sans-serif; color: #2b2622; cursor: pointer; }
+.ow-wm-layers button.on { background: #2b2622; color: #f4ead8; }
+.ow-wm-layers small { padding: 0 6px; font: 500 11px Inter, sans-serif; opacity: .7; }
+`;
+document.head.appendChild(layerCss);

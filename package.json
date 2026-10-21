@@ -6,7 +6,8 @@
     "dev": "concurrently -k -n server,client \"tsx watch server/index.ts\" \"vite --config client/vite.config.ts\"",
     "server": "tsx server/index.ts",
     "build": "vite build --config client/vite.config.ts",
-    "start": "npm run build && NODE_ENV=production tsx server/index.ts"
+    "start": "npm run build && NODE_ENV=production tsx server/index.ts",
+    "vr": "npm run build && NODE_ENV=production OPENWORLD_HTTPS=1 tsx server/index.ts"
   },
   "keywords": [],
   "author": "",

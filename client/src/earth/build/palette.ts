@@ -1,66 +1,83 @@
 // Regional building looks: Amsterdam is brick, Paris is sandstone and zinc, Manhattan is brick,
-// limestone and glass. Colors are stylized (clean, slightly saturated), like an early Apple Maps.
+// limestone and glass. Colors are measured-looking real materials (sRGB): weathered brick, limestone,
+// render, concrete; tar and gravel roofs; tinted glass.
 
 const hex = (s: string) => parseInt(s.slice(1), 16);
 
 const REGION: Record<string, { walls: number[]; roofs: number[]; glass: number[]; pitch: number; flat?: number }> = {
   us: {
-    walls: ['#b24a32', '#c25a3c', '#8e4a36', '#d8c7a8', '#e4dccb', '#c9a57a', '#a4a9ad', '#eae7df', '#d7b48a', '#9c5b43', '#cfc8bb'].map(hex),
-    roofs: ['#5d636b', '#6c6f74', '#4f555d', '#7a5245'].map(hex), glass: ['#4f7fa8', '#5a8cb4', '#3f6f99', '#6d9cc0', '#6f8ea6'].map(hex), pitch: 11, flat: 0xc4c2bd,
+    walls: ['#8a4a36', '#9b5a43', '#6e3f31', '#b9ab92', '#c8bfae', '#a68c6c', '#8d8f8e', '#d0cbbf', '#b29674', '#7d4a39', '#aaa498'].map(hex),
+    roofs: ['#4b4f55', '#5a5c60', '#3f4349', '#5e463d'].map(hex), glass: ['#5d7286', '#647a8d', '#4f6577', '#6f8494', '#6b7a84'].map(hex), pitch: 11, flat: 0x7d7b77,
   },
   nl: {
-    walls: ['#8e4430', '#a3533a', '#6f3a2c', '#b8644a', '#7c4636', '#e8e2d4', '#5d3a30', '#9c4b36'].map(hex),
-    roofs: ['#3f4248', '#4a3f3a', '#5b5f66', '#7d3f2e'].map(hex), glass: ['#4f7fa8', '#6d9cc0'].map(hex), pitch: 18, flat: 0x7b7f86,
+    walls: ['#73392b', '#874534', '#5a3127', '#985440', '#653a2f', '#d2cbbb', '#4b3029', '#7f3f30'].map(hex),
+    roofs: ['#34373c', '#3e3632', '#4b4e54', '#673628'].map(hex), glass: ['#5d7286', '#6f8494'].map(hex), pitch: 18, flat: 0x5e6166,
   },
   de: {
-    walls: ['#e6dfcf', '#d9cdb5', '#c8b48f', '#ece8de', '#a8553c', '#c9c2b4', '#dcc59a'].map(hex),
-    roofs: ['#9c4a32', '#7d3f2e', '#4a4c52', '#a85a3d'].map(hex), glass: ['#4f7fa8', '#5a8cb4', '#6d9cc0'].map(hex), pitch: 16, flat: 0xa3a19c,
+    walls: ['#cfc6b4', '#bfb299', '#a99773', '#d6d1c5', '#8a4934', '#aea89b', '#bfa67d'].map(hex),
+    roofs: ['#7e3d2b', '#663427', '#3c3e43', '#8a4a33'].map(hex), glass: ['#5d7286', '#647a8d', '#6f8494'].map(hex), pitch: 16, flat: 0x7d7b77,
   },
   fr: {
-    walls: ['#e3d5bb', '#ddcbaa', '#e9dfca', '#d6c4a2', '#efe7d6', '#cdb894'].map(hex),
-    roofs: ['#76838f', '#6b7884', '#808c97', '#a3553a'].map(hex), glass: ['#4f7fa8', '#6d9cc0'].map(hex), pitch: 14, flat: 0x8e9aa6,
+    walls: ['#c9b99c', '#c0ad8c', '#d1c4ab', '#b9a687', '#d8cfbd', '#ae9a78'].map(hex),
+    roofs: ['#5f6a74', '#56616b', '#6a7580', '#87472f'].map(hex), glass: ['#5d7286', '#6f8494'].map(hex), pitch: 14, flat: 0x6f7880,
   },
   south: { // Mediterranean / Latin
-    walls: ['#efe6d2', '#e8cfa2', '#f2ede2', '#e0b98a', '#d9a27a', '#f0e2c0', '#cfd8d6'].map(hex),
-    roofs: ['#b4583a', '#a64e34', '#c06a45', '#8f4a35'].map(hex), glass: ['#4f7fa8', '#6d9cc0'].map(hex), pitch: 12, flat: 0xd6ccbd,
+    walls: ['#d7cdb6', '#cdb48a', '#ddd6c8', '#c69e74', '#b98a66', '#d6c6a2', '#b3bab6'].map(hex),
+    roofs: ['#93492f', '#86402b', '#a05838', '#743c2c'].map(hex), glass: ['#5d7286', '#6f8494'].map(hex), pitch: 12, flat: 0xa79f92,
   },
   gb: {
-    walls: ['#9a5236', '#ad6142', '#d7cdb6', '#c9bea4', '#ebe6dc', '#7f4733', '#bba98a'].map(hex),
-    roofs: ['#4b4f57', '#5a5d63', '#7a4535'].map(hex), glass: ['#4f7fa8', '#5a8cb4', '#6d9cc0'].map(hex), pitch: 14, flat: 0x96989c,
+    walls: ['#7e4430', '#8f513a', '#bcb29b', '#aea48b', '#d0cbc0', '#683b2c', '#9f8e71'].map(hex),
+    roofs: ['#3d4047', '#4a4c51', '#653a2d'].map(hex), glass: ['#5d7286', '#647a8d', '#6f8494'].map(hex), pitch: 14, flat: 0x6f7175,
   },
   asia: {
-    walls: ['#e4e3df', '#d2d4d3', '#c3c8cb', '#e8e1d2', '#b9bec2', '#d9d0c0', '#f0eeea'].map(hex),
-    roofs: ['#62676e', '#7b8086', '#4c5258'].map(hex), glass: ['#4f7fa8', '#5a8cb4', '#6d9cc0', '#7aa7c6'].map(hex), pitch: 8, flat: 0xc9c8c3,
+    walls: ['#cbcac5', '#b6b8b6', '#a5aaad', '#cec7b8', '#9ca1a5', '#bdb4a5', '#d6d4cf'].map(hex),
+    roofs: ['#4f545a', '#62666c', '#3e4348'].map(hex), glass: ['#5d7286', '#647a8d', '#6f8494', '#73899a'].map(hex), pitch: 8, flat: 0x8f8e8a,
   },
   gulf: {
-    walls: ['#e3d2ae', '#efe4cc', '#d6c29a', '#f3efe6', '#cbb48a'].map(hex),
-    roofs: ['#b9b2a3', '#a89f8e'].map(hex), glass: ['#4f7fa8', '#5a8cb4', '#6aa4c4', '#5fa3b0'].map(hex), pitch: 0, flat: 0xe2d8c4,
+    walls: ['#c8b792', '#d4c9b1', '#bba780', '#dad5cb', '#ae9870'].map(hex),
+    roofs: ['#9a9486', '#8b8374'].map(hex), glass: ['#5d7286', '#647a8d', '#62808f', '#5d7f86'].map(hex), pitch: 0, flat: 0xb3aa98,
+  },
+  latin: {
+    walls: ['#d9a35e', '#c55a4a', '#e2c27a', '#e6dcc8', '#d98a6a', '#b4c6c8'].map(hex),
+    roofs: ['#93492f', '#86402b', '#a05838'].map(hex), glass: ['#5d7286', '#6f8494'].map(hex), pitch: 9, flat: 0xa79f92,
+  },
+  levant: {
+    walls: ['#d6c4a0', '#cbb68e', '#e0d2b4', '#c2ad86', '#d8ccb6'].map(hex),
+    roofs: ['#9a9486', '#8b8374'].map(hex), glass: ['#5d7286', '#62808f'].map(hex), pitch: 0, flat: 0xb3aa98,
+  },
+  aus: {
+    walls: ['#c9a878', '#b98a5e', '#8f4c37', '#d8cdb6', '#a65a3c'].map(hex),
+    roofs: ['#7e3d2b', '#4b4f55', '#8a4a33'].map(hex), glass: ['#5d7286', '#647a8d', '#6f8494'].map(hex), pitch: 9, flat: 0x7d7b77,
   },
   base: {
-    walls: ['#d9cfbd', '#c9b79a', '#b25a3e', '#e6e2d8', '#a9aeb2', '#d7b48a', '#c6c0b4'].map(hex),
-    roofs: ['#5d636b', '#7a4a3a', '#6c6f74'].map(hex), glass: ['#4f7fa8', '#5a8cb4', '#6d9cc0'].map(hex), pitch: 11, flat: 0xc4c2bd,
+    walls: ['#bdb4a2', '#ad9c80', '#8f4c37', '#cbc6bb', '#8e9295', '#b29674', '#aaa498'].map(hex),
+    roofs: ['#4b4f55', '#633d31', '#5a5c60'].map(hex), glass: ['#5d7286', '#647a8d', '#6f8494'].map(hex), pitch: 11, flat: 0x7d7b77,
   },
 };
 
 const MAP: Record<string, string> = {
-  us: 'us', ca: 'us', au: 'us', nz: 'us',
+  us: 'us', ca: 'us', au: 'aus', nz: 'aus',
   nl: 'nl', be: 'nl', dk: 'nl',
   de: 'de', at: 'de', ch: 'de', cz: 'de', pl: 'de', se: 'de', no: 'de', fi: 'de',
   fr: 'fr', lu: 'fr',
-  es: 'south', pt: 'south', it: 'south', gr: 'south', hr: 'south', mx: 'south', br: 'south', ar: 'south', cl: 'south', co: 'south', pe: 'south', ma: 'south', tr: 'south',
+  es: 'south', pt: 'south', it: 'south', gr: 'south', hr: 'south', mt: 'south', cy: 'south',
+  mx: 'latin', br: 'latin', ar: 'latin', cl: 'latin', co: 'latin', pe: 'latin', cu: 'latin', ve: 'latin', ec: 'latin', uy: 'latin', gt: 'latin', do: 'latin', pr: 'latin',
+  tr: 'levant', ma: 'levant', tn: 'levant', dz: 'levant', lb: 'levant', jo: 'levant', il: 'levant', ir: 'levant', pk: 'levant', bd: 'levant', in: 'levant', lk: 'levant', np: 'levant',
   gb: 'gb', ie: 'gb',
-  jp: 'asia', kr: 'asia', cn: 'asia', tw: 'asia', hk: 'asia', sg: 'asia', th: 'asia', vn: 'asia', my: 'asia', ph: 'asia', id: 'asia', in: 'asia',
-  ae: 'gulf', qa: 'gulf', sa: 'gulf', kw: 'gulf', bh: 'gulf', om: 'gulf', eg: 'gulf',
+  jp: 'asia', kr: 'asia', cn: 'asia', tw: 'asia', hk: 'asia', sg: 'asia', th: 'asia', vn: 'asia', my: 'asia', ph: 'asia', id: 'asia',
+  ae: 'gulf', qa: 'gulf', sa: 'gulf', kw: 'gulf', bh: 'gulf', om: 'gulf', eg: 'levant',
 };
 
 export function regionOf(country: string) { return REGION[MAP[country] ?? 'base'] ?? REGION.base; }
+/** The region key (for facade styles, see facades.ts). */
+export function regionKey(country: string) { return REGION[MAP[country] ?? ''] ? MAP[country] : 'base'; }
 
 const NAMED: Record<string, number> = {
-  white: 0xf0eee8, black: 0x3a3a3c, grey: 0xa2a5a8, gray: 0xa2a5a8, red: 0xb24a32, brown: 0x8a5a44, beige: 0xe0d2b4,
-  yellow: 0xe2c77a, blue: 0x6d86a6, green: 0x6f9a6a, orange: 0xd9894e, silver: 0xc4c8cc, tan: 0xd4ba92, cream: 0xf0e6cc,
+  white: 0xd8d5ce, black: 0x2e2e30, grey: 0x8e9194, gray: 0x8e9194, red: 0x8a4130, brown: 0x6e4a3a, beige: 0xc7b99c,
+  yellow: 0xc9b06a, blue: 0x56687e, green: 0x5a7656, orange: 0xb27445, silver: 0xaeb2b5, tan: 0xb9a07c, cream: 0xd8cdb3,
 };
 
-/** A tagged OSM colour, lifted toward the stylized palette so dark tags don't look like soot. */
+/** A tagged OSM colour, kept within the range of real facade materials (no soot-black, no neon). */
 export function taggedColor(s: string): number | null {
   const v = s.trim().toLowerCase();
   let c: number | null = null;
@@ -69,18 +86,18 @@ export function taggedColor(s: string): number | null {
   else if (/^#([0-9a-f]{3})$/.test(v)) c = parseInt(v.slice(1).split('').map((ch) => ch + ch).join(''), 16);
   if (c === null) return null;
   let r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
-  // Lift: never darker than ~35% luminance, a bit more saturated.
+  // Keep between ~20% and ~85% luminance and tame the saturation (tags are often pure web colors).
   const l = (r * 0.3 + g * 0.59 + b * 0.11) / 255;
-  const lift = l < 0.42 ? (0.42 - l) * 255 : 0;
-  r = Math.min(255, r + lift); g = Math.min(255, g + lift); b = Math.min(255, b + lift);
+  const lift = l < 0.2 ? (0.2 - l) * 255 : l > 0.85 ? (0.85 - l) * 255 : 0;
+  r = Math.max(0, Math.min(255, r + lift)); g = Math.max(0, Math.min(255, g + lift)); b = Math.max(0, Math.min(255, b + lift));
   const m = (r + g + b) / 3;
-  r = Math.min(255, m + (r - m) * 1.15); g = Math.min(255, m + (g - m) * 1.15); b = Math.min(255, m + (b - m) * 1.15);
+  r = m + (r - m) * 0.7; g = m + (g - m) * 0.7; b = m + (b - m) * 0.7;
   return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
 }
 
 /** Ground colors painted into each chunk's texture. */
 export const GROUND = {
-  grass: '#9fcc63', park: '#96c95c', wood: '#77a956', farmland: '#d3d79c', sand: '#efe0b0', wetland: '#a5c79a',
-  ice: '#f4f8fb', rock: '#c4beb2', paved: '#d6d2c9', urban: '#cfcbc2', civic: '#ddd6c6', cemetery: '#a9cc8b',
-  pitch: '#86c45e', water: '#5fb0e0', rail: '#c3beb5', road: '#8d9096', path: '#e2ddd2',
+  grass: '#74983f', park: '#6d963c', wood: '#466a2e', farmland: '#a39e6a', sand: '#cdbd94', wetland: '#5f7a4e',
+  ice: '#e8ecef', rock: '#8f8a80', paved: '#9c9890', urban: '#8f8c85', civic: '#a19b8e', cemetery: '#62823f',
+  pitch: '#67983a', water: '#2f5566', rail: '#6f6a62', road: '#4a4c50', path: '#a9a296',
 };

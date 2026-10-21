@@ -2,6 +2,9 @@
 // thread needs for physics, traffic, labels and project sites. All coordinates are chunk-local meters:
 // x east from the tile's west edge, z south from its north edge, y up relative to the origin's ground.
 
+import type { ParkOut } from './parks.ts';
+import type { LandmarkClaim } from '../landmarks/zones.ts';
+
 export interface ChunkJob {
   id: number;
   z: number; tx: number; ty: number;
@@ -38,6 +41,8 @@ export interface FootprintData {
   pitched: boolean;
   /** A named place inside (from the map's points of interest): "St. Patrick's Cathedral", class "place_of_worship". */
   poi?: { name: string; cls: string; sub: string };
+  /** House number from the map (look-at label). */
+  num?: string;
   /** Which of the chunk's building meshes (4x4 grid) holds it. */
   cell: number;
   /** Vertex range of this building inside the chunk's building mesh (to hide it when a project moves in). */
@@ -73,6 +78,8 @@ export interface ChunkOut {
   tex: ImageBitmap | null;
   water: MeshData | null;
   buildings: (MeshData | null)[];
+  /** See-through ironwork: fire escapes (uv = meters along/up, color r = pattern). */
+  iron: MeshData | null;
   footprints: FootprintData[];
   road: MeshData | null; // asphalt
   walk: MeshData | null; // sidewalks, paths, plazas
@@ -81,13 +88,23 @@ export interface ChunkOut {
   deck: MeshData | null; // bridge decks + sides (concrete)
   /** Instances: [x, y, z, rotY, scale, kind] (kind: 0 broadleaf, 1 conifer, 2 palm). */
   trees: Float32Array;
+  /** Park and wood trees, boulders and park walls (parks.ts). */
+  parks: ParkOut;
   /** [x, y, z, rotY] */
   lamps: Float32Array;
   /** [x, y, z, rotY, signalIndex, group] */
   poles: Float32Array;
   /** [x, yBottom, z, height] */
   pillars: Float32Array;
+  /** Street furniture [x, y, z, rotY, kind] (kind: 0 bench, 1 bin, 2 hydrant, 3 manhole, 4 mailbox). */
+  props: Float32Array;
+  /** Raised sidewalks, for walking on them: [ax, az, bx, bz, inner, outer] (centerline segment, offsets from it). */
+  curbs: Float32Array;
+  /** Foam and shallows along shorelines (uv: along the shore, across it; color r = strength). */
+  shore: MeshData | null;
   signals: SignalData[];
+  /** Map buildings handed to hand-built landmarks (landmarks/). */
+  landmarks?: LandmarkClaim[];
   edges: EdgeData[];
   names: { name: string; pts: number[]; w: number }[];
   places: { name: string; cls: string; x: number; z: number; rank: number }[];

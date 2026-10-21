@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,13 +11,18 @@ import {
   validateToken, resetToken,
 } from './github.ts';
 import { streamClaude, transcriptPrompt } from './llm.ts';
-import { listAgents, startAgent, stopAgent, openPr, agentLog, setBroadcaster } from './agents.ts';
+import { listAgents, startAgent, stopAgent, openPr, agentLog, setBroadcaster, agentDiff, reviewAgent, answerAgent } from './agents.ts';
 import { convene, listDecisions } from './boardroom.ts';
 import { searchPlaces, reverse } from './geo.ts';
 import { registerOffice } from './office.ts';
+import { registerMasters } from './masters.ts';
 import { registerTiles } from './tiles.ts';
 import { registerWeather } from './weather.ts';
 import { registerPhotos } from './photos.ts';
+import { httpsEnabled, startHttps } from './https.ts';
+import { registerPulse } from './pulse.ts';
+import { registerSchedules } from './schedules.ts';
+import { registerBriefing } from './briefing.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4317;
@@ -170,6 +175,19 @@ app.get('/api/agents/:id/log', h(async (req) => agentLog(String(req.params.id)))
 app.post('/api/agents/:id/stop', h(async (req) => stopAgent(String(req.params.id))));
 app.post('/api/agents/:id/pr', h(async (req) => openPr(String(req.params.id))));
 
+// ---- review ----
+app.get('/api/agents/:id/diff', h(async (req) => agentDiff(String(req.params.id))));
+app.post('/api/agents/:id/review', h(async (req) => {
+  const id = String(req.params.id);
+  const action = String(req.body?.action);
+  if (action !== 'approve' && action !== 'changes' && action !== 'discard') throw Object.assign(new Error('action must be approve, changes or discard'), { status: 400 });
+  const repo = listAgents().find((a) => a.id === id)?.repo;
+  const fullName = repo ? (await findRepo(repo).catch(() => null))?.fullName : undefined;
+  return reviewAgent(id, action, String(req.body?.note ?? '').slice(0, 4000), fullName);
+}));
+app.post('/api/agents/:id/answer', h(async (req) => answerAgent(String(req.params.id), String(req.body?.text ?? '').slice(0, 4000))));
+// ---- /review ----
+
 // ---------- real places ----------
 
 app.get('/api/geo/search', h(async (req) => searchPlaces(String(req.query.q ?? '').slice(0, 200))));
@@ -253,9 +271,15 @@ app.get('/api/stats', h(async () => {
 }));
 
 registerOffice(app, (msg) => broadcastAll(msg));
+registerMasters(app, (msg) => broadcastAll(msg));
 registerTiles(app);
 registerWeather(app);
 registerPhotos(app);
+// ---- pulse ----
+registerPulse(app, (msg) => broadcastAll(msg));
+// ---- schedules & briefing ----
+registerSchedules(app, (msg) => broadcastAll(msg));
+registerBriefing(app);
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -282,12 +306,17 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 // ---------- http + websocket ----------
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const sockets = [new WebSocketServer({ server, path: '/ws' })];
 function broadcastAll(msg: ServerMsg) {
   const data = JSON.stringify(msg);
-  for (const client of wss.clients) if (client.readyState === WebSocket.OPEN) client.send(data);
+  for (const wss of sockets) for (const client of wss.clients) if (client.readyState === WebSocket.OPEN) client.send(data);
 }
 setBroadcaster(broadcastAll);
+// OPENWORLD_HTTPS=1: also serve over HTTPS on the LAN, for VR headsets (WebXR needs a secure context).
+if (httpsEnabled()) {
+  startHttps(app, Number(process.env.HTTPS_PORT) || PORT + 1, (srv, allowed) =>
+    sockets.push(new WebSocketServer({ server: srv, path: '/ws', verifyClient: ({ req }: { req: IncomingMessage }) => allowed(req) })));
+}
 
 server.listen(PORT, () => {
   console.log(`OpenWorld server on http://localhost:${PORT}`);

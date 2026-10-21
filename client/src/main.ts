@@ -1,13 +1,16 @@
 import * as THREE from 'three';
-import type { AgentInfo, CityId, GeoPlace, Me, Repo } from '../../shared/types.ts';
+import type { AgentInfo, CityId, GeoPlace, Repo } from '../../shared/types.ts';
 import { api, connectLive, onLive, track } from './api.ts';
-import { Engine, DayNight } from './engine.ts';
+import { Engine, DayNight, quality } from './engine.ts';
+import { makeCityView } from './rooms/cityView.ts';
 import { Input } from './input.ts';
-import { loadCharacters } from './characters.ts';
+import { loadCharacters, setNpcFocus } from './characters.ts';
+import { HomeBase, HOME, buildHomeInterior } from './home.ts';
 import { makeRobot } from './robot.ts';
 import { Player } from './player.ts';
+import { Autopilot } from './autopilot.ts';
+import { installFlightHud } from './ui/flightHud.ts';
 import { Interactions, Labels, esc } from './interact.ts';
-import { CITIES } from './city/profiles.ts';
 import { buildPresetPlace, type Place, type Site } from './place.ts';
 import { buildEarthPlace, searchPlaces, type EarthApi } from './earth/index.ts';
 import { haversine } from './earth/frame.ts';
@@ -17,175 +20,45 @@ import { Minimap } from './ui/minimap.ts';
 import { TileMap } from './ui/tilemap.ts';
 import { EarthMinimap, type MapMarker } from './ui/earthMinimap.ts';
 import { openWorldMap, worldMapOpen, FAMOUS_PLACES } from './ui/worldmap.ts';
-import { installHud, type Hud } from './ui/hud.ts';
+import { installHud, lookLabels, type Hud } from './ui/hud.ts';
 import { openDirectory } from './ui/directory.ts';
-import { bindPanelInput, panelOpen, toast } from './ui/panel.ts';
+import { bindPanelInput, closePanel, panelOpen, toast } from './ui/panel.ts';
 import { buildInterior, type Interior } from './interior.ts';
 import { installPhone } from './ui/phone.ts';
 import { PhotoMode } from './ui/photo.ts';
 import type { VehicleId } from './vehicles/index.ts';
 import { buildGenericInterior, guessKind, type GenericInterior } from './rooms/index.ts';
+import { updateEntrances } from './city/entrance.ts';
 import type { BuildingHit } from './earth/chunks.ts';
 import type { GameCtx } from './ctx.ts';
+import { installLanding } from './landing/index.ts';
+import { installXR, apiPhoneSource, xrSettings } from './xr/index.ts';
+import { currentBriefing, maybePromptBriefing, openBriefingPanel, waiting, type BriefingHooks } from './ui/briefing.ts';
+import { saveSession, takeResume, type SavedSession } from './session.ts';
+import { installCityPulse } from './city/signals.ts';
+import { openReview } from './ui/review.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const CITY_KEY = 'openworld.city';
 
-// ------------------------------------------------------------------ title screen
-const WORLD_KEY = 'openworld.place';
-let me: Me | null = null;
-let city: CityId = 'nyc';
-
-const QUICK: GeoPlace[] = [
-  { name: 'Times Square', label: 'Times Square, New York, United States', lat: 40.758, lon: -73.9855, countryCode: 'us', kind: 'square' },
-  { name: 'Russian Hill', label: 'Russian Hill, San Francisco, United States', lat: 37.8011, lon: -122.4181, countryCode: 'us', kind: 'quarter' },
-  { name: 'Financial District', label: 'Financial District, San Francisco, United States', lat: 37.7936, lon: -122.3989, countryCode: 'us', kind: 'quarter' },
-  { name: 'Brickell', label: 'Brickell, Miami, United States', lat: 25.7663, lon: -80.1925, countryCode: 'us', kind: 'quarter' },
-  { name: 'Back Bay', label: 'Back Bay, Boston, United States', lat: 42.3503, lon: -71.0810, countryCode: 'us', kind: 'quarter' },
-  { name: 'Jordaan', label: 'Jordaan, Amsterdam, Netherlands', lat: 52.3752, lon: 4.8820, countryCode: 'nl', kind: 'quarter' },
-  { name: 'Le Marais', label: 'Le Marais, Paris, France', lat: 48.8579, lon: 2.3590, countryCode: 'fr', kind: 'quarter' },
-  { name: 'Shibuya Crossing', label: 'Shibuya Crossing, Tokyo, Japan', lat: 35.6595, lon: 139.7005, countryCode: 'jp', kind: 'square' },
-  { name: 'The City', label: 'Bank, City of London, United Kingdom', lat: 51.5134, lon: -0.0890, countryCode: 'gb', kind: 'quarter' },
-  { name: 'Downtown Dubai', label: 'Downtown Dubai, Dubai, United Arab Emirates', lat: 25.1972, lon: 55.2744, countryCode: 'ae', kind: 'quarter' },
-  { name: 'Marina Bay', label: 'Marina Bay, Singapore', lat: 1.2834, lon: 103.8607, countryCode: 'sg', kind: 'quarter' },
-  { name: 'Central', label: 'Central, Hong Kong', lat: 22.2820, lon: 114.1588, countryCode: 'hk', kind: 'quarter' },
-];
-
-/** Where the game starts: a real place (the default), or one of the classic procedural cities. */
-let realPlace: GeoPlace | null = QUICK[0];
-try {
-  city = (localStorage.getItem(CITY_KEY) as CityId) || 'nyc';
-  if (!CITIES[city]) city = 'nyc';
-  const saved = localStorage.getItem(WORLD_KEY);
-  if (saved === 'classic') realPlace = null;
-  else if (saved) realPlace = JSON.parse(saved) as GeoPlace;
-} catch { city = 'nyc'; }
-const store = (k: string, v: string | null) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* private mode */ } };
-
-function renderCities() {
-  const root = $('cities');
-  root.innerHTML = '';
-  for (const p of Object.values(CITIES)) {
-    const b = document.createElement('button');
-    b.className = `city${p.id === city && !realPlace ? ' selected' : ''}`;
-    b.innerHTML = `<canvas width="400" height="240"></canvas><div class="meta"><b>${p.name}</b><span>${p.district} · ${p.blurb}</span></div>`;
-    drawThumb(b.querySelector('canvas')!, p.id);
-    b.addEventListener('click', () => {
-      city = p.id;
-      realPlace = null;
-      store(CITY_KEY, city); store(WORLD_KEY, 'classic');
-      renderCities();
-    });
-    root.appendChild(b);
-  }
-  renderWorldPick();
-}
-
-/** "Anywhere on Earth": search any place and play it, streamed from OpenStreetMap map tiles. */
-function renderWorldPick() {
-  const root = $('world-pick');
-  root.classList.toggle('selected', !!realPlace);
-  root.innerHTML = `
-    <div class="wp-head"><b>🌍 Anywhere on Earth</b><span>The whole planet streams in from OpenStreetMap with real terrain. Walk, or fly on rocket shoes, anywhere. Your projects move into real towers where you start.</span></div>
-    <form><input type="text" placeholder="Search a place: Shibuya, Champs-Élysées, your hometown…" autocomplete="off" /><button type="submit">Search</button></form>
-    <div class="wp-results"></div>
-    <div class="wp-chips">${QUICK.map((q, i) => `<button type="button" class="wp-chip${realPlace && realPlace.lat === q.lat ? ' on' : ''}" data-i="${i}">${esc(q.label.split(',').slice(0, 2).join(','))}</button>`).join('')}</div>
-    ${realPlace ? `<div class="wp-chosen">Starting at <b>${esc(realPlace.label || realPlace.name)}</b></div>` : '<div class="wp-chosen">Starting in a classic city. Pick a place above to start on the real map instead.</div>'}`;
-  const choose = (p: GeoPlace) => {
-    realPlace = p;
-    store(WORLD_KEY, JSON.stringify(p));
-    renderCities();
-  };
-  root.querySelectorAll<HTMLButtonElement>('.wp-chip').forEach((b) => b.addEventListener('click', () => choose(QUICK[Number(b.dataset.i)])));
-  const form = root.querySelector('form')!, input = form.querySelector('input')!, results = root.querySelector('.wp-results')!;
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const q = input.value.trim();
-    if (!q) return;
-    results.innerHTML = '<small style="color:var(--muted)">Searching…</small>';
-    try {
-      const hits = await searchPlaces(q);
-      results.innerHTML = hits.length ? '' : '<small style="color:var(--muted)">No places found.</small>';
-      for (const h of hits) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.innerHTML = `${esc(h.name)}<small>${esc(h.label)}</small>`;
-        b.addEventListener('click', () => choose(h));
-        results.appendChild(b);
-      }
-    } catch (err) {
-      results.innerHTML = `<small style="color:var(--bad)">${esc((err as Error).message)}</small>`;
-    }
-  });
-}
-
-/** Little procedural skyline postcard for each city card. */
-function drawThumb(c: HTMLCanvasElement, id: CityId) {
-  const g = c.getContext('2d')!;
-  const p = CITIES[id];
-  const sky = g.createLinearGradient(0, 0, 0, 240);
-  sky.addColorStop(0, '#0f1a2e'); sky.addColorStop(1, p.thumb[1]);
-  g.fillStyle = sky; g.fillRect(0, 0, 400, 240);
-  g.fillStyle = p.thumb[0]; g.globalAlpha = 0.85;
-  g.beginPath(); g.arc(320, 70, 26, 0, Math.PI * 2); g.fill(); g.globalAlpha = 1;
-  let seed = id.length * 977;
-  const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  for (let x = 0; x < 400;) {
-    const w = 14 + r() * 26;
-    const peak = Math.exp(-(((x - 200) / 120) ** 2));
-    const h = 30 + r() * 50 + peak * (p.maxHeight / 2.2) * r();
-    g.fillStyle = `rgba(10,14,22,${0.85 + r() * 0.15})`;
-    g.fillRect(x, 200 - h, w, h + 40);
-    g.fillStyle = 'rgba(255,214,140,0.7)';
-    for (let wy = 200 - h + 6; wy < 196; wy += 7) for (let wx = x + 3; wx < x + w - 3; wx += 5) if (r() < 0.3) g.fillRect(wx, wy, 2, 3);
-    x += w + 1;
-  }
-  g.fillStyle = id === 'miami' ? '#1f6f80' : '#16324a';
-  g.fillRect(0, 200, 400, 40);
-}
-
-async function initTitle() {
-  renderCities();
-  const status = $('gh-status');
-  try {
-    me = await api.me();
-  } catch {
-    status.innerHTML = 'Local server is not running. Start it with <b>npm run dev</b>.';
-    return;
-  }
-  const form = $('token-form');
-  if (me.connected) {
-    status.innerHTML = `${me.avatarUrl ? `<img src="${esc(me.avatarUrl)}">` : ''} Connected to GitHub as <b>${esc(me.login ?? '')}</b>${me.claudeAvailable ? ' · agents ready' : ' · <span style="color:var(--bad)">install Claude Code to hire agents</span>'}`;
-    form.classList.add('hidden');
-    ($('play') as HTMLButtonElement).disabled = false;
-  } else {
-    status.innerHTML = 'Not connected to GitHub. Run <b>gh auth login</b>, or paste a token:';
-    form.classList.remove('hidden');
-  }
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    const token = ($('token-input') as HTMLInputElement).value.trim();
-    if (!token) return;
-    try { me = await api.saveToken(token); } catch (err) { status.textContent = String((err as Error).message); return; }
-    initTitle();
-  };
-}
-
-$('play').addEventListener('click', () => start(realPlace ?? city).catch((e) => {
-  console.error(e);
-  $('loading-text').textContent = `Something went wrong: ${(e as Error).message}`;
-}));
-initTitle();
+// ------------------------------------------------------------------ landing page
+installLanding({
+  onStart: (where) => start(where).catch((e) => {
+    console.error(e);
+    $('loading-text').textContent = `Something went wrong: ${(e as Error).message}`;
+  }),
+});
 
 // ------------------------------------------------------------------ the game
 const HINTS = {
   walk: ['[W][A][S][D] Move · [Shift] Run · [Space] Jump', '[Space] in the air: rocket shoes', '[E] Interact · [P] Phone · [M] Map', '[Tab] Directory · [F] Photo mode · [L] Time-lapse · [G] Wave'],
-  fly: ['[Space] Climb · let go to hover', '[W][A][S][D] Steer · [Shift] Burst', '[C] Dive · land on roofs and bridges', '[M] Map · [P] Phone'],
+  fly: ['[Space] Burn the rockets · let go to fall', '[W][A][S][D] Fly where you look · [Shift] Afterburner', '[C] Cut the rockets · land hard to roll', '[M] Map · [P] Phone'],
   indoors: ['[W][A][S][D] Move · [E] Talk / use', '[P] Phone · [Esc] Release mouse'],
-  skate: ['[W] Push · [S] Brake · [A][D] Carve', '[Space] Ollie · [Shift] Faster', '[1] Get off · [2]–[7] Switch'],
-  bike: ['[W] Pedal · [S] Brake · [A][D] Steer', '[Space] Bunny hop · [Shift] Sprint', '[1] Get off · [2]–[7] Switch'],
-  jeep: ['[W] Gas · [S] Brake / reverse · [A][D] Steer', '[Space] Handbrake · [Shift] Boost', '[1] Get out · [2]–[7] Switch'],
-  plane: ['[W][S] Throttle · [A][D] Bank / taxi', '[Space] Pull up · [C] Push down · [Shift] Thrust', 'Take off past 32 mph · [1] Bail out'],
+  skate: ['[W] Push · [S] Brake · [A][D] Carve', '[Space] Ollie · [Shift] Faster', '[1] Get off · [2]–[8] Switch'],
+  bike: ['[W] Pedal · [S] Brake · [A][D] Steer', '[Space] Bunny hop · [Shift] Sprint', '[1] Get off · [2]–[8] Switch'],
+  jeep: ['[W] Gas · [S] Brake / reverse · [A][D] Steer', '[Space] Handbrake · [Shift] Boost', '[1] Get out · [2]–[8] Switch'],
+  plane: ['[W][S] Throttle · [A][D] Bank / taxi', '[Space] Pull up · [C] Push down · [Shift] Thrust', 'Take off past 32 mph · [O] Autopilot to waypoint · [1] Bail out'],
+  shuttle: ['[W][S] Throttle · [A][D] Bank · [Space] Pull up · [C] Push down', '[Shift] Boosters · [O] Autopilot to waypoint (40×)', '[M] Map: pick a place, Autopilot · [1] Bail out, then [Q] wingsuit'],
+  wingsuit: ['[W] Dive · [S] Flare · [A][D] Bank · steer with the mouse', '[Space] Rockets · [Shift] Burst', '[Q] Stow the wingsuit · land fast to roll'],
   kayak: ['[W][S] Paddle · [A][D] Turn', '[1] Get out · [7] Motorboat'],
   boat: ['[W][S] Throttle · [A][D] Rudder · [Shift] Faster', '[1] Get out · [6] Kayak'],
 };
@@ -193,7 +66,7 @@ const VEHICLES: { key: string; id: VehicleId; label: string; icon: string }[] = 
   { key: 'Digit1', id: 'foot', label: 'On foot', icon: '🚶' }, { key: 'Digit2', id: 'skate', label: 'Skate', icon: '🛹' },
   { key: 'Digit3', id: 'bike', label: 'Bike', icon: '🚲' }, { key: 'Digit4', id: 'jeep', label: 'Jeep', icon: '🚙' },
   { key: 'Digit5', id: 'plane', label: 'Plane', icon: '🛩️' }, { key: 'Digit6', id: 'kayak', label: 'Kayak', icon: '🛶' },
-  { key: 'Digit7', id: 'boat', label: 'Boat', icon: '🚤' },
+  { key: 'Digit7', id: 'boat', label: 'Boat', icon: '🚤' }, { key: 'Digit8', id: 'shuttle', label: 'Shuttle', icon: '🚀' },
 ];
 
 async function start(where: CityId | GeoPlace) {
@@ -211,6 +84,7 @@ async function start(where: CityId | GeoPlace) {
 
   const place: Place & { earth?: EarthApi } = real ? await buildEarthPlace(where, repos, say) : await buildPresetPlace(where, repos, say);
   const earth = place.earth ?? null;
+  let streetSigns = true;
   const cityScene = new THREE.Scene();
   cityScene.add(place.group);
   engine.setScene(cityScene);
@@ -249,11 +123,18 @@ async function start(where: CityId | GeoPlace) {
   let waypoint: { lat: number; lon: number; name: string } | null = null;
   const imperial = () => !!earth && ['us', 'gb', 'lr', 'mm'].includes(earth.country);
 
+  // Windows look out at the real city: interiors capture it into a cube map from inside the building.
+  const cityView = makeCityView({
+    renderer: engine.renderer, pmrem: engine.pmrem, scene: cityScene,
+    hide: () => [robot.root, player.vehicleGroup],
+    follow: () => [dayNight.dome.mesh, dayNight.stars],
+    size: () => (engine.renderer.xr.isPresenting ? 256 : quality.low ? 256 : 512),
+  });
   const ctx: GameCtx = {
-    engine, input, player, interactions, labels, dayNight, repos,
+    engine, input, player, interactions, labels, dayNight, repos, cityView,
     agents: new Map(agents.map((a) => [a.id, a])),
     enterBuilding: (r) => enterBuilding(r),
-    exitBuilding: () => exitBuilding(),
+    exitBuilding: (how) => exitBuilding(how),
   };
 
   // ---- Building doors & labels ----
@@ -291,6 +172,12 @@ async function start(where: CityId | GeoPlace) {
   }
   addCityInteractions();
   if (earth) earth.onRebase = () => { if (!interior && !generic) addCityInteractions(); };
+  // Long flights re-center the world under you: carry the player (and their ride) across.
+  if (earth) earth.onShift = (map) => { player.shift(map); xrShift?.(map); };
+  let xrShift: ((map: (v: THREE.Vector3) => void) => void) | null = null;
+  // The state of the work on the buildings: CI beacons, lit floors, releases, commits, walk-by news.
+  const cityPulse = installCityPulse({ sites: place.sites, scene: cityScene, camera: engine.camera, agents: () => ctx.agents, visible: sitesHere, night: () => dayNight.night,
+    partsNear: earth ? (x, z, r) => earth.footprintsNear(x, z, r).map((n) => ({ ring: n.ring, base: n.fp.base, top: n.fp.top, cx: n.cx, cz: n.cz })) : undefined });
 
   // ---- Live agents ----
   connectLive();
@@ -301,7 +188,8 @@ async function start(where: CityId | GeoPlace) {
     if (prev?.status !== msg.agent.status) {
       if (msg.agent.status === 'done') toast(`<b>${esc(msg.agent.name)}</b> finished in <b>${esc(msg.agent.repo)}</b> · ${msg.agent.filesChanged.length} files changed`, 8000);
       if (msg.agent.status === 'error') toast(`<b>${esc(msg.agent.name)}</b> hit an error in ${esc(msg.agent.repo)}`, 8000);
-      if (!interior && !generic) refreshCityLabels();
+      // Not while a door is opening either: the city's labels would follow you inside.
+      if (!interior && !generic && !busy) refreshCityLabels();
     }
   });
 
@@ -323,7 +211,8 @@ async function start(where: CityId | GeoPlace) {
     try {
       interactions.clear();
       labels.clear();
-      const it = await buildInterior(ctx, repo);
+      const s = lastDoor;
+      const it = await buildInterior(ctx, repo, s ? { capture: cityView, origin: s.door.clone(), yaw: Math.atan2(-s.doorOut.x, -s.doorOut.z), footprint: (s as Site & { fp?: { ring: number[] } }).fp?.ring } : undefined);
       interior = it;
       cityScene.remove(robot.root);
       it.scene.add(robot.root);
@@ -339,7 +228,7 @@ async function start(where: CityId | GeoPlace) {
     await fade(false);
     busy = false;
   }
-  async function exitBuilding() {
+  async function exitBuilding(how: 'door' | 'roof' = 'door') {
     if (busy || !interior) return;
     busy = true;
     await fade(true);
@@ -353,6 +242,12 @@ async function start(where: CityId | GeoPlace) {
     const at = s ? s.approach.clone().addScaledVector(s.doorOut, 2) : place.spawn;
     const facing = s ? Math.atan2(s.doorOut.x, s.doorOut.z) : 0;
     player.setWorld(place.world, at, facing);
+    if (how === 'roof' && s) {
+      // Out of the lift onto the roof of the tower.
+      player.position.set(s.top.x, s.top.y + 0.6, s.top.z);
+      player.mode = 'air';
+      player.vel.set(0, 0, 0);
+    }
     addCityInteractions();
     ambience.indoor = false;
     await fade(false);
@@ -391,14 +286,14 @@ async function start(where: CityId | GeoPlace) {
     interactions.clear();
     if (generic) for (const i of generic.it.interactions()) interactions.add(i);
   }
-  async function enterGeneric(hit: BuildingHit) {
+  async function enterGeneric(hit: BuildingHit, kindOverride?: ReturnType<typeof kindOf>, make?: () => GenericInterior) {
     if (busy || interior || generic) return;
     busy = true;
     await fade(true);
     try {
       const f = hit.fp;
       const ring = f.ring.map((v, i) => v - (i % 2 ? f.cz : f.cx));
-      const it = buildGenericInterior({ key: f.key, ring, height: f.h, kind: kindOf(hit), name: f.poi?.name, doorWall: hit.wall, seed: f.key, country: earth?.country });
+      const it = make ? make() : buildGenericInterior({ key: f.key, ring, height: f.h, kind: kindOverride ?? kindOf(hit), name: f.poi?.name, doorWall: hit.wall, seed: f.key, country: earth?.country, view: { capture: cityView, origin: new THREE.Vector3(f.cx, hit.point.y, f.cz), yaw: 0, footprint: hit.ring }, pmrem: engine.pmrem, sun: dayNight.sun, lite: engine.renderer.xr.isPresenting });
       generic = { it, hit };
       interactions.remove('door:generic'); doorHit = null;
       labels.clear();
@@ -420,7 +315,7 @@ async function start(where: CityId | GeoPlace) {
     await fade(false);
     busy = false;
   }
-  async function exitGeneric(how: 'door' | 'window', floor: number) {
+  async function exitGeneric(how: 'door' | 'window' | 'roof', floor: number) {
     if (!generic || busy) return;
     busy = true;
     await fade(true);
@@ -434,7 +329,15 @@ async function start(where: CityId | GeoPlace) {
     labels.occluder = cityOccluder;
     const out = hit.point.clone().addScaledVector(hit.out, 1.6);
     player.setWorld(place.world, out, Math.atan2(hit.out.x, hit.out.z));
-    if (how === 'window' && floor > 0) {
+    if (how === 'roof') {
+      // Up the lift and out onto the roof.
+      let sx = 0, sz = 0;
+      for (let i = 0; i < hit.ring.length; i += 2) { sx += hit.ring[i]; sz += hit.ring[i + 1]; }
+      const k = hit.ring.length / 2;
+      player.position.set(sx / k, hit.fp.top + 0.6, sz / k);
+      player.mode = 'air';
+      player.vel.set(0, 0, 0);
+    } else if (how === 'window' && floor > 0) {
       // Out the window: you're in the air outside that floor. Hold Space for the rocket shoes.
       player.position.y = hit.fp.base + Math.max(yInside, floor * 3) + 0.5;
       player.mode = 'air';
@@ -485,16 +388,60 @@ async function start(where: CityId | GeoPlace) {
     await fade(false);
   };
 
+  // ---- Home: your apartment on Central Park South, reachable from anywhere on Earth ----
+  const home = earth ? new HomeBase(earth, () => new Set(place.sites.map((s) => (s as Site & { fp?: { key: number } }).fp?.key).filter((k): k is number => k != null))) : null;
+  if (home) cityScene.add(home.group);
+  const enterHome = async () => {
+    const hit = home?.hit(), r = home?.resolved;
+    if (!hit || !r) return;
+    await enterGeneric(hit, 'apartments', () => buildHomeInterior({
+      renderer: engine.renderer, city: cityScene, dayNight, robot, hit, floor: r.floor, view: r.view,
+      agents: () => [...ctx.agents.values()].sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running') || b.startedAt.localeCompare(a.startedAt)),
+      openAgents: () => phone.open('agents'),
+      briefing: currentBriefing,
+      openBriefing: () => openBriefingPanel(briefingHooks, 'desk'),
+    }));
+    // Back home: the briefing is on the desk.
+    const b = currentBriefing();
+    if (generic && b && waiting(b)) toast(`<b>Your briefing is on the desk.</b> ${esc(b.headline)}`, 8000);
+  };
+  const goHome = async () => {
+    if (!earth || !home) { toast(`Home is at <b>${esc(HOME.address)}</b>, New York. Start anywhere on Earth to visit it.`); return; }
+    if (interior) await exitBuilding();
+    if (generic) await exitGeneric('door', 0);
+    const L = earth.frame.toLocal(HOME.lat, HOME.lon);
+    if (Math.hypot(player.position.x - L.x, player.position.z - L.z) > 600) await dropAt(home.street.lat, home.street.lon, 'Home');
+    const r = home.resolveNow();
+    await fade(true);
+    if (r) player.setWorld(player.world, r.approach.clone().addScaledVector(r.out, 2.5), Math.atan2(-r.out.x, -r.out.z));
+    waypoint = null;
+    await fade(false);
+  };
+  const waypointHome = () => {
+    if (!earth) return;
+    waypoint = { lat: HOME.lat, lon: HOME.lon, name: 'Home' };
+    toast(`Waypoint set: <b>Home</b> · ${esc(HOME.address)}`);
+  };
+
   // ---- Phone (P): text or email HQ, the office agent that runs every other agent ----
   const phone = installPhone(ctx, {
     sites: () => place.sites,
     setWaypoint: (name) => { const s = siteByRepo.get(name); if (s) setWaypoint(s); },
     travelTo: async (name) => { const s = siteByRepo.get(name); if (s) await travelTo(s); },
     placeName: () => `${place.title}${place.subtitle ? `, ${place.subtitle}` : ''}`,
+    home: { address: HOME.address, go: goHome, pin: waypointHome },
   });
+  const briefingHooks: BriefingHooks = {
+    travelTo: (repo) => { const s = siteByRepo.get(repo); if (s) void travelTo(s); },
+    openAgent: () => phone.open('agents'),
+    goHome: earth ? () => { void goHome().then(() => enterHome()); } : undefined,
+  };
 
   // ---- The map screen (M) ----
-  const markers = (): MapMarker[] => (earth && earth.atHome ? place.sites.map((s) => ({ ...earth.frame.toGeo(s.center.x, s.center.z), color: s.repo.brandColor || '#ffcc33', label: s.repo.name, big: s.repo.tier === 'landmark' || s.repo.tier === 'tower' })) : []);
+  const markers = (): MapMarker[] => [
+    ...(earth && earth.atHome ? place.sites.map((s) => ({ ...earth.frame.toGeo(s.center.x, s.center.z), color: s.repo.brandColor || '#ffcc33', label: s.repo.name, big: s.repo.tier === 'landmark' || s.repo.tier === 'tower' })) : []),
+    ...(earth ? [{ lat: HOME.lat, lon: HOME.lon, color: '#3ddc97', label: 'Home', big: true }] : []),
+  ];
   const openMap = () => {
     if (!earth || !tileMap) return;
     hud?.setMode('map');
@@ -503,12 +450,14 @@ async function start(where: CityId | GeoPlace) {
       here: () => ({ ...earth.frame.toGeo(player.position.x, player.position.z), heading: headingDeg() }),
       markers,
       places: [
+        { name: 'Home', sub: HOME.address, lat: HOME.lat, lon: HOME.lon },
         ...place.sites.slice(0, 12).map((s) => ({ name: `${s.repo.name} HQ`, sub: tierWord(s.repo), ...(earth.atHome ? siteGeo(s) : earth.home) })),
         ...FAMOUS_PLACES,
       ],
       search: searchPlaces,
       onDrop: (lat, lon, name) => { void dropAt(lat, lon, name); },
       onNavigate: (lat, lon, name) => { waypoint = { lat, lon, name }; toast(`Waypoint set: <b>${esc(name)}</b>`); },
+      onAutopilot: (lat, lon, name) => { waypoint = { lat, lon, name }; startAutopilot(); },
       settings: [
         { label: 'Clouds', value: () => (dayNight.clouds ? 'On' : 'Off'), next: () => { dayNight.clouds = !dayNight.clouds; } },
         { label: 'Time of day', value: () => dayNight.label(), next: () => { dayNight.hour = (dayNight.hour + 3) % 24; } },
@@ -519,6 +468,10 @@ async function start(where: CityId | GeoPlace) {
           dayNight.setWeather(order[(order.indexOf(cur as typeof order[number]) + 1) % order.length]);
         } },
         { label: 'Units', value: () => (imperial() ? 'Imperial' : 'Metric'), next: () => {} },
+        { label: 'Building names', value: () => (lookLabels.on ? 'On' : 'Off'), next: () => { lookLabels.on = !lookLabels.on; } },
+        { label: 'Street signs', value: () => (streetSigns ? 'On' : 'Off'), next: () => { streetSigns = !streetSigns; earth?.setStreetSigns(streetSigns); } },
+        { label: 'VR headset', value: () => (xrSettings.get().enabled ? 'On' : 'Off'), next: () => xrSettings.set({ enabled: !xrSettings.get().enabled }) },
+        { label: 'VR view', value: () => (xrSettings.get().view === 'first' ? 'First person' : 'Behind robot'), next: () => xrSettings.set({ view: xrSettings.get().view === 'first' ? 'third' : 'first' }) },
       ],
       imperial: imperial(),
       onClose: () => hud?.setMode(player.flying ? 'fly' : 'walk'),
@@ -530,7 +483,7 @@ async function start(where: CityId | GeoPlace) {
     if (interior || busy || panelOpen() || photo.active) return;
     if (player.vehicle === id) id = 'foot';
     if (!player.setVehicle(id)) {
-      const why: Partial<Record<VehicleId, string>> = { kayak: 'No water nearby for the kayak.', boat: 'No water nearby for the boat.', plane: 'Not enough clear, flat ground to take off here. Try a park, a wide road or the air.' };
+      const why: Partial<Record<VehicleId, string>> = { kayak: 'No water nearby for the kayak.', boat: 'No water nearby for the boat.', plane: 'Not enough clear, flat ground to take off here. Try a park, a wide road or the air.', shuttle: 'Get out of the water first.' };
       toast(why[id] ?? `Can't use that here.`, 3500);
       return;
     }
@@ -560,10 +513,32 @@ async function start(where: CityId | GeoPlace) {
   // Time-lapse (L): clouds race and the day flies by, like sitting down in his game.
   input.onPress('KeyL', () => { dayNight.timelapse(!dayNight.timelapsing); toast(dayNight.timelapsing ? 'Time-lapse on (<b>L</b> to stop)' : 'Time-lapse off', 2500); });
   input.onPress('KeyG', () => { if (!panelOpen() && player.mode === 'walk') robot.play('wave'); });
+  // Wingsuit (Q, in the air) and autopilot (O, in the shuttle or plane, to the waypoint).
+  input.onPress('KeyQ', () => {
+    if (panelOpen() || busy || interior || generic) return;
+    if (!player.toggleWingsuit()) toast(player.flying ? 'Too close to the ground for the wingsuit.' : 'Jump off something high (or bail out of a plane) first, then <b>Q</b>.', 3000);
+  });
+  const autopilot = new Autopilot({
+    earth: earth!, player, input, dayNight,
+    onArrive: (t) => toast(`Arrived over <b>${esc(t.name)}</b>. You have the controls.`, 6000),
+    onCancel: (why) => toast(why, 3000),
+  });
+  function startAutopilot() {
+    if (!earth || interior || generic) return;
+    if (!waypoint) { toast('Set a destination first: <b>M</b> for the map, pick a place, <b>Autopilot</b>.', 4000); return; }
+    // Not in an aircraft? The shuttle it is (it launches from anywhere dry).
+    if (player.vehicle !== 'shuttle' && player.vehicle !== 'plane') ride('shuttle');
+    if (autopilot.engage(waypoint)) { toast(`Autopilot to <b>${esc(waypoint.name)}</b>: climbing out.`, 3500); track('autopilot', { km: Math.round(haversine(earth.frame.toGeo(player.position.x, player.position.z), waypoint) / 1000) }); }
+  }
+  input.onPress('KeyO', () => {
+    if (panelOpen() || busy) return;
+    if (autopilot.active) autopilot.disengage('Autopilot off.'); else startAutopilot();
+  });
+  const flightHud = earth ? installFlightHud() : null;
   input.onPress('KeyX', () => { if (!panelOpen() && player.mode === 'walk' && player.speed < 0.5) robot.play(robot.state === 'sit' ? 'idle' : 'sit'); });
   input.onPress('Tab', () => {
     if (panelOpen() || interior) return;
-    openDirectory(place.sites, agentsByRepo(), place.title, { waypoint: setWaypoint, travel: travelTo });
+    openDirectory(place.sites, agentsByRepo(), place.title, { waypoint: setWaypoint, travel: travelTo, home: earth ? { address: HOME.address, waypoint: waypointHome, travel: () => { void goHome(); } } : undefined });
   });
   window.addEventListener('pointerdown', () => ambience.start(), { once: true });
 
@@ -579,7 +554,22 @@ async function start(where: CityId | GeoPlace) {
   let wxTimer = 0;
   const headingDeg = () => ((Math.atan2(Math.sin(player.yaw), -Math.cos(player.yaw)) * 180) / Math.PI + 360) % 360;
 
-  (window as unknown as { __ow: unknown }).__ow = { THREE, player, robot, dayNight, place, earth, ctx, enterBuilding, exitBuilding, engine, phone, dropAt, photo, ride, get generic() { return generic; }, enterGeneric, exitGeneric, get waypoint() { return waypoint; } };
+  (window as unknown as { __ow: unknown }).__ow = { THREE, player, robot, dayNight, place, earth, ctx, enterBuilding, exitBuilding, engine, phone, dropAt, photo, ride, get generic() { return generic; }, get interior() { return interior; }, enterGeneric, exitGeneric, get waypoint() { return waypoint; }, setWaypointAt: (lat: number, lon: number, name: string) => { waypoint = { lat, lon, name }; }, autopilot, goHome, pulse: cityPulse.debug, openReview };
+
+  // ---- VR (Meta Quest, WebXR): Enter VR button, controllers, wrist phone ----
+  const xr = installXR({
+    engine, input, player, robot, earth,
+    sun: () => dayNight.sun,
+    vehicles: VEHICLES,
+    phone: apiPhoneSource(() => repos.map((r) => r.name), () => ctx.agents),
+    status: () => ({
+      place: generic ? generic.it.title : interior ? `${interior.repo.name} HQ` : place.locationName(player.position.x, player.position.z),
+      time: dayNight.label(),
+    }),
+    skipTime: () => { dayNight.hour = (dayNight.hour + 3) % 24; },
+    panelOpen, closePanel,
+  });
+  xrShift = xr.shift;
 
   // ---- Loop ----
   // ?hold=1 (debugging): don't draw until window.__owRender is set.
@@ -587,11 +577,12 @@ async function start(where: CityId | GeoPlace) {
   const timer = new THREE.Timer();
   let time = 0;
   function loop() {
-    requestAnimationFrame(loop);
     timer.update();
     const dt = Math.min(timer.getDelta(), 0.05);
     time += dt;
+    xr.beforePlayer(dt);
     if (photo.active) { photo.update(dt); robot.update(dt); } else player.update(dt);
+    xr.afterPlayer(dt);
     if (interior) {
       interior.update(dt);
     } else if (generic) {
@@ -600,19 +591,25 @@ async function start(where: CityId | GeoPlace) {
       updateGenericDoor(dt);
       dayNight.update(dt, player.position);
       place.update(dt, time, player.position);
+      cityPulse.update(dt, player.position, player.agl);
+      updateEntrances(dt, player.position);
       air.update(dt);
       if (minimap?.waypoint && Math.hypot(minimap.waypoint.x - player.position.x, minimap.waypoint.z - player.position.z) < 8) {
         toast(`Arrived at <b>${esc(minimap.waypoint.name)}</b>. Press <b>E</b> at the door.`);
         minimap.waypoint = null;
       }
     }
+    home?.update(dt, player.position, !interior && !generic && !busy ? { interactions, labels, enter: enterHome } : null);
+    setNpcFocus(player.position);
     interactions.update(player.position, player.facing, !panelOpen() && !busy);
     labels.update(engine.camera);
     ambience.update(dt, interior ? Infinity : air.nearest(player.position), dayNight.night);
     if (!holdRender || (window as unknown as { __owRender?: boolean }).__owRender) engine.render();
 
     if (earth && hud && earthMini) {
-      const g = earth.frame.toGeo(player.position.x, player.position.z);
+      // Indoors the player stands in the interior's own space; report where the building really is.
+      const anchor = interior && lastDoor ? lastDoor.door : generic ? generic.hit.point : player.position;
+      const g = earth.frame.toGeo(anchor.x, anchor.z);
       const heading = headingDeg();
       if (!interior && !generic) {
         if (waypoint && haversine(g, waypoint) < 15) {
@@ -626,7 +623,7 @@ async function start(where: CityId | GeoPlace) {
       hudTimer -= dt;
       if (hudTimer < 0) {
         hudTimer = 0.1;
-        const area = earth.area(player.position.x, player.position.z);
+        const area = earth.area(anchor.x, anchor.z);
         wxTimer -= 0.1;
         if (wxTimer < 0) { wxTimer = 2; dayNight.setLocation(g.lat, g.lon); }
         hud.update({
@@ -635,15 +632,25 @@ async function start(where: CityId | GeoPlace) {
           agl: player.agl, heading, pitch: -player.pitch * 57.3, speed: player.vehicle !== 'foot' ? player.vehicleSpeed : player.speed,
           localTime: dayNight.label(),
           place: interior ? `${interior.repo.name} HQ` : generic ? generic.it.title : place.locationName(player.position.x, player.position.z),
-          sub: interior ? interior.repo.description || 'Inside the building' : [area.place, area.sub].filter(Boolean).join(', '),
+          sub: interior || generic ? [place.locationName(anchor.x, anchor.z), area.sub].filter(Boolean).join(' · ') : [area.place, area.sub].filter(Boolean).join(', '),
           mode: interior || generic ? 'indoors' : player.flying ? 'fly' : 'walk',
           waypoint, imperial: imperial(),
           surface: player.mode === 'swim' ? 'swimming' : player.agl > 3 ? 'in the air' : '',
           weather: dayNight.weather.summary(imperial(), dayNight.hour),
+          looking: interior || generic || photo.active ? null : earth.lookingAt(),
         });
         if (!worldMapOpen() && !photo.active) hud.setMode(interior ? 'walk' : player.vehicle !== 'foot' ? player.vehicle : player.flying ? 'fly' : 'walk');
-        if (!interior && !generic) hud.setHints(player.vehicle !== 'foot' ? player.vehicle : player.flying ? 'fly' : 'walk');
+        if (!interior && !generic) hud.setHints(player.vehicle !== 'foot' ? player.vehicle : player.wingsuit ? 'wingsuit' : player.flying ? 'fly' : 'walk');
         earthMini.setVisible(!interior && !generic);
+        const veh = player.vehicleObj;
+        const kind = interior || generic || photo.active ? null : player.vehicle === 'shuttle' ? 'shuttle' : player.vehicle === 'plane' ? 'plane' : player.wingsuit ? 'wingsuit' : player.flying && player.agl > 3 ? 'rockets' : null;
+        flightHud?.update({
+          kind, speed: veh ? veh.speed : Math.hypot(player.vel.x, player.vel.y, player.vel.z),
+          altitude: player.position.y + earth.e0, climb: veh ? veh.vy : player.vel.y,
+          throttle: player.throttle, burst: input.down('ShiftLeft') || input.down('ShiftRight'), burning: input.down('Space') || robot.rockets > 0.3,
+          g: veh && 'g' in veh ? (veh as { g: number }).g : undefined, imperial: imperial(),
+          autopilot: autopilot.active ? { scale: autopilot.scale, limited: autopilot.limited, name: autopilot.target!.name, distance: autopilot.distance, eta: autopilot.eta() } : null,
+        });
         const n = [...ctx.agents.values()].filter((a) => a.status === 'running' || a.status === 'preparing').length;
         agentEl.classList.toggle('hidden', n === 0);
         agentEl.textContent = `⚙ ${n} agent${n === 1 ? '' : 's'} working`;
@@ -666,7 +673,61 @@ async function start(where: CityId | GeoPlace) {
       if (!interior) minimap!.draw(player.position, player.yaw);
     }
   }
-  loop();
+  // The renderer's loop (not requestAnimationFrame) keeps running inside a VR session.
+  engine.renderer.setAnimationLoop(loop);
+
+  // ---- Where you left off: saved every few seconds and on the way out; resumed when the landing asks ----
+  const atHomeInside = () => !!generic && !!home && generic.hit.fp.key === home.hit()?.fp.key;
+  const snapshot = () => {
+    if (busy) return;
+    const hq = interior && lastDoor ? lastDoor : null;
+    const anchor = hq ? hq.door : generic ? generic.hit.point : player.position;
+    const g = earth ? earth.frame.toGeo(anchor.x, anchor.z) : null;
+    // HQ floors are FH apart (see interior.ts): lobby 0, work floor 1, Agent Lab 2, boardroom 3.
+    const floor = interior ? Math.max(0, Math.min(3, Math.round(player.position.y / ((interior.repo.tier === 'landmark' ? 5 : 4.2) + 2.6)))) : 0;
+    const inside: SavedSession['inside'] = hq ? { kind: 'hq', repo: hq.repo.name, floor } : atHomeInside() ? { kind: 'home' } : null;
+    const outside = earth ? [earth.area(anchor.x, anchor.z).place, earth.area(anchor.x, anchor.z).sub].filter(Boolean).join(', ') : `${place.locationName(anchor.x, anchor.z)}, ${place.title}`;
+    saveSession({
+      start: where,
+      ...(g ? { lat: g.lat, lon: g.lon } : { x: anchor.x, z: anchor.z }),
+      agl: interior || generic ? 0 : Math.max(0, player.agl),
+      facing: generic && !inside ? Math.atan2(generic.hit.out.x, generic.hit.out.z) : player.facing,
+      inside,
+      hour: dayNight.hour,
+      phoneApp: phone.app(),
+      label: hq ? `Inside ${hq.repo.name} HQ${floor ? `, floor ${floor + 1}` : ''}` : inside?.kind === 'home' ? `Home, ${HOME.address}` : outside || place.title,
+    });
+  };
+  setInterval(snapshot, 4000);
+  window.addEventListener('pagehide', snapshot);
+
+  async function resumeSession(s: SavedSession) {
+    const away = Math.round((Date.now() - s.savedAt) / 3600_000);
+    if (earth && s.lat != null && s.lon != null) {
+      const here = earth.frame.toGeo(player.position.x, player.position.z);
+      if (haversine(here, { lat: s.lat, lon: s.lon }) > 30) await dropAt(s.lat, s.lon, s.label);
+    } else if (!earth && s.x != null && s.z != null) player.setWorld(place.world, new THREE.Vector3(s.x, 0, s.z), s.facing);
+    player.facing = player.yaw = s.facing;
+    if (!s.inside && s.agl > 4) { player.position.y += s.agl; player.mode = 'air'; player.vel.set(0, 0, 0); }
+    dayNight.hour = s.hour;
+    if (s.inside?.kind === 'hq') {
+      const site = siteByRepo.get(s.inside.repo);
+      if (site && sitesHere()) {
+        await enterBuilding(site.repo);
+        if (s.inside.floor) interior?.debugFloor?.(s.inside.floor);
+      }
+    } else if (s.inside?.kind === 'home' && home) {
+      await goHome();
+      await enterHome();
+    }
+    if (s.phoneApp) phone.open(s.phoneApp as Parameters<typeof phone.open>[0]);
+    track('session_resumed', { inside: s.inside?.kind ?? 'outside', hoursAway: away });
+    toast(`Welcome back. You're where you left off: <b>${esc(s.label)}</b>.`, 6000);
+  }
+  const resume = takeResume();
+  if (resume) await resumeSession(resume).catch((e) => console.warn('Resume failed', e));
+  // Once a day, when something happened while you were away: a gentle nudge toward the briefing.
+  setTimeout(() => void maybePromptBriefing(briefingHooks), resume ? 2500 : 9000);
 }
 
 function tierWord(r: Repo) {

@@ -24,7 +24,7 @@ export class Pedestrians {
     for (let i = 0; i < count; i++) {
       const color = CLOTHES[Math.floor(Math.random() * CLOTHES.length)];
       const accent = CLOTHES[Math.floor(Math.random() * CLOTHES.length)];
-      const ch = makeNpc(color, accent);
+      const ch = makeNpc(color, accent, { role: 'pedestrian' });
       const s = 0.92 + Math.random() * 0.16;
       ch.root.scale.setScalar(s);
       const ped: Ped = { ch, block: this.nearBlock(around, 260), t: 0, inset: 1.4 + Math.random() * 2.2, dir: Math.random() < 0.5 ? 1 : -1, speed: 1.15 + Math.random() * 0.5, wait: 0, cooldown: 5 + Math.random() * 20 };
