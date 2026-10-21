@@ -38,6 +38,9 @@
 .lp-hero-img { z-index: -2; }
 /* The engineer stands at 62% of the frame; this keeps them and the PR shelf right of the copy. */
 .lp-hero-img img { object-fit: cover; object-position: 35% 50%; }
+/* Your own postcard has your character in the middle of the frame: slide it right of the copy and fade its left edge. */
+.lp-hero-img.own img { left: 22%; width: 78%; object-position: 50% 50%;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 28%); mask-image: linear-gradient(90deg, transparent, #000 28%); }
 /* Shade behind the copy, and fade the bottom into the page. */
 .lp-hero::before { content: ''; position: absolute; inset: 0; z-index: -1;
   background:
@@ -149,7 +152,7 @@
   /* Stacked: copy on a navy band, the lobby frame below it. */
   .lp-hero { min-height: 0; flex-direction: column; align-items: stretch; background: linear-gradient(180deg, #121a2e, #1f2c4a 70%, #2a3a5e); }
   .lp-hero-img { position: relative; inset: auto; order: 2; height: 400px; margin-top: 4px; }
-  .lp-hero-img img { object-position: 50% 62%; -webkit-mask-image: linear-gradient(180deg, transparent, #000 18%); mask-image: linear-gradient(180deg, transparent, #000 22%); }
+  .lp-hero-img img, .lp-hero-img.own img { left: 0; width: 100%; object-position: 50% 62%; -webkit-mask-image: linear-gradient(180deg, transparent, #000 18%); mask-image: linear-gradient(180deg, transparent, #000 22%); }
   .lp-hero::before { background: linear-gradient(180deg, rgba(10, 16, 32, .35), rgba(10, 16, 32, 0) 40%, rgba(7, 10, 16, 0) 80%, #070a10 100%); }
   .lp-hero-copy { padding: calc(88px + env(safe-area-inset-top, 0px)) var(--lp-gut) 0; text-align: center; }
   .lp-hero-copy > * { margin-left: auto; margin-right: auto; }

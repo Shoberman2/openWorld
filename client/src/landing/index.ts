@@ -4,7 +4,7 @@ import { esc } from '../interact.ts';
 import { searchPlaces } from '../earth/index.ts';
 import { DESTINATIONS, REGIONS, toGeoPlace, type Destination, type Region } from './places.ts';
 import { Globe } from './globe.ts';
-import { armResume, loadSession, sessionAgo } from '../session.ts';
+import { armResume, loadPostcard, loadSession, sessionAgo } from '../session.ts';
 import { openSettings } from '../ui/settings.ts';
 import './landing.css';
 
@@ -54,7 +54,7 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
   <header class="lp-hero" id="lp-top">
     <picture class="lp-hero-img">
       <source media="(max-width: 700px)" srcset="/landing/hero-sm.webp">
-      <img src="/landing/hero.webp" alt="The OpenWorld site engineer in a hard hat in the HQ lobby, beside a shelf of pull-request parcels and the reception desk" fetchpriority="high">
+      <img src="/landing/hero.webp" alt="The OpenWorld site engineer in a hard hat in an HQ lobby, beside a shelf of pull-request parcels and the reception desk" fetchpriority="high">
     </picture>
     <div class="lp-hero-copy">
       <p class="lp-eyebrow">An interactive virtual workspace</p>
@@ -149,6 +149,16 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
     $('play-label').textContent = `Start fresh in ${cityOf(first)}`;
     root.querySelector('.lp-cta > a.lp-ghost')!.remove();
     $('lp-resume').addEventListener('click', () => { if (me?.connected) armResume(saved); go(saved.start); });
+  }
+  // Once you've played, the hero is your own world: the last frame you saw. New visitors get the standard one.
+  const card = loadPostcard();
+  if (card) {
+    const pic = root.querySelector('.lp-hero-img')!;
+    pic.querySelector('source')?.remove();
+    const img = pic.querySelector('img')!;
+    img.src = card.data;
+    img.alt = saved ? `Your world, where you left off: ${saved.label}` : 'Your world, the last time you were here';
+    pic.classList.add('own');
   }
 
   // ---- globe

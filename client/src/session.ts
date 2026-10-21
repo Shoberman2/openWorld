@@ -59,3 +59,20 @@ export function sessionAgo(s: SavedSession) {
   const d = Math.round(m / 1440);
   return d === 1 ? 'yesterday' : `${d} days ago`;
 }
+
+// ---- A postcard of your own world: the last clean frame you saw, used as the landing page's hero ----
+const POSTCARD = 'openworld.postcard';
+export interface Postcard { data: string; savedAt: number }
+
+export function savePostcard(data: string) {
+  try { localStorage.setItem(POSTCARD, JSON.stringify({ data, savedAt: Date.now() })); } catch { /* full or private mode: keep the standard hero */ }
+}
+
+export function loadPostcard(): Postcard | null {
+  try {
+    const p = JSON.parse(localStorage.getItem(POSTCARD) ?? 'null') as Postcard | null;
+    return p && typeof p.data === 'string' && p.data.startsWith('data:image/') && Date.now() - p.savedAt < MAX_AGE ? p : null;
+  } catch {
+    return null;
+  }
+}

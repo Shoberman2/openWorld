@@ -36,7 +36,7 @@ import type { GameCtx } from './ctx.ts';
 import { installLanding } from './landing/index.ts';
 import { installXR, apiPhoneSource, xrSettings } from './xr/index.ts';
 import { currentBriefing, maybePromptBriefing, openBriefingPanel, waiting, type BriefingHooks } from './ui/briefing.ts';
-import { saveSession, takeResume, type SavedSession } from './session.ts';
+import { savePostcard, saveSession, takeResume, type SavedSession } from './session.ts';
 import { installCityPulse } from './city/signals.ts';
 import { openReview } from './ui/review.ts';
 import { installSettings, toggleSettings } from './ui/settings.ts';
@@ -693,6 +693,28 @@ async function start(where: CityId | GeoPlace) {
   };
   setInterval(snapshot, 4000);
   window.addEventListener('pagehide', snapshot);
+
+  // Every so often, keep a clean frame of what you're looking at: the landing page uses your latest one
+  // as its hero, so everyone who has played sees their own world there.
+  const postcard = () => {
+    if (busy || photo.active || engine.renderer.xr.isPresenting || document.hidden) return;
+    engine.render();
+    const src = engine.renderer.domElement;
+    const w = Math.min(1440, src.width), h = Math.round((w * src.height) / src.width);
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    if (!g || !h) return;
+    g.drawImage(src, 0, 0, w, h);
+    // Skip blank or still-loading frames.
+    const px = g.getImageData(0, 0, w, h).data;
+    let sum = 0, n = 0;
+    for (let i = 0; i < px.length; i += 4 * 997) { sum += px[i] + px[i + 1] + px[i + 2]; n++; }
+    if (sum / (n * 3) < 18) return;
+    savePostcard(c.toDataURL('image/jpeg', 0.8));
+  };
+  setTimeout(postcard, 10_000);
+  setInterval(postcard, 45_000);
 
   async function resumeSession(s: SavedSession) {
     const away = Math.round((Date.now() - s.savedAt) / 3600_000);
