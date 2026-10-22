@@ -10,6 +10,9 @@ export const api = {
   me: () => fetch('/api/me').then((r) => json<Me>(r)),
   saveToken: (token: string) =>
     fetch('/api/token', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) }).then((r) => json<Me>(r)),
+  /** Leave private repos out of the world (for streaming and recording). */
+  setHidePrivate: (on: boolean) =>
+    fetch('/api/settings/hide-private', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on }) }).then((r) => json<{ hidePrivate: boolean }>(r)),
   repos: () => fetch('/api/repos').then((r) => json<Repo[]>(r)),
   repo: (name: string) => fetch(`/api/repos/${encodeURIComponent(name)}`).then((r) => json<RepoDetail>(r)),
   logoUrl: (name: string) => `/api/repos/${encodeURIComponent(name)}/logo`,

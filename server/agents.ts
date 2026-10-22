@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import type { ChildProcess } from 'node:child_process';
 import type { AgentEvent, AgentInfo, AgentProviderId, Repo, ReviewAction, ServerMsg } from '../shared/types.ts';
 import { PATHS, readJson, writeJson, run, spawnProc, logEvent } from './config.ts';
-import { getDefaultBranch } from './github.ts';
+import { getDefaultBranch, isHiddenRepo } from './github.ts';
 import { summarizeTool } from './providers/common.ts';
 import { pickProvider, runner, runnerEnv } from './providers/index.ts';
 
@@ -66,7 +66,7 @@ function persist() {
 function update(a: LiveAgent, patch: Partial<AgentInfo>) {
   Object.assign(a.info, patch);
   persist();
-  broadcast({ type: 'agent:update', agent: a.info });
+  if (!isHiddenRepo(a.info.repo)) broadcast({ type: 'agent:update', agent: a.info });
   for (const fn of updateListeners) fn(a.info);
 }
 
@@ -74,13 +74,13 @@ function emit(a: LiveAgent, event: AgentEvent) {
   const entry = { event, ts: Date.now() };
   a.log.push(entry);
   if (a.log.length > 2000) a.log.splice(0, a.log.length - 2000);
-  broadcast({ type: 'agent:event', agentId: a.info.id, event, ts: entry.ts });
+  if (!isHiddenRepo(a.info.repo)) broadcast({ type: 'agent:event', agentId: a.info.id, event, ts: entry.ts });
 }
 
 export function listAgents(repo?: string): AgentInfo[] {
   return [...agents.values()]
     .map((a) => a.info)
-    .filter((i) => !repo || i.repo.toLowerCase() === repo.toLowerCase())
+    .filter((i) => (!repo || i.repo.toLowerCase() === repo.toLowerCase()) && !isHiddenRepo(i.repo))
     .sort((x, y) => y.startedAt.localeCompare(x.startedAt));
 }
 

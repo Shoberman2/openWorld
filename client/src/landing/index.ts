@@ -123,13 +123,8 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
   const nav = root.querySelector('.lp-nav')!;
   root.addEventListener('scroll', () => nav.classList.toggle('solid', root.scrollTop > 24), { passive: true });
 
+  // No GitHub yet is fine: the world works without it, and your repos move in once you connect.
   const go = (where: CityId | GeoPlace) => {
-    if (!me?.connected) {
-      root.scrollTo({ top: 0, behavior: 'smooth' });
-      const s = $('gh-status'); s.classList.remove('flash'); void s.offsetWidth; s.classList.add('flash');
-      ($('token-input') as HTMLInputElement).focus({ preventScroll: true });
-      return;
-    }
     if (typeof where !== 'string') store(WORLD_KEY, JSON.stringify(where));
     globe?.dispose();
     globe = null;
@@ -247,11 +242,11 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
       $('lp-repos').innerHTML = 'Start the local server with <code>npm start</code>, then reload.';
       return;
     }
+    play.disabled = false;
+    ($('lp-resume') as HTMLButtonElement).disabled = false;
     if (me.connected) {
       status.innerHTML = `${me.avatarUrl ? `<img src="${esc(me.avatarUrl)}" alt="">` : '<span class="dot"></span>'}<b>${esc(me.login ?? '')}</b>`;
       form.classList.add('hidden');
-      play.disabled = false;
-      ($('lp-resume') as HTMLButtonElement).disabled = false;
       api.repos().then((repos: Repo[]) => {
         const top = [...repos].sort((a, b) => b.score - a.score)[0];
         $('lp-repos').innerHTML = `${repos.length} repos ready to move in${top ? ` · <b>${esc(top.name)}</b> gets the tallest tower` : ''}`;

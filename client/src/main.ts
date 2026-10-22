@@ -60,7 +60,11 @@ const VEHICLES: { key: string; id: VehicleId; label: string; icon: string }[] = 
   { key: 'Digit7', id: 'boat', label: 'Boat', icon: '🚤' }, { key: 'Digit8', id: 'shuttle', label: 'Shuttle', icon: '🚀' },
 ];
 
+// One world per page: a second start (a double click, a script) would run two game loops on one canvas.
+let started = false;
 async function start(where: CityId | GeoPlace) {
+  if (started) return;
+  started = true;
   $('title').classList.add('hidden');
   $('loading').classList.remove('hidden');
   const say = (m: string) => ($('loading-text').textContent = m);
@@ -68,7 +72,8 @@ async function start(where: CityId | GeoPlace) {
   track('session_start', real ? { city: 'world', place: where.label || where.name } : { city: where });
 
   say('Reading your GitHub…');
-  const [repos, agents] = await Promise.all([api.repos(), api.agents().catch(() => [] as AgentInfo[]), loadCharacters(say)]);
+  // Without GitHub the city still loads, just with no repo buildings (they move in once you connect).
+  const [repos, agents] = await Promise.all([api.repos().catch(() => [] as Repo[]), api.agents().catch(() => [] as AgentInfo[]), loadCharacters(say)]);
   const engine = new Engine($('game') as HTMLCanvasElement);
   const input = new Input($('game') as HTMLCanvasElement);
   bindPanelInput((on) => input.setEnabled(on));
@@ -562,7 +567,9 @@ async function start(where: CityId | GeoPlace) {
   // ---- HUD ----
   $('loading').classList.add('hidden');
   $('hud').classList.remove('hidden');
-  toast(earth
+  toast(!repos.length
+    ? `Welcome to <b>${esc(place.title)}</b>. Connect GitHub in Settings (<b>${keymap.label('settings')}</b>) and your repos move in as buildings. ${earth ? `Hold <b>${keymap.label('jump')}</b> in the air to fly, <b>${keymap.label('map')}</b> for the map of the world.` : ''}`
+    : earth
     ? `Welcome to <b>${esc(place.title)}</b>. Your ${repos.length} projects moved in; the tallest tower is <b>${esc(place.sites[0]?.repo.name ?? '')}</b>. Hold <b>${keymap.label('jump')}</b> in the air to fly, <b>${keymap.label('map')}</b> for the map of the world, <b>${keymap.label('settings')}</b> for settings.`
     : `Welcome to <b>${esc(place.title)}</b>. Your ${repos.length} projects are here; the tallest tower is <b>${esc(place.sites[0]?.repo.name ?? '')}</b>. Press <b>${keymap.label('directory')}</b> for the directory.`, 10000);
   const locEl = $('hud-location'), timeEl = $('hud-time'), agentEl = $('hud-agents'), lookEl = $('click-to-look');

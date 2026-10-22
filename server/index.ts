@@ -8,7 +8,7 @@ import type { BoardroomRequest, RepoDetail, ServerMsg, TalkRequest } from '../sh
 import { PATHS, writeConfig, logEvent } from './config.ts';
 import {
   getMe, listRepos, findRepo, repoWorkers, findWorker, workerDiff, ensureLogo, logoContentType,
-  validateToken, resetToken,
+  validateToken, resetToken, hidingPrivate,
 } from './github.ts';
 import { streamClaude, transcriptPrompt } from './llm.ts';
 import { listAgents, startAgent, stopAgent, openPr, agentLog, setBroadcaster, agentDiff, reviewAgent, answerAgent, stopAllAgents } from './agents.ts';
@@ -68,7 +68,21 @@ function abortOnClose(res: Response) {
 // ---------- account ----------
 
 // agentsReady is checked fresh each time (it changes when keys are added); the GitHub part is cached.
-app.get('/api/me', h(async () => ({ ...(await getMe()), agentsReady: (await providerStatuses()).some((p) => p.ready) })));
+app.get('/api/me', h(async () => ({
+  ...(await getMe()),
+  agentsReady: (await providerStatuses()).some((p) => p.ready),
+  hidePrivate: hidingPrivate(),
+  hidePrivateFromEnv: process.env.OPENWORLD_PUBLIC_ONLY === '1',
+})));
+
+// Hide private repos (for streaming and recording): only from this computer, like keys.
+app.post('/api/settings/hide-private', h(async (req, res) => {
+  const a = req.socket.remoteAddress;
+  if (a && a !== '127.0.0.1' && a !== '::1' && a !== '::ffff:127.0.0.1') return res.status(403).json({ error: 'Change this on the computer running OpenWorld' });
+  writeConfig({ hidePrivate: !!req.body?.on });
+  logEvent('hide_private', { on: !!req.body?.on });
+  return { hidePrivate: hidingPrivate() };
+}));
 
 app.post('/api/token', h(async (req, res) => {
   const token = String(req.body?.token || '').trim();

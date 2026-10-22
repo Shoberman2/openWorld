@@ -114,7 +114,26 @@ query($cursor: String) {
 let reposCache: { at: number; repos: Repo[] } | null = null;
 const defaultBranch = new Map<string, string>();
 
+/** Private repos are left out (Settings, or OPENWORLD_PUBLIC_ONLY=1) so the world can be streamed or recorded safely. */
+export const hidingPrivate = () => process.env.OPENWORLD_PUBLIC_ONLY === '1' || !!readConfig().hidePrivate;
+
+/** True for a private repo while they're hidden (past agent runs on it are hidden too). */
+export const isHiddenRepo = (name: string) =>
+  hidingPrivate() && !!reposCache?.repos.find((r) => r.name.toLowerCase() === name.toLowerCase())?.isPrivate;
+
+/** The repos the world shows: all of them, or only the public ones, re-ranked into tiers among themselves. */
 export async function listRepos(): Promise<Repo[]> {
+  const all = await allRepos();
+  if (!hidingPrivate()) return all;
+  const shown = all.filter((r) => !r.isPrivate).map((r) => ({ ...r }));
+  shown.forEach((r, i) => {
+    const p = (i + 0.5) / shown.length;
+    r.tier = p < 0.1 ? 'landmark' : p < 0.3 ? 'tower' : p < 0.65 ? 'midrise' : 'small';
+  });
+  return shown;
+}
+
+async function allRepos(): Promise<Repo[]> {
   if (reposCache && Date.now() - reposCache.at < 10 * 60_000) {
     for (const r of reposCache.repos) r.hasLogo = logoFile(r.name) != null;
     return reposCache.repos;

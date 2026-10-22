@@ -52,6 +52,9 @@ export interface Me {
   avatarUrl: string | null;
   claudeAvailable: boolean;
   tokenSource: 'gh' | 'env' | 'config' | null;
+  /** Private repos are left out of the world (Settings, or OPENWORLD_PUBLIC_ONLY=1). */
+  hidePrivate?: boolean;
+  hidePrivateFromEnv?: boolean;
 }
 
 /** A desk worker: one past PR or (for repos with no PRs) one past commit. */

@@ -204,6 +204,7 @@ Everything is optional. Copy [.env.example](.env.example) to `.env`; the `npm` s
 | `OPENWORLD_HTTPS=1` | Also serve over HTTPS on the LAN (VR) |
 | `OPENWORLD_HOME` | Where OpenWorld keeps its data (default `~/.openworld`) |
 | `OPENWORLD_TILE_CACHE_MB` | Map tile cache size (default 3000) |
+| `OPENWORLD_PUBLIC_ONLY=1` | Leave private repos out of the world (also in Settings → Agents & keys → Hide private repos), for streaming and recording |
 | `OPENWORLD_FAKE_AGENTS=1`, `OPENWORLD_DRY_PR=1`, `OPENWORLD_DRY_GITHUB=1` | Testing: scripted agents, no real PRs, no GitHub writes |
 
 OpenWorld keeps its state in `~/.openworld/`: settings and keys, the map tile cache, agent worktrees, boardroom minutes, photos and a local event log. Delete the folder to start over. Nothing is sent anywhere except the map, terrain and weather requests, GitHub, and the AI services you connect.

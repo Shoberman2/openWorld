@@ -129,6 +129,8 @@ export function agentsTab(page: HTMLElement) {
           ${me?.connected ? '<em class="ak-chip ok">Connected</em>' : ''}</div>
         ${me && !me.connected && st.canEdit ? `<form class="ak-key" data-gh><input type="password" autocomplete="off" placeholder="GitHub token (repo scope)" /><button class="st-btn" type="submit">Connect</button></form>
           <p class="ak-get"><a href="https://github.com/settings/tokens/new?scopes=repo&description=OpenWorld" target="_blank" rel="noopener">Create a token ↗</a></p>` : ''}
+        ${me?.connected ? `<div class="st-row"><div class="st-act"><b>Hide private repos</b><span>${me.hidePrivateFromEnv ? 'Set by <code>OPENWORLD_PUBLIC_ONLY</code> in your environment.' : 'Before you stream, record or share a clip: private repos leave the city, the phone and the office. The page reloads to rebuild the city.'}</span></div>
+          <div class="st-seg" role="radiogroup"><button data-hide="0" aria-checked="${!me.hidePrivate}" ${st.canEdit && !me.hidePrivateFromEnv ? '' : 'disabled'}>Show</button><button data-hide="1" aria-checked="${!!me.hidePrivate}" ${st.canEdit && !me.hidePrivateFromEnv ? '' : 'disabled'}>Hide</button></div></div>` : ''}
         ${notes.get('gh') ? `<p class="ak-note ${notes.get('gh')!.ok ? 'ok' : 'bad'}">${esc(notes.get('gh')!.text)}</p>` : ''}
       </section>
       <section class="st-group"><h4>Coding agents</h4>${st.providers.map(card).join('')}</section>
@@ -207,6 +209,13 @@ export function agentsTab(page: HTMLElement) {
     const rm = t.closest<HTMLElement>('[data-remove]');
     const def = t.closest<HTMLElement>('[data-default]');
     const ch = t.closest<HTMLElement>('[data-chat]');
+    const hide = t.closest<HTMLElement>('[data-hide]');
+    if (hide) {
+      const on = hide.dataset.hide === '1';
+      if (on === !!me?.hidePrivate) return;
+      try { await api.setHidePrivate(on); location.reload(); } catch (err) { notes.set('gh', { ok: false, text: (err as Error).message }); render(); }
+      return;
+    }
     try {
       if (rm) { notes.set(rm.dataset.remove!, { ok: true, text: 'Key removed from this computer.' }); apply(await providers.removeKey(rm.dataset.remove!)); }
       else if (def) apply(await providers.setDefault(def.dataset.default!));

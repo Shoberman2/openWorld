@@ -29,6 +29,8 @@ export interface Config {
   keys?: { anthropic?: string; openai?: string; gemini?: string; xai?: string };
   defaultProvider?: 'claude' | 'codex' | 'gemini' | 'grok' | 'opencode';
   chat?: { provider?: 'anthropic' | 'claude-cli' | 'codex-cli' | 'openai' | 'gemini' | 'xai' | 'grok-cli' | 'compat'; model?: string };
+  /** Leave private repos out of the world (for streaming, recording and sharing clips). */
+  hidePrivate?: boolean;
   /** Any OpenAI-compatible chat endpoint (OpenRouter, Ollama, LM Studio, Groq…). The key is optional for local servers. */
   compat?: { preset?: string; baseUrl: string; key?: string; model: string };
 }
