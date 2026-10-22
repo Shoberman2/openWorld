@@ -156,14 +156,15 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
   root.innerHTML = `
     <button class="phone-stow" title="Minimize the phone (P or Esc). It stays on the left edge." aria-label="Minimize phone">${ICON.left}<span>Minimize</span></button>
     <div class="phone-frame">
-      <i class="pf-btn pf-action"></i><i class="pf-btn pf-vol1"></i><i class="pf-btn pf-vol2"></i><i class="pf-btn pf-power"></i>
+      <i class="pf-key pf-key-a"></i><i class="pf-key pf-key-b"></i>
+      <div class="pf-top"><i class="pf-lens"></i><i class="pf-grille"></i><i class="pf-led"></i></div>
       <div class="phone-screen">
-        <div class="phone-status"><span class="ps-time"></span><span class="ps-island"></span><span class="ps-right">${ICON.signal}<b>5G</b>${ICON.battery}</span></div>
+        <div class="phone-status"><span class="ps-time"></span><span class="ps-right"><b>OW</b>${ICON.signal}${ICON.battery}</span></div>
         <div class="phone-banner"></div>
         <div class="phone-view"></div>
         <nav class="phone-tabs"></nav>
-        <div class="phone-homebar" title="Home"></div>
       </div>
+      <div class="pf-chin"><button class="phone-homebar" title="Home" aria-label="Home"><span>OW</span></button></div>
     </div>
     <div class="phone-lockhint" aria-hidden="true">Hold <kbd>${ALT_KEY}</kbd> or press ${kbd('phone')} to use your phone</div>`;
   document.body.appendChild(root);
@@ -244,8 +245,16 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     }
   });
 
+  /** Home's greeting follows the game clock, like the status bar. */
+  const greeting = () => {
+    const hour = ctx.dayNight?.hour ?? new Date().getHours();
+    return hour < 5 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  };
+
   // Status bar clock follows the game's day/night clock; the tab shows how many agents are working.
   const tick = () => {
+    const hello = viewEl.querySelector('[data-hello]');
+    if (hello && hello.textContent !== greeting()) hello.textContent = greeting();
     timeEl.textContent = (ctx.dayNight?.label() ?? new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })).replace(/\s?[AP]M$/, '');
     const live = [...ctx.agents.values()].filter((a) => LIVE.has(a.status)).length;
     liveEl.classList.toggle('hidden', live === 0);
@@ -541,10 +550,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     const repos = projectOrder();
     const here = hooks.currentRepo?.() ?? null;
     if (!taskRepo || !ctx.repos.some((r) => r.name === taskRepo)) taskRepo = here ?? repos[0]?.name ?? '';
-    const hour = ctx.dayNight?.hour ?? new Date().getHours();
-    const hello = hour < 5 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-
-    let html = tabHeader(hello, hooks.openSettings ? `<button class="pv-icon" data-settings title="Settings">${ICON.gear}</button>` : '');
+    let html = tabHeader(`<span data-hello>${greeting()}</span>`, hooks.openSettings ? `<button class="pv-icon" data-settings title="Settings">${ICON.gear}</button>` : '');
     html += `<div class="pv-scroll home-scroll">`;
     if (today) html += `<button class="hm-brief" data-brief><b>☀ Briefing</b><span>${esc(today.headline)}</span></button>`;
 
@@ -820,7 +826,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     else if (typing.text || sending.text) html += `<div class="bubble hq typing"><i></i><i></i><i></i></div>`;
     html += `</div>`;
     if (!thread.length) html += `<div class="msg-suggest">${SUGGESTIONS.map((s) => `<button>${esc(s)}</button>`).join('')}</div>`;
-    html += `<form class="composer"><input data-keep="text" placeholder="Text HQ" autocomplete="off" /><button class="send" ${sending.text ? 'disabled' : ''}>${ICON.up}</button></form>`;
+    html += `<form class="composer"><input data-keep="text" placeholder="Text HQ" autocomplete="off" /><button class="send" aria-label="Send" title="Send" ${sending.text ? 'disabled' : ''}>${ICON.up}</button></form>`;
     viewEl.innerHTML = html;
     bindCommon();
     bindDispatchCards();
@@ -970,7 +976,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     else if (leadTyping.has(repo) || leadSending.has(repo)) html += `<div class="bubble hq typing"><i></i><i></i><i></i></div>`;
     html += `</div>`;
     if (!list.length) html += `<div class="msg-suggest">${LEAD_SUGGESTIONS.map((x) => `<button>${esc(x)}</button>`).join('')}</div>`;
-    html += `<form class="composer"><input data-keep="lead-${esc(repo)}" placeholder="Text the ${esc(repo)} lead" autocomplete="off" /><button class="send" ${leadSending.has(repo) ? 'disabled' : ''}>${ICON.up}</button></form>`;
+    html += `<form class="composer"><input data-keep="lead-${esc(repo)}" placeholder="Text the ${esc(repo)} lead" autocomplete="off" /><button class="send" aria-label="Send" title="Send" ${leadSending.has(repo) ? 'disabled' : ''}>${ICON.up}</button></form>`;
     viewEl.innerHTML = html;
     bindCommon();
     bindDispatchCards();

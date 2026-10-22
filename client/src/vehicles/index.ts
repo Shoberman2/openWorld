@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import type { Colliders } from '../player.ts';
 import type { RobotState } from '../robot.ts';
+import { Plume } from './plume.ts';
 import { bikeModel, boatModel, jeepModel, kayakModel, planeModel, shuttleModel, skateboardModel, type Model } from './models.ts';
 
 export type VehicleId = 'foot' | 'skate' | 'bike' | 'jeep' | 'plane' | 'kayak' | 'boat' | 'shuttle';
@@ -25,7 +26,7 @@ export interface VehicleWorld {
 
 export type StepResult = 'ok' | 'crash';
 
-const G = 22;
+const G = 9.81;
 const tmpV = new THREE.Vector3();
 
 export abstract class Vehicle {
@@ -148,7 +149,7 @@ abstract class GroundVehicle extends Vehicle {
       this.pos.y += this.vy * dt;
       if (this.pos.y <= g) {
         this.pos.y = g;
-        const hard = this.vy < -16;
+        const hard = this.vy < -12; // a drop of ~7 m
         this.vy = 0;
         this.grounded = true;
         if (hard && this.id !== 'jeep') return 'crash';
@@ -165,7 +166,7 @@ abstract class GroundVehicle extends Vehicle {
       this.gp = THREE.MathUtils.damp(this.gp, THREE.MathUtils.clamp(Math.atan2(hf - hb, S.length), -0.6, 0.6), 10, dt);
       this.gr = THREE.MathUtils.damp(this.gr, THREE.MathUtils.clamp(Math.atan2(hl - hr, S.width), -0.5, 0.5), 10, dt);
       // Gravity pulls you down hills (and slows you going up).
-      this.speed -= Math.sin(this.gp) * 9.8 * dt * (this.id === 'jeep' ? 0.5 : 0.8);
+      this.speed -= Math.sin(this.gp) * G * dt * (this.id === 'jeep' ? 0.5 : 0.8);
     }
     this.pitch = this.gp + (this.grounded ? 0 : THREE.MathUtils.clamp(this.vy * 0.02, -0.25, 0.25));
     const leanTarget = inp.steer * S.lean * THREE.MathUtils.clamp(Math.abs(this.speed) / S.max, 0, 1);
@@ -176,7 +177,7 @@ abstract class GroundVehicle extends Vehicle {
 
 export class Skateboard extends GroundVehicle {
   readonly id = 'skate' as const;
-  readonly spec: GroundSpec = { max: 9, boost: 1.25, accel: 3.2, brake: 6, drag: 0.02, coast: 0.25, steer: 2.2, steerFalloff: 14, length: 0.7, width: 0.25, radius: 0.35, jump: 5.5, reverse: 0.2, lean: 0.35 };
+  readonly spec: GroundSpec = { max: 9, boost: 1.25, accel: 3.2, brake: 6, drag: 0.02, coast: 0.25, steer: 2.2, steerFalloff: 14, length: 0.7, width: 0.25, radius: 0.35, jump: 3.2, reverse: 0.2, lean: 0.35 };
   readonly seat = new THREE.Vector3(0, 0.125, 0);
   readonly pose = 'skate' as const;
   readonly cam = { dist: 4.2, height: 1.15, pitch: 0.16 };
@@ -190,7 +191,7 @@ export class Skateboard extends GroundVehicle {
 
 export class Bike extends GroundVehicle {
   readonly id = 'bike' as const;
-  readonly spec: GroundSpec = { max: 12, boost: 1.3, accel: 4, brake: 9, drag: 0.015, coast: 0.2, steer: 1.9, steerFalloff: 16, length: 1.05, width: 0.3, radius: 0.45, jump: 4.5, reverse: 0.15, lean: 0.4 };
+  readonly spec: GroundSpec = { max: 12, boost: 1.3, accel: 4, brake: 9, drag: 0.015, coast: 0.2, steer: 1.9, steerFalloff: 16, length: 1.05, width: 0.3, radius: 0.45, jump: 2.9, reverse: 0.15, lean: 0.4 };
   readonly seat = new THREE.Vector3(0, 0.64, -0.2);
   readonly pose = 'bike' as const;
   readonly cam = { dist: 4.8, height: 1.45, pitch: 0.16 };
@@ -299,10 +300,20 @@ export class Plane extends Vehicle {
 
 // ---------------------------------------------------------------------------------------------
 // The space shuttle: the way to cross a continent. Rocket thrust along the nose against drag that
-// thins with altitude (Mach ~1 on the mains, ~1.9 on the boosters up high), wings that bend the flight
-// path toward where the nose points once you're fast, and a vertical launch from anywhere.
+// thins with altitude (about Mach 1 on the mains up high, ~1.4 with the boosters), wings that bend the
+// flight path toward where the nose points once you're fast, and a vertical launch from anywhere.
+// Launch numbers follow the real one: it stands on its tail, lights, and climbs off the ground at
+// a thrust-to-weight of ~1.5 (half a g of real acceleration, clearing ~100 m in about 7 s), never
+// more than ~3 g, then pitches over gradually.
 
 const SOUND = 340;
+/** Main engines at full throttle and the boosters on top (m/s² of thrust: 2.2 g and +1.2 g). */
+const MAINS = 22;
+const BOOSTERS = 12;
+/** Seconds to stand her up on her tail before lift-off; pitch when standing; nozzle-to-gear length. */
+const RAISE_TIME = 2.4;
+const VERTICAL = 1.5;
+const TAIL = 10.8;
 
 export class Shuttle extends Vehicle {
   readonly id = 'shuttle' as const;
@@ -320,26 +331,49 @@ export class Shuttle extends Vehicle {
   private flick = 0;
   /** Launched from the ground: stand on the tail and go straight up until clear of the towers. */
   private climbOut = -Infinity;
+  /** 0..1 while standing up on the pad (engines lit) before lift-off. */
+  private raise = 0;
+  /** Set on the frame she leaves the ground (the player's camera does a launch shot). */
+  liftoff = false;
+  private plume = new Plume();
+  private nozzles = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  private fire = new THREE.Vector3();
+  private gndY = 0;
   constructor() { super(shuttleModel()); }
 
   get mach() { return this.speed / SOUND; }
+  /** On the pad or still in the vertical climb-out (the autopilot lets the launch fly itself). */
+  get launching() { return this.grounded ? this.raise > 0 || this.throttle > 0.12 : this.climbOut > -Infinity && this.pos.y - this.climbOut < 400; }
 
   step(dt: number, inp: VehicleInput, w: VehicleWorld): StepResult {
     this.throttle = THREE.MathUtils.clamp(this.throttle + inp.throttle * 0.55 * dt, 0, 1);
     this.booster = inp.shift && this.throttle > 0.05;
     const f = this.nose(new THREE.Vector3());
     const rho = Math.exp(-Math.max(0, this.pos.y) / 8500);
-    const thrust = this.throttle * 38 + (this.booster ? 60 : 0);
+    const thrust = this.throttle * MAINS + (this.booster ? BOOSTERS : 0);
     const v = this.v3, sp = v.length();
 
     if (this.grounded) {
-      // Light the mains and pull up (Space), or just open the throttle wide: she stands up and goes.
+      // Light the mains and pull up (Space), or just open the throttle wide: she stands up on her tail
+      // with the engines lit, then lifts off once vertical and the thrust beats her weight.
       this.bank = THREE.MathUtils.damp(this.bank, 0, 6, dt);
-      if (this.throttle > 0.12 && (inp.space || this.throttle > 0.55 || this.booster)) {
-        this.grounded = false;
-        this.pitch = 1.4;
-        this.climbOut = this.pos.y;
-        v.copy(this.nose(f)).multiplyScalar(6);
+      const go = this.throttle > 0.12 && (inp.space || this.throttle > 0.55 || this.booster);
+      if (go || (this.raise > 0 && this.throttle > 0.05)) {
+        this.raise = Math.min(1, this.raise + dt / RAISE_TIME);
+        const e = this.raise * this.raise * (3 - 2 * this.raise);
+        this.pitch = VERTICAL * e;
+        v.set(0, 0, 0);
+        if (this.raise >= 1 && thrust > 9.8 * 1.2) {
+          this.grounded = false;
+          this.raise = 0;
+          this.climbOut = this.pos.y;
+          this.liftoff = true;
+        }
+      } else if (this.raise > 0) {
+        // Throttled back to idle on the pad: lay her back down.
+        this.raise = Math.max(0, this.raise - dt / RAISE_TIME);
+        this.pitch = VERTICAL * this.raise * this.raise * (3 - 2 * this.raise);
+        v.set(0, 0, 0);
       } else {
         // Rolling out after a landing: brakes.
         v.multiplyScalar(Math.exp(-dt * (inp.throttle < 0 ? 1.6 : 0.5)));
@@ -353,15 +387,17 @@ export class Shuttle extends Vehicle {
       // Attitude: A/D bank (the bank turns you, like a plane), Space/C pitch.
       this.bank = THREE.MathUtils.damp(this.bank, inp.steer * 1.0, 2.2, dt);
       const pr = (inp.space ? 0.75 : 0) - (inp.dive ? 0.75 : 0);
-      this.pitch = THREE.MathUtils.clamp(this.pitch + pr * dt * Math.cos(this.bank), -1.45, 1.45);
-      // Climb-out: nose up until ~220 m above the pad (or you push it over yourself), then a gentle pitch-over.
-      if (this.pos.y - this.climbOut < 220 && !inp.dive) this.pitch = THREE.MathUtils.damp(this.pitch, 1.4, 3, dt);
-      else if (this.pos.y - this.climbOut < 900 && !inp.space && !inp.dive && this.pitch > 0.35) this.pitch -= 0.25 * dt;
+      this.pitch = THREE.MathUtils.clamp(this.pitch + pr * dt * Math.cos(this.bank), -1.45, VERTICAL);
+      // Climb-out: straight up until clear of the towers (~150 m above the pad, or you push it over),
+      // then the pitch program: a slow pitch-over toward the horizon as the speed builds.
+      if (this.pos.y - this.climbOut < 150 && !inp.dive) this.pitch = THREE.MathUtils.damp(this.pitch, VERTICAL, 3, dt);
+      else if (this.pos.y - this.climbOut < 2500 && !inp.space && !inp.dive && this.pitch > 0.4) this.pitch -= 0.06 * dt;
       else this.climbOut = -Infinity;
       this.heading -= (9.8 * Math.tan(this.bank) / Math.max(sp, 60)) * dt + inp.steer * 0.12 * dt;
       // Forces: thrust along the nose, drag, gravity, and lift that holds you up once you're fast.
       const acc = new THREE.Vector3().copy(this.nose(f)).multiplyScalar(thrust);
       acc.addScaledVector(v, -3.3e-4 * rho * sp);
+      const felt = acc.length();
       acc.y -= 9.8;
       const liftK = THREE.MathUtils.clamp((sp - 60) / 90, 0, 1);
       acc.y += 9.8 * liftK * Math.cos(this.bank) * Math.cos(this.pitch);
@@ -372,10 +408,12 @@ export class Shuttle extends Vehicle {
         const dir = v.clone().divideScalar(n).lerp(this.nose(f), 1 - Math.exp(-dt * n / 70)).normalize();
         v.copy(dir).multiplyScalar(n);
       }
-      this.g = THREE.MathUtils.damp(this.g, acc.length() / 9.8, 4, dt);
+      // What you feel is thrust and drag (and the wings' lift), not gravity: ~1.5 g on the pad.
+      this.g = THREE.MathUtils.damp(this.g, (felt + 9.8 * liftK) / 9.8, 4, dt);
     }
     this.roll = this.bank;
     this.steerLook = inp.steer;
+    const wasGrounded = this.grounded;
     this.pos.addScaledVector(v, dt);
     this.speed = v.length();
     this.vy = v.y;
@@ -388,13 +426,16 @@ export class Shuttle extends Vehicle {
       if (Math.hypot(v.x, v.z) > 25) return 'crash';
       this.pos.x = test.x; this.pos.z = test.z;
     }
-    const gnd = w.surface(this.pos.x, this.pos.z, this.pos.y + 2);
+    // Standing up (or just lifted off) the gear isn't what's lowest: the tail is, TAIL·sin(pitch) below.
+    const stand = wasGrounded ? TAIL * Math.sin(Math.max(0, this.pitch)) : 0;
+    const gnd = w.surface(this.pos.x, this.pos.z, this.pos.y - stand + 2);
+    this.gndY = gnd;
     const wy = w.water(this.pos.x, this.pos.z);
     const floor = !Number.isNaN(wy) && wy > gnd ? wy : gnd;
     if (!this.grounded && this.pos.y <= floor) {
       if (floor !== gnd || v.y < -8 || this.speed > 120 || Math.abs(this.roll) > 0.35 || this.pitch < -0.25) return 'crash';
       this.pos.y = gnd; this.grounded = true; v.y = 0; this.pitch = 0;
-    } else if (this.grounded) this.pos.y = gnd;
+    } else if (this.grounded) this.pos.y = gnd + stand;
     this.air = this.grounded ? 0 : 1;
     this.animate(dt);
     return 'ok';
@@ -418,7 +459,19 @@ export class Shuttle extends Vehicle {
       c.scale.set(0.8 + 0.5 * Math.min(k, 1), 0.8 + 0.5 * Math.min(k, 1), (2 + 16 * k) * fl);
     });
     (this.model.parts.glow as THREE.PointLight).intensity = k * 900;
+    // Smoke: from the three engine bells (in the world), with the pad cloud while low.
+    if (!this.plume.mesh.parent && this.group.parent) this.group.parent.add(this.plume.mesh);
+    this.group.updateWorldMatrix(true, false);
+    const m = this.group.matrixWorld;
+    this.nozzles[0].set(0, 3.55, -10.8).applyMatrix4(m);
+    this.nozzles[1].set(-0.95, 2.1, -10.8).applyMatrix4(m);
+    this.nozzles[2].set(0.95, 2.1, -10.8).applyMatrix4(m);
+    this.fire.set(0, 2.6, -14).applyMatrix4(m);
+    const gnd = this.grounded ? this.pos.y - TAIL * Math.sin(Math.max(0, this.pitch)) : this.gndY;
+    this.plume.update(dt, this.nozzles, this.grounded && this.raise < 0.95 ? k * 0.25 : k, gnd, this.fire);
   }
+
+  dispose() { this.plume.dispose(); super.dispose(); }
 
   /** Called up in the air (or for a fresh launch): start moving with the nose. */
   launch(airborne: boolean, speed = 0) {
@@ -428,7 +481,7 @@ export class Shuttle extends Vehicle {
       this.v3.copy(this.nose(new THREE.Vector3())).multiplyScalar(Math.max(speed, 140));
       this.speed = this.v3.length();
     } else {
-      this.throttle = 0.7;
+      this.throttle = 0.68; // lift-off thrust-to-weight ~1.5, like the real one
       this.pitch = 0;
     }
   }

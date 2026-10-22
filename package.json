@@ -1,17 +1,35 @@
 {
   "name": "openworld",
   "version": "1.0.0",
-  "description": "An open-world city where every GitHub repo is a building and AI agents work inside.",
+  "description": "Your GitHub as an open world: walk the real planet, every repo is a building, and AI coding agents (Claude, ChatGPT/Codex, Gemini or any model) work inside.",
   "scripts": {
-    "dev": "concurrently -k -n server,client \"tsx watch server/index.ts\" \"vite --config client/vite.config.ts\"",
-    "server": "tsx server/index.ts",
+    "dev": "concurrently -k -n server,client \"tsx watch --env-file-if-exists=.env server/index.ts\" \"vite --config client/vite.config.ts\"",
+    "server": "tsx --env-file-if-exists=.env server/index.ts",
     "build": "vite build --config client/vite.config.ts",
-    "start": "npm run build && NODE_ENV=production tsx server/index.ts",
-    "vr": "npm run build && NODE_ENV=production OPENWORLD_HTTPS=1 tsx server/index.ts"
+    "typecheck": "tsc --noEmit",
+    "models": "node scripts/fetch-models.mjs",
+    "postinstall": "node scripts/fetch-models.mjs",
+    "start": "npm run build && NODE_ENV=production tsx --env-file-if-exists=.env server/index.ts",
+    "vr": "npm run build && NODE_ENV=production OPENWORLD_HTTPS=1 tsx --env-file-if-exists=.env server/index.ts"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "open-world",
+    "threejs",
+    "openstreetmap",
+    "github",
+    "ai-agents",
+    "claude",
+    "chatgpt",
+    "codex",
+    "gemini",
+    "ollama",
+    "webxr"
+  ],
+  "author": "OpenWorld contributors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.9"
+  },
   "dependencies": {
     "@mapbox/vector-tile": "^2.0.3",
     "express": "^5.3.0",

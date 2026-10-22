@@ -4,6 +4,13 @@
 import * as THREE from 'three';
 import { area, band, built, chamfer, facadeMat, glowMat, merged, ngon, offsetRing, placed, prism, rect, solidMat, tier, type Built, STYLES } from './kit.ts';
 import { lollipopTree, treeMat } from '../style.ts';
+// ---- East US
+import { EAST_BUILDERS } from './east-models.ts';
+import { APAC_BUILDERS } from './apac-models.ts';
+// ---- Europe & Middle East
+import { EU_BUILDERS } from './eu-builders.ts';
+// ---- NYC
+import { NYC_BUILDERS } from './nyc-models.ts';
 
 export interface BuildCtx {
   /** Claimed map footprints in the model frame (empty when the map has none here). */
@@ -12,6 +19,9 @@ export interface BuildCtx {
   minY: number;
   /** Bridges: tower-to-tower distance measured from the map. */
   span?: number;
+  // ---- West Coast
+  /** Ground height at a model-frame point, relative to the model's base (where the map is loaded). */
+  groundAt?: (x: number, z: number) => number;
 }
 
 type Builder = (c: BuildCtx) => Built;
@@ -1140,4 +1150,15 @@ export const BUILDERS: Record<string, Builder> = {
   empire, chrysler, owtc, flatiron, rock30, metlife, grandCentral, nypl, stPatricks, woolworth,
   park432, centralParkTower, steinway, vessel, msg, plaza, dakota, liberty, brooklynBridge,
   eiffel, bigBen, goldenGate, transamerica, tokyoTower,
+  // ---- East US
+  ...EAST_BUILDERS,
+  // ---- Asia-Pacific & Latin America (apac-models.ts)
+  ...APAC_BUILDERS,
+  // ---- Europe & Middle East (London's bigBen is rebuilt there: the 2022 restoration's colours)
+  ...EU_BUILDERS,
+  // ---- NYC: more New York builders (nyc-models.ts)
+  ...NYC_BUILDERS,
 };
+
+// ---- West Coast: shared helpers for west-models.ts
+export { loft, mesh };

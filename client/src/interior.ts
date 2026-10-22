@@ -6,7 +6,7 @@ import type { AgentEvent, AgentInfo, BoardMessage, Repo, RepoDetail, Worker } fr
 import type { GameCtx, Scene3D } from './ctx.ts';
 import { api, onLive, track } from './api.ts';
 import { shared } from './engine.ts';
-import { CLOTHES, makeNpc, type Character } from './characters.ts';
+import { CLOTHES, disposeNpc, makeNpc, type Character } from './characters.ts';
 import { Colliders, type PlayerWorld } from './player.ts';
 import { Lift } from './rooms/lift.ts';
 import { FloorViews, type CityViewPlacement } from './rooms/cityView.ts';
@@ -156,7 +156,9 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0d1018);
   // Lighting from the room itself until the city view (captured per floor) takes over.
-  const envRT = ctx.engine.pmrem.fromScene(new RoomEnvironment(), 0.04);
+  const studio = new RoomEnvironment();
+  const envRT = ctx.engine.pmrem.fromScene(studio, 0.04);
+  studio.dispose(); // only needed for the capture
   scene.environment = envRT.texture;
   scene.environmentIntensity = 0.35;
   const lite = quality.low || ctx.engine.renderer.xr.isPresenting;
@@ -1159,6 +1161,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
     if (!s) return;
     cancelRound(s);
     s.npc.ch.root.parent?.remove(s.npc.ch.root);
+    disposeNpc(s.npc.ch);
     npcs.splice(npcs.indexOf(s.npc), 1);
     removeLabel(`lbl-a-${id}`);
     ctx.interactions.remove(`a-${id}`);
@@ -1228,7 +1231,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
     npcs.push(n);
     return n;
   };
-  const dropNpc = (n: Npc) => { n.ch.root.parent?.remove(n.ch.root); const i = npcs.indexOf(n); if (i >= 0) npcs.splice(i, 1); ctx.labels.remove(`speech-${n.id}`); };
+  const dropNpc = (n: Npc) => { n.ch.root.parent?.remove(n.ch.root); disposeNpc(n.ch); const i = npcs.indexOf(n); if (i >= 0) npcs.splice(i, 1); ctx.labels.remove(`speech-${n.id}`); };
   const liftDoor = LIFT_FRONT - 0.2;
   const wantsReview = (a: AgentInfo) => a.review === 'pending' || (a.review == null && a.status === 'done' && a.filesChanged.length > 0 && !a.prUrl);
   /** Agent ids still on their way down with a parcel (it lands on the table when they get there). */
@@ -1685,12 +1688,13 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
       for (const id of interactIds) ctx.interactions.remove(id);
       for (const id of labelIds) ctx.labels.remove(id);
       for (const s of agentSlots.values()) ctx.labels.remove(`lbl-a-${s.info.id}`);
-      for (const n of npcs) { ctx.labels.remove(`speech-${n.id}`); n.ch.mixer.stopAllAction(); }
+      for (const n of npcs) { ctx.labels.remove(`speech-${n.id}`); disposeNpc(n.ch); }
       geos.forEach((g) => g.dispose());
       mats.forEach((m) => m.dispose());
       texs.forEach((t) => t.dispose());
       envRT.dispose();
       views.dispose();
+      scene.traverse((o) => { if ((o as THREE.Light).isLight) (o as THREE.Light).dispose(); }); // their shadow maps
       scene.environment = null;
       ctx.engine.renderer.toneMappingExposure = prevExposure;
       ctx.engine.bloom.strength = prevBloom;

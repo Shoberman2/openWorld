@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import { PATHS, spawnProc } from './config.ts';
 import { chatProvider, keyFor } from './providers/index.ts';
+import { compatConfig, compatRequest } from './providers/compat.ts';
 
 export interface StreamOpts {
   system: string;
@@ -20,15 +21,17 @@ const API_MODELS: Record<string, string> = {
 
 /**
  * One reply for HQ, a project lead or a desk, from whichever chat the user set up in Settings → Agents & keys:
- * their Anthropic, OpenAI or Gemini key, or a signed-in Claude Code. OPENWORLD_MODEL still overrides the model.
+ * their Anthropic, OpenAI or Gemini key, a signed-in Claude Code, or any OpenAI-compatible server (OpenRouter, Ollama…). OPENWORLD_MODEL still overrides the model.
  */
 export async function streamClaude(opts: StreamOpts): Promise<string> {
   const chat = await chatProvider();
   const model = opts.model || process.env.OPENWORLD_MODEL || chat?.model || '';
   if (chat?.provider === 'anthropic') return streamApi({ ...opts, model });
   if (chat?.provider === 'claude-cli') return streamCli({ ...opts, model });
+  if (chat?.provider === 'codex-cli') return streamCodex({ ...opts, model });
   if (chat?.provider === 'openai') return streamOpenAi({ ...opts, model });
   if (chat?.provider === 'gemini') return streamGemini({ ...opts, model });
+  if (chat?.provider === 'compat') return streamCompat({ ...opts, model });
   const text = opts.fallback || '(No AI set up yet. Add a key in Settings → Agents & keys to bring the office to life.)';
   // emit in small chunks so the UI still "types"
   for (const chunk of text.match(/.{1,24}(\s|$)|.+/g) || [text]) {
@@ -90,6 +93,34 @@ function streamCli(opts: StreamOpts & { model: string }): Promise<string> {
   });
 }
 
+/** One reply through `codex exec` (the user's ChatGPT login): read-only sandbox, no streaming, the final message. */
+function streamCodex(opts: StreamOpts & { model: string }): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const args = ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...(opts.model ? ['--model', opts.model] : []), '-'];
+    const child = spawnProc('codex', args, { cwd: PATHS.home, stdio: ['pipe', 'pipe', 'pipe'] });
+    let text = '';
+    let stderr = '';
+    opts.signal?.addEventListener('abort', () => child.kill('SIGTERM'));
+    child.stderr!.on('data', (d) => (stderr += d));
+    createInterface({ input: child.stdout! }).on('line', (line) => {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === 'item.completed' && msg.item?.type === 'agent_message' && msg.item.text) text = String(msg.item.text);
+        else if (msg.type === 'error' || msg.type === 'turn.failed') stderr += String(msg.message ?? msg.error?.message ?? '');
+      } catch {
+        /* not JSON */
+      }
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (!text) return reject(new Error(stderr.trim().slice(0, 300) || `codex exited with ${code}`));
+      opts.onDelta?.(text);
+      resolve(text);
+    });
+    child.stdin!.end(`${opts.system}\n\nReply in character. Do not run commands or edit files.\n\n${opts.prompt}`);
+  });
+}
+
 async function streamApi(opts: StreamOpts & { model: string }): Promise<string> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -124,6 +155,14 @@ async function streamOpenAi(opts: StreamOpts & { model: string }): Promise<strin
     signal: opts.signal,
   });
   if (!res.ok || !res.body) throw new Error(`OpenAI API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return readSse(res, opts, (ev) => ev.choices?.[0]?.delta?.content ?? '');
+}
+
+async function streamCompat(opts: StreamOpts & { model: string }): Promise<string> {
+  const c = compatConfig();
+  if (!c) throw new Error('No OpenAI-compatible server is set up');
+  const res = await compatRequest(c, opts.model, opts.system, opts.prompt, opts.signal);
+  if (!res.ok || !res.body) throw new Error(`${new URL(c.baseUrl).host} ${res.status}: ${(await res.text()).slice(0, 200)}`);
   return readSse(res, opts, (ev) => ev.choices?.[0]?.delta?.content ?? '');
 }
 

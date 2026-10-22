@@ -19,10 +19,11 @@ const BONE = new Map<string, number>();
 export async function loadCharacters(onProgress?: (msg: string) => void) {
   const loader = new GLTFLoader();
   onProgress?.('Loading characters…');
-  const [soldier, xbot] = await Promise.all([
-    loader.loadAsync('/models/Soldier.glb'),
-    loader.loadAsync('/models/Xbot.glb'),
-  ]);
+  // The rigs are fetched by `npm install` (scripts/fetch-models.mjs); without them, load the same
+  // files from the three.js examples.
+  const rig = (name: string) => loader.loadAsync(`/models/${name}`)
+    .catch(() => loader.loadAsync(`https://cdn.jsdelivr.net/gh/mrdoob/three.js@r186/examples/models/gltf/${name}`));
+  const [soldier, xbot] = await Promise.all([rig('Soldier.glb'), rig('Xbot.glb')]);
   templates.soldier = { scene: soldier.scene, clips: soldier.animations };
   templates.xbot = { scene: xbot.scene, clips: xbot.animations };
   for (const t of [soldier.scene, xbot.scene]) {
@@ -802,6 +803,12 @@ function dress(ch: Character, role: NpcRole, seed: number) {
 }
 
 // ------------------------------------------------------------------ behavior
+
+/** Done with a person: stop their clips and free their skeleton's bone texture (body geometry is shared). */
+export function disposeNpc(ch: Character) {
+  ch.mixer.stopAllAction();
+  ch.root.traverse((o) => { const s = o as THREE.SkinnedMesh; if (s.isSkinnedMesh) s.skeleton.dispose(); });
+}
 
 const focus = new THREE.Vector3();
 let focusOn = false;

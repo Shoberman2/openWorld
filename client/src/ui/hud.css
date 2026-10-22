@@ -56,7 +56,8 @@
   .ow-nav { bottom: 190px; width: 120px; }
   .ow-info .ow-i-wx { display: none; }
   .ow-cwrap { width: 260px !important; }
-  .ow-attrib { max-width: 120px; }
+  /* Bottom-left, beside the minimap instead of five lines on top of it. */
+  .ow-attrib { right: auto; left: 8px; bottom: 8px; width: calc(100vw - 160px); max-width: none; text-align: left; }
 }
 
 /* =================================================================== map screen */
@@ -132,7 +133,18 @@
   font: 500 12px Inter, sans-serif; white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,.3); }
 .ow-wm-tip b { display: block; font-size: 13.5px; color: #fff; }
 .ow-wm-tip span { color: #ffb48f; }
-@media (max-width: 700px) { .ow-wm-tp { top: auto; bottom: 150px; height: 34vh; left: 16px; right: 16px; width: auto; } }
+@media (max-width: 700px) {
+  .ow-wm-tp { top: auto; bottom: 190px; height: 30vh; left: 16px; right: 16px; width: auto; }
+  /* Phone width: the bar wraps (search on its own row) so the tabs and ✕ stay on screen; there's no M key to close it here. */
+  .ow-wm-bar { left: 8px; right: 8px; transform: none; flex-wrap: wrap; justify-content: center; }
+  .ow-wm-bar button { padding: 7px 10px; font-size: 13px; }
+  .ow-wm-bar form { order: 10; flex: 1 0 100%; margin-left: 0; }
+  .ow-wm-bar input { width: 100%; }
+  .ow-wm-results, .ow-wm-sheet { top: 112px; }
+  .ow-wm-card { left: 8px; right: 8px; bottom: 50px; grid-template-columns: 1fr auto; }
+  .ow-wm-help { display: none; }
+  .ow-wm-attrib { left: 8px; right: 8px; bottom: 8px; max-width: none; text-align: center; }
+}
 
 /* ---- Teleport button (above the minimap) ---- */
 .ow-tp-btn { position: absolute; right: 16px; bottom: 246px; width: 176px; display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 10px; border: 0;

@@ -36,7 +36,8 @@ function post(m: Omit<MasterMessage, 'id' | 'ts'>): MasterMessage {
   return msg;
 }
 
-const unread = (repo: string) => (threads[repo] ?? []).filter((m) => m.from === 'master' && !m.read).length;
+const thread = (repo: string) => (Object.hasOwn(threads, repo) ? threads[repo] : []);
+const unread = (repo: string) => thread(repo).filter((m) => m.from === 'master' && !m.read).length;
 
 export function masterSummaries(): MasterThreadSummary[] {
   return Object.entries(threads)
@@ -185,13 +186,14 @@ export function registerMasters(app: Express, bc: (msg: ServerMsg) => void) {
   });
 
   app.get('/api/masters/:repo', (req: Request, res: Response) => {
-    res.json({ messages: threads[String(req.params.repo)] ?? [] });
+    const repo = String(req.params.repo);
+    res.json({ messages: thread(repo) });
   });
 
   app.post('/api/masters/:repo/read', (req: Request, res: Response) => {
     const repo = String(req.params.repo);
     let changed = false;
-    for (const m of threads[repo] ?? []) if (!m.read) { m.read = true; changed = true; }
+    for (const m of thread(repo)) if (!m.read) { m.read = true; changed = true; }
     if (changed) save();
     res.json({ unread: unread(repo) });
   });

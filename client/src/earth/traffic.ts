@@ -137,6 +137,20 @@ export class EarthTraffic {
 
   private mix() { return Object.fromEntries(this.types.map((t) => [t.id, 0])) as Record<VType['id'], number>; }
 
+  // ---- Europe & Middle East
+  /** Swap vehicle models for regional ones (London's buses and cabs, Europe's hatchbacks); see cities/eu-vehicles.ts. */
+  private stock = new Map<VType['id'], { body: THREE.BufferGeometry; lights: THREE.BufferGeometry; length: number }>();
+  restyle(looks: Partial<Record<VType['id'], { body: THREE.BufferGeometry; lights: THREE.BufferGeometry; length: number }>>) {
+    for (const t of this.types) {
+      if (!this.stock.has(t.id)) this.stock.set(t.id, { body: t.body, lights: t.lights, length: t.length });
+      const stock = this.stock.get(t.id)!, look = looks[t.id] ?? stock;
+      t.body = look.body; t.lights = look.lights; t.length = look.length;
+      const b = this.bodies.get(t.id), l = this.lights.get(t.id);
+      if (b) b.geometry = look.body;
+      if (l) l.geometry = look.lights;
+    }
+  }
+
   private spawn(c: Car, around: THREE.Vector3, rMin: number, rMax: number) {
     c.live = false;
     // Candidates come from a spatial index; refreshed a few times a second, not per car.

@@ -1,4 +1,4 @@
-import type { ProvidersState, AgentEvent, AgentInfo, ReviewAction, Me, Repo, RepoDetail, ServerMsg, TalkRequest, BoardroomRequest, OfficeChannel, OfficeMessage, OfficeRequest, MasterMessage, MasterThreadSummary, Schedule, Briefing, RepoPulse, PrDetail, IssueDetail, ControlResult } from '../../shared/types.ts';
+import type { ProvidersState, CompatTest, AgentEvent, AgentInfo, ReviewAction, Me, Repo, RepoDetail, ServerMsg, TalkRequest, BoardroomRequest, OfficeChannel, OfficeMessage, OfficeRequest, MasterMessage, MasterThreadSummary, Schedule, Briefing, RepoPulse, PrDetail, IssueDetail, ControlResult } from '../../shared/types.ts';
 
 async function json<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}));
@@ -161,4 +161,7 @@ export const providers = {
   removeKey: (id: string) => sendJson<ProvidersState>('DELETE', `/api/providers/${encodeURIComponent(id)}/key`),
   setDefault: (provider: string) => sendJson<ProvidersState>('POST', '/api/providers/default', { provider }),
   setChat: (provider: string, model?: string) => sendJson<ProvidersState>('POST', '/api/providers/chat', { provider, model }),
+  testCompat: (c: { preset?: string; baseUrl: string; key?: string; model?: string }) => sendJson<CompatTest>('POST', '/api/providers/compat/test', c),
+  saveCompat: (c: { preset?: string; baseUrl: string; key?: string; model: string }) => sendJson<ProvidersState>('POST', '/api/providers/compat', c),
+  removeCompat: () => sendJson<ProvidersState>('DELETE', '/api/providers/compat'),
 };

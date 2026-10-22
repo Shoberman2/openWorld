@@ -4,3 +4,9 @@ client/dist
 .gstack
 .claude/scheduled_tasks.lock
 vite.log
+.env
+.env.*
+!.env.example
+.claude/worktrees/
+*.log
+client/public/models/*.glb

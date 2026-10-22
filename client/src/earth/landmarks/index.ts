@@ -12,8 +12,11 @@ import { haversine } from '../frame.ts';
 import { LANDMARKS, type Landmark } from './catalog.ts';
 import { nightMats, type Built } from './kit.ts';
 import { BUILDERS, latticeNight } from './models.ts';
+import './west-models.ts'; // ---- West Coast: registers its builders
 import { buildSigns, signStyleKey, type StreetSigns } from './signs.ts';
 import { TKTS, buildScreens, screenTime, tktsSteps } from './timessq.ts';
+// ---- Asia-Pacific & Latin America
+import { buildApacStreet } from './apac-street.ts';
 
 /** What the chunk manager exposes to the layer. */
 interface Host {
@@ -97,6 +100,9 @@ export class LandmarkLayer {
     if (signs) { signs.group.visible = this.showSigns; ch.group.add(signs.group); this.signs.set(ch.key, { s: signs, x0: ch.x0, z0: ch.z0 }); }
     const screens = buildScreens(this.host.frame, o.footprints, ch.x0, ch.z0);
     if (screens) ch.group.add(screens);
+    // ---- Asia-Pacific & Latin America: vertical shop signs, the Shibuya screens.
+    const apac = buildApacStreet(this.host.frame, o.footprints, o.edges, ch.x0, ch.z0, o.size);
+    if (apac) ch.group.add(apac);
     // Footprints for look-at.
     const keys: string[] = [];
     for (const f of o.footprints) {
@@ -134,7 +140,7 @@ export class LandmarkLayer {
     p.sig = sig;
     let span: number | undefined;
     // Bridges: the map's tower parts fall into two clusters; the model spans between them.
-    if (p.l.road && claims.length >= 2) {
+    if (p.l.road && !p.l.keepPlace && claims.length >= 2) {
       const cs = claims.map((c) => ringCenter(c.ring));
       let a = cs[0], b = cs[0], far = 0;
       for (const c of cs) { const d = Math.hypot(c.x - cs[0].x, c.z - cs[0].z); if (d > far) { far = d; b = c; } }
@@ -172,7 +178,9 @@ export class LandmarkLayer {
     };
     const rings = claims.map((c) => ({ ring: toModel(c.ring), holes: c.holes.map(toModel), y0: (c.minH > 0.5 ? c.base + c.minH : c.base - 1.6) - p.y, y1: c.top - p.y }));
     const minY = claims.length ? Math.min(...claims.map((c) => c.minH)) : 0;
-    const b = BUILDERS[p.l.model]({ rings, minY, span });
+    // ---- West Coast: ground heights in the model frame (the Hollywood Sign's letters follow the slope).
+    const groundAt = (mx: number, mz: number) => { const h = this.host.heightAt(p.x + mx * cos + mz * sin, p.z - mx * sin + mz * cos); return h === null ? 0 : h - p.y; };
+    const b = BUILDERS[p.l.model]({ rings, minY, span, groundAt });
     b.group.name = `landmark:${p.l.id}`;
     b.group.position.set(p.x, p.y, p.z);
     b.group.rotation.y = p.rot;

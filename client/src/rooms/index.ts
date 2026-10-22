@@ -173,7 +173,8 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
       }
       if (best) { core = best; hasLift = lift; break search; }
     }
-    if (!core) floors = 1;
+    // No room for stairs: a tall, narrow building can still have a lift on its own (found below).
+    if (!core && !wantLift(floors)) floors = 1;
   }
   // The lift shaft: behind the stairs, or on its own (no room by the stairs).
   const LIFT_W = 1.9, LIFT_D = 1.75, SHAFT_D = LIFT_D + 0.46;
@@ -195,6 +196,7 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
       if (liftBase) break;
     }
   }
+  if (!core && !liftBase) floors = 1; // neither stairs nor a lift fit: just the ground floor
   const coreRect: Rect | null = core ? coreAt(core.cu, core.cv, core.len, hasLift) : null;
   /** Lane rect (u,v) for lane 0/1. Lane 0 climbs toward +u, lane 1 toward -u. */
   const laneRect = (lane: number): Rect => {
@@ -228,7 +230,9 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
   const sunDir = new THREE.Vector3(0.35, 0.8, 0.25).normalize();
   // Image-based light: a soft studio room until the city view (captured per floor) replaces it.
   const pmrem = info.pmrem ?? null;
-  const roomEnv = pmrem ? pmrem.fromScene(new RoomEnvironment(), 0.04) : null;
+  const studio = pmrem ? new RoomEnvironment() : null;
+  const roomEnv = pmrem && studio ? pmrem.fromScene(studio, 0.04) : null;
+  studio?.dispose(); // only needed for the capture
   // Kept on every floor (the city view is only the backdrop), so rooms are evenly exposed: white walls
   // and tables sit just under the bloom threshold, which a brighter room would haze over.
   if (roomEnv) { scene.environment = roomEnv.texture; scene.environmentIntensity = 0.5 * lightMul; }
@@ -969,6 +973,7 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
       views.dispose();
       roomEnv?.dispose();
       lift?.dispose();
+      scene.traverse((o) => { if ((o as THREE.Light).isLight) (o as THREE.Light).dispose(); }); // their shadow maps
     },
   };
   setFloor(0);

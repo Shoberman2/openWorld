@@ -106,7 +106,7 @@ export function openReview(agentId: string): void {
     if (a.summary && !LIVE.has(a.status)) html += `<div class="rv-summary"><small>What ${esc(a.name.replace(/^Agent /, ''))} did</small><p>${esc(a.summary)}</p></div>`;
     if (!LIVE.has(a.status)) {
       if (files.length) html += `<div class="rv-files-h"><b>${files.length} file${files.length === 1 ? '' : 's'}</b><span>${esc(diff?.stat.split('\n').pop()?.trim() || a.diffStat || '')}</span><button class="rv-toggle" data-all>Collapse all</button></div>${files.map((f, i) => renderFile(f, files.length <= 4 || i < 2)).join('')}`;
-      else if (a.status !== 'needs_input') html += `<div class="rv-empty"><b>No file changes.</b><p>${a.review === 'discarded' ? '' : 'Nothing to ship. Read the summary above, or ask for changes.'}</p></div>`;
+      else if (a.status !== 'needs_input') html += `<div class="rv-empty"><b>No file changes.</b><p>${a.review === 'discarded' ? '' : a.summary ? 'Nothing to ship. Read the summary above, or ask for changes.' : 'Nothing to ship, and this run left no summary. Ask for changes to send it back with more direction.'}</p></div>`;
     }
     panel.body.innerHTML = html;
     const all = panel.body.querySelector<HTMLButtonElement>('[data-all]');

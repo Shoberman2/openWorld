@@ -160,7 +160,7 @@ export function registerTiles(app: Express) {
   app.get('/api/tiles/:kind/:z/:x/:y', async (req: Request, res: Response) => {
     const kind = String(req.params.kind);
     const z = Number(req.params.z), x = Number(req.params.x), y = Number(String(req.params.y).replace(/\.\w+$/, ''));
-    const src = SOURCES[kind];
+    const src = Object.hasOwn(SOURCES, kind) ? SOURCES[kind] : undefined;
     const n = 2 ** z;
     if (!src || !Number.isInteger(z) || !Number.isInteger(x) || !Number.isInteger(y) || z < 0 || z > src.maxZ || x < 0 || y < 0 || x >= n || y >= n) {
       res.status(400).json({ error: 'bad tile' });

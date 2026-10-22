@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { quality, shared } from '../engine.ts';
 import { styleGlsl } from './build/facades.ts';
+// ---- Europe & Middle East
+import { euProps } from './cities/eu-props.ts';
 
 const NOISE = /* glsl */ `
   float eh21(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
@@ -714,7 +716,7 @@ export function buildingMaterial() {
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
         ${NEUTRAL_SHADE}`);
   };
-  mat.customProgramCacheKey = () => 'earth-building-v9';
+  mat.customProgramCacheKey = () => 'earth-building-v13';
   mat.userData.quality = facadeQuality;
   buildingMat = mat;
   return mat;
@@ -1404,7 +1406,10 @@ export function propGeometries() {
     ...bikes,
     part(new THREE.BoxGeometry(0.5, 1.9, 0.4).translate(3.6, 0.95, -0.9), 0x1d3f7a),
   ]);
-  return [bench, bin, hydrant, merge([manhole, lid]), mailbox, pit, subway, newsstand, shelter, dock];
+  const kinds: THREE.BufferGeometry[] = [bench, bin, hydrant, merge([manhole, lid]), mailbox, pit, subway, newsstand, shelter, dock];
+  // ---- Europe & Middle East (kinds 20–22, see earth/cities/eu-props.ts)
+  euProps(kinds, part, merge);
+  return kinds;
 }
 
 let ironMat: THREE.MeshStandardMaterial | null = null;
@@ -1461,6 +1466,8 @@ export function ironMaterial() {
 
 /** Colliders for street furniture by kind: [half-size, height]; 0 = walk over it. */
 export const PROP_COLLIDE: [number, number][] = [[0.6, 0.5], [0.28, 0.9], [0.28, 0.9], [0, 0], [0.3, 1.2], [0, 0], [1.3, 1.1], [1.3, 2.4], [0, 0], [0, 0]];
+// ---- Europe & Middle East: pillar box, K6 kiosk, Morris column.
+PROP_COLLIDE[20] = [0.32, 1.5]; PROP_COLLIDE[21] = [0.5, 2.5]; PROP_COLLIDE[22] = [0.65, 3.4];
 
 export const propMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.25 });
 
@@ -1501,4 +1508,51 @@ export function shoreMaterial() {
   m.customProgramCacheKey = () => 'earth-shore-v1';
   shoreMat = m;
   return m;
+}
+
+// ---- West Coast
+/**
+ * Mexican fan palm (Los Angeles, Las Vegas): a pencil-thin trunk 17 m up, a skirt of dry fronds, and
+ * a small round head of fan leaves.
+ */
+export function fanPalmTree() {
+  const parts: THREE.BufferGeometry[] = [];
+  const H = 17, segs = 8;
+  for (let i = 0; i < segs; i++) {
+    const t = i / segs, y0 = t * H, lean = t * t * 0.45;
+    const seg = new THREE.CylinderGeometry(0.17 - t * 0.05, 0.22 - t * 0.05, H / segs + 0.05, 6, 1, true).translate(lean, y0 + H / segs / 2, 0);
+    parts.push(atlasPart(seg, ATLAS.bark, 0xbfae96));
+  }
+  const top = new THREE.Vector3(0.45, H, 0);
+  // The skirt of old fronds hanging against the trunk.
+  parts.push(atlasPart(new THREE.CylinderGeometry(0.62, 0.3, 1.5, 8, 1, true).translate(top.x, H - 0.55, 0), ATLAS.plain, 0x8a7350));
+  const frond = (a: number, tilt: number, len: number) => {
+    const pts: number[] = [], n = 4;
+    for (let j = 0; j <= n; j++) {
+      const t = j / n, l = len * t;
+      const y = Math.sin(tilt) * l - t * t * 0.5;
+      const w = t < 0.35 ? 0.06 : Math.sin(((t - 0.35) / 0.65) * Math.PI) * 0.75 + 0.06;
+      const cx = top.x + Math.cos(a) * Math.cos(tilt) * l, cz = top.z + Math.sin(a) * Math.cos(tilt) * l;
+      const px = -Math.sin(a) * w, pz = Math.cos(a) * w;
+      pts.push(cx + px, top.y + y, cz + pz, cx - px, top.y + y, cz - pz);
+    }
+    const pos: number[] = [];
+    for (let j = 0; j < n; j++) {
+      const i0 = j * 6, i1 = (j + 1) * 6;
+      const A = pts.slice(i0, i0 + 3), B = pts.slice(i0 + 3, i0 + 6), C = pts.slice(i1, i1 + 3), D = pts.slice(i1 + 3, i1 + 6);
+      pos.push(...A, ...B, ...C, ...B, ...D, ...C);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.computeVertexNormals();
+    const part = atlasPart(g, ATLAS.plain, 0xffffff);
+    part.setAttribute('color', colored(g.clone(), 0x5f7a36, 0x3d5226).getAttribute('color'));
+    return part;
+  };
+  for (let k = 0; k < 14; k++) {
+    const a = (k / 14) * Math.PI * 2 + (k % 2) * 0.2;
+    const tilt = k % 3 === 0 ? 0.9 : k % 3 === 1 ? 0.35 : -0.15;
+    parts.push(frond(a, tilt, 2.1 + (k % 2) * 0.3));
+  }
+  return mergeParts(parts);
 }

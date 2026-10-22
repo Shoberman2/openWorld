@@ -448,8 +448,23 @@ export interface ProvidersState {
   providers: ProviderStatus[];
   defaultProvider: AgentProviderId | null;
   chat: { provider: ChatProviderId | null; model: string | null; models: string[]; options: ChatProviderId[] };
+  /** Any OpenAI-compatible endpoint (OpenRouter, Ollama, LM Studio, Groq…), or null when none is set up. */
+  compat: CompatStatus | null;
   /** Keys can only be changed from this computer (not from a headset on the network). */
   canEdit: boolean;
 }
 
-export type ChatProviderId = 'anthropic' | 'claude-cli' | 'openai' | 'gemini';
+export type ChatProviderId = 'anthropic' | 'claude-cli' | 'codex-cli' | 'openai' | 'gemini' | 'compat';
+
+export interface CompatStatus {
+  preset: string | null; // "openrouter", "ollama"… or null for a custom URL
+  baseUrl: string;
+  model: string;
+  key: { set: boolean; last4: string | null };
+  fromEnv: boolean;
+}
+
+// POST   /api/providers/compat/test {preset?, baseUrl, key?, model?} -> CompatTest (loopback only)
+// POST   /api/providers/compat      {preset?, baseUrl, key?, model}  -> ProvidersState (tested first; loopback only)
+// DELETE /api/providers/compat                                       -> ProvidersState
+export interface CompatTest { ok: boolean; message: string; models: string[] }

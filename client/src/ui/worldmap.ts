@@ -359,6 +359,7 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
     hits = [];
     const ms = opts.markers().slice().sort((a, b) => Number(!!b.big) - Number(!!a.big));
     gx.font = `700 ${12 * dpr}px Inter, sans-serif`; gx.textAlign = 'center'; gx.textBaseline = 'bottom';
+    const named: { m: MapMarker; p: { x: number; y: number } }[] = [];
     for (const m of ms) {
       const p = toScreen(m.lat, m.lon);
       if (p.x < -20 || p.y < -20 || p.x > W + 20 || p.y > H + 20) continue;
@@ -371,13 +372,16 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
       gx.beginPath(); gx.arc(p.x, p.y, (m.teleport ? 7.5 : m.big ? 7 : 5) * dpr, 0, Math.PI * 2);
       gx.fillStyle = m.color; gx.fill();
       gx.lineWidth = 2 * dpr; gx.strokeStyle = '#fff'; gx.stroke();
-      if (!m.label || !(m.big || zoom >= 16 || (m.teleport && zoom >= 12.5))) continue;
-      const w = gx.measureText(m.label).width / 2 + 3 * dpr;
+      if (m.label && (m.big || zoom >= 16 || (m.teleport && zoom >= 12.5))) named.push({ m, p });
+    }
+    // Names after every dot, so a later dot never paints over an earlier name.
+    for (const { m, p } of named) {
+      const w = gx.measureText(m.label!).width / 2 + 3 * dpr;
       const r = { x0: p.x - w, x1: p.x + w, y0: p.y - 30 * dpr, y1: p.y - 12 * dpr };
       if (placed.some((q) => r.x0 < q.x1 && q.x0 < r.x1 && r.y0 < q.y1 && q.y0 < r.y1)) continue;
       placed.push(r);
-      gx.lineWidth = 3 * dpr; gx.strokeStyle = 'rgba(255,255,255,.9)'; gx.strokeText(m.label, p.x, p.y - 14 * dpr);
-      gx.fillStyle = '#2b2622'; gx.fillText(m.label, p.x, p.y - 14 * dpr);
+      gx.lineWidth = 3 * dpr; gx.strokeStyle = 'rgba(255,255,255,.9)'; gx.strokeText(m.label!, p.x, p.y - 14 * dpr);
+      gx.fillStyle = '#2b2622'; gx.fillText(m.label!, p.x, p.y - 14 * dpr);
     }
     // Selected spot.
     if (selected) {
@@ -487,5 +491,6 @@ layerCss.textContent = `
 .ow-wm-layers button { border: 0; background: transparent; padding: 6px 11px; border-radius: 9px; font: 600 13px Inter, sans-serif; color: #2b2622; cursor: pointer; }
 .ow-wm-layers button.on { background: #2b2622; color: #f4ead8; }
 .ow-wm-layers small { padding: 0 6px; font: 500 11px Inter, sans-serif; opacity: .7; }
+@media (max-width: 700px) { .ow-wm-layers { left: 8px; top: 112px; max-width: calc(100vw - 16px); } }
 `;
 document.head.appendChild(layerCss);

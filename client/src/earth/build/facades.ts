@@ -4,6 +4,10 @@
 // (stoops, fire escapes, cornices) and the facade shader paints its windows, so both read the same
 // floor heights and bay widths from here. No three.js imports: this runs in the chunk worker too.
 
+// ---- East US
+import { EAST_STYLES, eastStyle } from '../cities/east.ts';
+import { westKnown, westStyle } from '../cities/west.ts';
+
 export type RGB = [number, number, number];
 
 export interface FacadeStyle {
@@ -134,13 +138,40 @@ export const STYLES: FacadeStyle[] = [
     ground0: 0, cornice: 0.5, stoop: 0.6, bayWindow: 0.8 }),
   // Amsterdam canal house: narrow, dark brick, big white-framed windows.
   S({ name: 'canal', floor: [2.9, 3.3], ground: [0, 0], plinth: 0.8, bay: [1.5, 1.8], winW: [0.56, 0.64], winH: [0.6, 0.68], lintel: 0.4, brick: 1, sash: 0.8,
-    walls: H('#6a3428', '#7a3c2c', '#5a2e24', '#8a4a36', '#4e2c26', '#6f4a3a'), trim: [236, 232, 222], frame: [240, 238, 232], ground0: 0, cornice: 0.2 }),
+    walls: H('#6a3428', '#7a3c2c', '#5a2e24', '#8a4a36', '#4e2c26', '#6f4a3a', '#3e3b39', '#e6e0d2', '#8c7660', '#5c4a3f'), trim: [236, 232, 222], frame: [240, 238, 232], ground0: 0, cornice: 0.2 }),
   // Indiana limestone Art Deco (Rockefeller Center): smooth pale stone, slim continuous piers, dark spandrels.
   S({ name: 'limestone', floor: [3.6, 3.8], ground: [5.6, 6.2], bay: [1.5, 1.7], winW: [0.5, 0.54], winH: [0.6, 0.64], pier: 0.9, baseFloors: 1,
     walls: H('#d9d2c2', '#d3cbb9', '#ddd7c9', '#cfc7b4'), trim: [228, 222, 208], frame: [58, 60, 62], base: [200, 192, 176], ground0: 2, cornice: 0.08 }),
   // Place des Vosges: red brick with white stone quoins and window surrounds, steep slate roofs.
   S({ name: 'vosges', floor: [3.6, 3.9], ground: [4.8, 5.2], bay: [2.8, 3.2], winW: [0.42, 0.46], winH: [0.64, 0.7], lintel: 1, brick: 1, mansard: 1,
     walls: H('#a4513c', '#9a4a37', '#ad5a43', '#b0604a'), trim: [234, 228, 214], frame: [232, 228, 218], base: [214, 206, 190], ground0: 1, cornice: 0.2 }),
+  // ---- East US: miamideco, condo, bowfront, chicagoschool (cities/east.ts).
+  ...EAST_STYLES.map(S),
+  // ---- Asia-Pacific & Latin America
+  // Sydney / Melbourne Victorian terrace: two storeys of painted render or face brick behind a
+  // verandah, the upper balcony fenced in cast-iron lace, sash windows, a parapet on top.
+  S({ name: 'terrace', floor: [3.3, 3.7], ground: [0, 0], plinth: 0.5, bay: [2.0, 2.4], winW: [0.42, 0.48], winH: [0.62, 0.7], lintel: 0.4, sash: 1, balcony: 1,
+    walls: H('#e9e1cf', '#d8c3a0', '#efe9dc', '#b5a28a', '#a0523d', '#8f9a86', '#c4a27a', '#e3d6bd', '#8c4a36'), trim: [240, 236, 226], frame: [244, 242, 236],
+    base: [214, 204, 186], ground0: 0, cornice: 0.35 }),
+  // ---- West Coast (cities/west.ts picks these)
+  // Waikiki hotels and condos: white and sand concrete, a balcony at every unit, sliding glass doors.
+  S({ name: 'resort', floor: [2.85, 3.05], ground: [4.6, 5.6], bay: [3.2, 4.0], winW: [0.7, 0.8], winH: [0.62, 0.7], ribbon: 0.2, balcony: 2,
+    walls: H('#efece4', '#e8e2d4', '#f2efe8', '#e6dccb', '#dcd7cc', '#eadfd0', '#d9d4c6'), trim: [244, 242, 236], frame: [176, 184, 190], ground0: 2, cornice: 0.06 }),
+  // Las Vegas resort towers: smooth stucco in cream, gold and bronze, bands of tinted glass.
+  S({ name: 'casino', floor: [3.0, 3.2], ground: [6.0, 7.0], bay: [2.2, 2.8], winW: [0.7, 0.8], winH: [0.4, 0.48], ribbon: 0.6,
+    walls: H('#e6d6b2', '#d9c08a', '#c9a66b', '#efe9dc', '#e3cfc0', '#b98f5e', '#d8d2c4'), trim: [236, 226, 206], frame: [150, 122, 84], ground0: 2, cornice: 0.15 }),
+  // Southern California Spanish revival: white and cream stucco, arched windows, dark wood frames, tile roofs.
+  S({ name: 'spanish', floor: [3.1, 3.5], ground: [0, 0], plinth: 0.4, bay: [2.4, 3.2], winW: [0.36, 0.44], winH: [0.5, 0.6], arch: 0.45,
+    walls: H('#f1ece1', '#ece3d1', '#efe0c8', '#e9d5bd', '#f4efe6', '#e3d2b8', '#dcc9ae'), trim: [240, 236, 228], frame: [74, 54, 40], ground0: 0, cornice: 0.05 }),
+  // ---- Europe & Middle East
+  // Portland stone (London's West End, Westminster, the City): white-grey limestone, a rusticated
+  // base, tall sash windows with stone surrounds, a strong cornice, dark slate attics.
+  S({ name: 'portland', floor: [3.6, 4.1], ground: [4.6, 5.4], bay: [2.3, 2.8], winW: [0.42, 0.48], winH: [0.6, 0.68], lintel: 1, baseFloors: 1, sash: 1, mansard: 0.6,
+    walls: H('#e2dccd', '#d9d2c1', '#e6e1d5', '#cfc8b6', '#ddd6c4'), trim: [238, 234, 224], frame: [246, 244, 238], base: [206, 199, 184], ground0: 1, cornice: 0.5 }),
+  // Gothic Revival in honey Anston limestone (the Palace of Westminster): narrow tall windows between
+  // buttress piers, traceried panels, tall floors.
+  S({ name: 'gothicRevival', floor: [4.6, 5.2], ground: [0, 0], plinth: 1.2, bay: [1.7, 2.0], winW: [0.36, 0.42], winH: [0.66, 0.74], arch: 1, lintel: 0.8, pier: 1,
+    walls: H('#c6a86e', '#bf9f66', '#cbaf78', '#b99a62'), trim: [212, 190, 140], frame: [70, 66, 60], base: [196, 178, 136], ground0: 0, cornice: 0.3, corniceColor: [204, 186, 142] }),
 ];
 
 /**
@@ -152,10 +183,18 @@ const KNOWN: { lat: number; lon: number; r: number; r0?: number; style: string; 
   { lat: 40.75885, lon: -73.97905, r: 150, style: 'limestone' }, // Rockefeller Center, Fifth to Sixth Avenue
   { lat: 40.763634, lon: -73.972509, r: 15, style: 'limestone', maxH: 30 }, // the GM Building's white marble base
   { lat: 48.85561, lon: 2.36549, r: 118, r0: 58, style: 'vosges', maxH: 30 }, // Place des Vosges
+  // ---- Europe & Middle East
+  { lat: 51.49935, lon: -0.12475, r: 140, style: 'gothicRevival', maxH: 110 }, // the Palace of Westminster
+  { lat: 51.49929, lon: -0.12734, r: 60, style: 'gothicRevival', maxH: 80 }, // Westminster Abbey
+  { lat: 51.51383, lon: -0.09836, r: 95, style: 'portland', maxH: 45 }, // St Paul's Cathedral and its churchyard
+  { lat: 51.51355, lon: -0.11365, r: 70, style: 'gothicRevival', maxH: 50 }, // the Royal Courts of Justice
+  { lat: 51.50140, lon: -0.14190, r: 75, style: 'portland', maxH: 30 }, // Buckingham Palace
 ];
 
 /** A known ensemble's style for a building at (lat, lon), or -1. */
 export function knownStyle(lat: number, lon: number, h: number): number {
+  const west = westKnown(lat, lon, h); // ---- West Coast
+  if (west) return STYLE[west];
   for (const k of KNOWN) {
     if (k.maxH && h > k.maxH) continue;
     const dy = (lat - k.lat) * 111_320, dx = (lon - k.lon) * 111_320 * Math.cos((k.lat * Math.PI) / 180), d = Math.hypot(dx, dy);
@@ -219,6 +258,9 @@ export const inManhattan = (lat: number, lon: number) => lat > 40.698 && lat < 4
  * `area` its footprint, `r` a 0..1 hash for this building.
  */
 export function chooseStyle(region: string, country: string, lat: number, lon: number, h: number, area: number, r: number): number {
+  // ---- East US: Miami, Boston, Chicago, Washington, Toronto (cities/east.ts).
+  if (country === 'us') { const west = westStyle(lat, lon, h, r); if (west) return STYLE[west]; } // ---- West Coast
+  if (country === 'us' || country === 'ca') { const e = eastStyle(country, lat, lon, h, r); if (e) return STYLE[e]; }
   if (country === 'us') {
     // New York City: by neighborhood.
     if (inBox(lat, lon, 40.49, -74.27, 40.92, -73.68)) {
@@ -258,6 +300,11 @@ export function chooseStyle(region: string, country: string, lat: number, lon: n
     if (h < 14) return r < 0.5 ? STYLE.brownstone : STYLE.tenement;
     return r < 0.4 ? STYLE.prewar : r < 0.7 ? STYLE.tenement : STYLE.office;
   }
+  // ---- Europe & Middle East
+  // Central London (Westminster, the West End, the City): Portland stone for most mid-rise blocks.
+  if (region === 'gb' && inBox(lat, lon, 51.495, -0.19, 51.525, -0.07) && h >= 14 && h < 45) return r < 0.55 ? STYLE.portland : r < 0.85 ? STYLE.georgian : STYLE.office;
+  // Amsterdam's canal ring and Jordaan: the map's heights include the gables, so the houses run taller.
+  if (region === 'nl' && inBox(lat, lon, 52.355, 4.86, 52.385, 4.92) && h < 27) return STYLE.canal;
   switch (region) {
     case 'gb': return h < 18 ? (r < 0.6 ? STYLE.georgian : STYLE.stucco) : h < 40 ? (r < 0.5 ? STYLE.georgian : STYLE.office) : STYLE.office;
     case 'fr': return h < 40 ? (r < 0.85 ? STYLE.haussmann : STYLE.altbau) : STYLE.office;
@@ -267,7 +314,8 @@ export function chooseStyle(region: string, country: string, lat: number, lon: n
     case 'latin': return h < 30 ? (r < 0.8 ? STYLE.latin : STYLE.mediterranean) : r < 0.6 ? STYLE.latin : STYLE.postwar;
     case 'asia': return h < 50 ? (r < 0.85 ? STYLE.asiamodern : STYLE.postwar) : r < 0.7 ? STYLE.asiamodern : STYLE.office;
     case 'gulf': case 'levant': return h < 40 ? STYLE.levant : r < 0.5 ? STYLE.levant : STYLE.office;
-    case 'aus': return h < 16 ? (r < 0.5 ? STYLE.georgian : STYLE.stucco) : h < 40 ? (r < 0.5 ? STYLE.prewar : STYLE.office) : STYLE.office;
+    // ---- Asia-Pacific & Latin America: Victorian terraces, sandstone and buff-brick commercial blocks.
+    case 'aus': return h < 13 ? (r < 0.7 ? STYLE.terrace : r < 0.85 ? STYLE.georgian : STYLE.stucco) : h < 40 ? (r < 0.4 ? STYLE.deco : r < 0.7 ? STYLE.office : STYLE.postwar) : STYLE.office;
     default: return h < 20 ? (r < 0.5 ? STYLE.altbau : STYLE.generic) : r < 0.5 ? STYLE.postwar : STYLE.generic;
   }
 }

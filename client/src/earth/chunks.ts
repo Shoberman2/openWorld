@@ -8,7 +8,7 @@ import type { GeoFrame } from './frame.ts';
 import type { Pool } from './pool.ts';
 import type { ChunkOut, FootprintData, MeshData } from './build/types.ts';
 import { RoadNet, signalState } from './net.ts';
-import { MATS, buildingMaterial, coniferTree, farMask, groundMaterial, ironMaterial, lampGeometries, lampPoolTexture, lollipopTree, palmTree, PROP_COLLIDE, propGeometries, propMat, shoreMaterial, treeMat, waterMaterial } from './style.ts';
+import { MATS, buildingMaterial, coniferTree, farMask, groundMaterial, ironMaterial, lampGeometries, lampPoolTexture, lollipopTree, palmTree, fanPalmTree, PROP_COLLIDE, propGeometries, propMat, shoreMaterial, treeMat, waterMaterial } from './style.ts';
 import { ParkLayer, setParkViewer } from './parks.ts';
 import { LandmarkLayer } from './landmarks/index.ts';
 
@@ -101,8 +101,8 @@ let shared3: ReturnType<typeof makeShared> | null = null;
 function makeShared() {
   const lamp = lampGeometries();
   return {
-    trees: [lollipopTree(), coniferTree(), palmTree()],
-    treesFar: [lollipopTree(true), coniferTree(true), null],
+    trees: [lollipopTree(), coniferTree(), palmTree(), fanPalmTree()], // ---- West Coast: 3 = fan palm
+    treesFar: [lollipopTree(true), coniferTree(true), null, null],
     lampPole: lamp.pole, lampHead: lamp.head,
     poleMat: new THREE.MeshStandardMaterial({ color: 0x3b4046, metalness: 0.5, roughness: 0.5 }),
     headMat: new THREE.MeshStandardMaterial({ color: 0x2a2a2a, emissive: 0xffd9a0, emissiveIntensity: 0 }),
@@ -454,7 +454,7 @@ export class Chunks {
     const tint = new THREE.Color();
     // Trees by kind: full leaf cards near the viewer, a light version further out.
     const scatters: Scatter[] = [];
-    for (let kind = 0; kind < 3; kind++) {
+    for (let kind = 0; kind < sh.trees.length; kind++) {
       const idx: number[] = [];
       for (let i = 0; i < o.trees.length; i += 6) if (o.trees[i + 5] === kind) idx.push(i);
       if (!idx.length) continue;

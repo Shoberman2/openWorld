@@ -78,6 +78,15 @@ export class Autopilot {
     const here = earth.frame.toGeo(v.pos.x, v.pos.z);
     const dist = haversine(here, t);
     this.distance = dist;
+    // A shuttle launch flies itself (stand up, lift off, climb clear of the towers) facing the course;
+    // the autopilot takes over above that.
+    if (v instanceof Shuttle && v.launching) {
+      if (v.grounded) {
+        const b0 = (bearing(here, t) * Math.PI) / 180;
+        v.heading = Math.atan2(Math.sin(b0), -Math.cos(b0));
+      }
+      return false;
+    }
     if (dist < P.handover) {
       this.disengage();
       this.o.onArrive(t);

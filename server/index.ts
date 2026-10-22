@@ -11,7 +11,7 @@ import {
   validateToken, resetToken,
 } from './github.ts';
 import { streamClaude, transcriptPrompt } from './llm.ts';
-import { listAgents, startAgent, stopAgent, openPr, agentLog, setBroadcaster, agentDiff, reviewAgent, answerAgent } from './agents.ts';
+import { listAgents, startAgent, stopAgent, openPr, agentLog, setBroadcaster, agentDiff, reviewAgent, answerAgent, stopAllAgents } from './agents.ts';
 import { convene, listDecisions } from './boardroom.ts';
 import { searchPlaces, reverse } from './geo.ts';
 import { registerOffice } from './office.ts';
@@ -25,10 +25,13 @@ import { registerSchedules } from './schedules.ts';
 import { registerBriefing } from './briefing.ts';
 import { registerControl } from './control.ts';
 import { registerProviders, providerStatuses } from './providers/index.ts';
+import { guardHttp, localOnly, trustedRequest } from './guard.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4317;
 const app = express();
+// Only pages from this machine may drive it (see guard.ts).
+app.use(guardHttp);
 // Photo uploads (large data URLs) parse their own body.
 const json1mb = express.json({ limit: '1mb' });
 app.use((req, res, next) => (req.path === '/api/photos' ? next() : json1mb(req, res, next)));
@@ -99,6 +102,9 @@ app.get('/api/repos/:name/logo', h(async (req, res) => {
   const file = await ensureLogo(repo);
   if (!file) return res.status(404).json({ error: 'No logo found' });
   res.setHeader('Content-Type', logoContentType(file));
+  // Logos come from repos (other people's, too) and an SVG can carry script: never let it run on our origin.
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(readFileSync(file));
   return undefined;
@@ -314,7 +320,8 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 // ---------- http + websocket ----------
 
 const server = createServer(app);
-const sockets = [new WebSocketServer({ server, path: '/ws' })];
+server.on('connection', localOnly);
+const sockets = [new WebSocketServer({ server, path: '/ws', verifyClient: ({ req }: { req: IncomingMessage }) => trustedRequest(req) })];
 function broadcastAll(msg: ServerMsg) {
   const data = JSON.stringify(msg);
   for (const wss of sockets) for (const client of wss.clients) if (client.readyState === WebSocket.OPEN) client.send(data);
@@ -323,7 +330,7 @@ setBroadcaster(broadcastAll);
 // OPENWORLD_HTTPS=1: also serve over HTTPS on the LAN, for VR headsets (WebXR needs a secure context).
 if (httpsEnabled()) {
   startHttps(app, Number(process.env.HTTPS_PORT) || PORT + 1, (srv, allowed) =>
-    sockets.push(new WebSocketServer({ server: srv, path: '/ws', verifyClient: ({ req }: { req: IncomingMessage }) => allowed(req) })));
+    sockets.push(new WebSocketServer({ server: srv, path: '/ws', verifyClient: ({ req }: { req: IncomingMessage }) => allowed(req) && trustedRequest(req) })));
 }
 
 server.listen(PORT, () => {
@@ -331,3 +338,12 @@ server.listen(PORT, () => {
   // warm the repo cache (and kick off logo discovery) so the city loads fast
   listRepos().catch((e) => console.warn('GitHub not ready:', e.message));
 });
+
+// A stray rejection in a background job (a report, a schedule tick) shouldn't take the whole server down.
+process.on('unhandledRejection', (e) => console.warn('Unhandled:', e instanceof Error ? e.message : e));
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(sig, () => {
+    stopAllAgents();
+    process.exit(0);
+  });
+}

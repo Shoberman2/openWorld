@@ -8,6 +8,7 @@ import type { AgentRunner, KeySlot } from './common.ts';
 import { claude } from './claude.ts';
 import { codex } from './codex.ts';
 import { gemini } from './gemini.ts';
+import { compatConfig, compatModels, compatStatus, normalizeBaseUrl, testCompat } from './compat.ts';
 
 export const RUNNERS: AgentRunner[] = [claude, codex, gemini];
 export const runner = (id: AgentProviderId | string | null | undefined) => RUNNERS.find((r) => r.id === id) ?? null;
@@ -76,9 +77,12 @@ const CLI_MODELS = ['sonnet', 'opus', 'haiku'];
 export const FALLBACK_MODEL: Record<ChatProviderId, string> = {
   anthropic: 'claude-sonnet-5-5',
   'claude-cli': 'sonnet',
+  'codex-cli': '',
   openai: 'gpt-5.6-terra',
   gemini: 'gemini-3.6-flash',
+  compat: '',
 };
+let compatListed: string[] = [];
 const listed = new Map<KeySlot, string[]>();
 
 const version = (id: string) => (id.match(/\d+(\.\d+)?/g) ?? ['0']).map(Number).reduce((a, n, i) => a + n / 1000 ** i, 0);
@@ -110,6 +114,8 @@ async function fetchModels(slot: KeySlot, key: string): Promise<{ ok: boolean; s
 
 function modelsFor(p: ChatProviderId): string[] {
   if (p === 'claude-cli') return CLI_MODELS;
+  if (p === 'codex-cli') return [];
+  if (p === 'compat') return compatListed;
   if (p === 'anthropic') return listed.get('anthropic')?.length ? [...new Set([...ANTHROPIC_MODELS, ...listed.get('anthropic')!])] : ANTHROPIC_MODELS;
   return listed.get(p) ?? [];
 }
@@ -119,6 +125,7 @@ function defaultModel(p: ChatProviderId): string {
   const list = modelsFor(p);
   if (p === 'openai') return list.find((m) => /^gpt-\d/.test(m) && !/(mini|nano|pro|cyber)/.test(m)) ?? list[0] ?? FALLBACK_MODEL.openai;
   if (p === 'gemini') return list.find((m) => /flash/.test(m) && !/lite/.test(m)) ?? list[0] ?? FALLBACK_MODEL.gemini;
+  if (p === 'compat') return compatConfig()?.model || list[0] || '';
   return FALLBACK_MODEL[p];
 }
 
@@ -127,8 +134,11 @@ async function chatOptions(): Promise<ChatProviderId[]> {
   const opts: ChatProviderId[] = [];
   if (keyFor('anthropic').key) opts.push('anthropic');
   if (st.find((p) => p.id === 'claude')?.installed && st.find((p) => p.id === 'claude')?.signedIn) opts.push('claude-cli');
+  // Signed in to Codex with a ChatGPT account: the office can talk through it with no API key.
+  if (st.find((p) => p.id === 'codex')?.installed && st.find((p) => p.id === 'codex')?.signedIn) opts.push('codex-cli');
   if (keyFor('openai').key) opts.push('openai');
   if (keyFor('gemini').key) opts.push('gemini');
+  if (compatConfig()?.model) opts.push('compat');
   return opts;
 }
 
@@ -150,6 +160,7 @@ export async function providersState(req?: Request): Promise<ProvidersState> {
     providers,
     defaultProvider: def && ready.includes(def) ? def : ready[0] ?? null,
     chat: { provider: chat?.provider ?? null, model: chat?.model ?? null, models: chat ? modelsFor(chat.provider) : [], options },
+    compat: compatStatus(),
     canEdit: !req || isLocal(req),
   };
 }
@@ -232,9 +243,52 @@ export function registerProviders(app: Express, h: (fn: (req: Request, res: any)
     return providersState(req);
   }));
 
+  // ---- Any OpenAI-compatible endpoint ----
+  const compatBody = (req: Request) => {
+    const baseUrl = normalizeBaseUrl(String(req.body?.baseUrl ?? ''));
+    if (!baseUrl) throw Object.assign(new Error('Enter the server URL, e.g. http://localhost:11434/v1'), { status: 400 });
+    let key = String(req.body?.key ?? '').trim() || undefined;
+    if (key && /\s/.test(key)) throw Object.assign(new Error('That key has spaces in it. Copy it again'), { status: 400 });
+    // Testing again without retyping the key: reuse the saved one, but only for the same server.
+    const saved = readConfig().compat;
+    if (!key && saved?.key && saved.baseUrl === baseUrl) key = saved.key;
+    const preset = String(req.body?.preset ?? '').replace(/[^a-z0-9-]/g, '').slice(0, 32) || undefined;
+    const model = String(req.body?.model ?? '').trim().slice(0, 200);
+    return { baseUrl, key, preset, model };
+  };
+
+  app.post('/api/providers/compat/test', h(async (req) => {
+    localOnly(req);
+    const c = compatBody(req);
+    return testCompat(c);
+  }));
+
+  app.post('/api/providers/compat', h(async (req) => {
+    localOnly(req);
+    const c = compatBody(req);
+    if (!c.model) throw Object.assign(new Error('Pick a model first'), { status: 400 });
+    const t = await testCompat(c);
+    if (!t.ok) throw Object.assign(new Error(t.message), { status: 400 });
+    compatListed = t.models;
+    writeConfig({ compat: { baseUrl: c.baseUrl, model: c.model, ...(c.key ? { key: c.key } : {}), ...(c.preset ? { preset: c.preset } : {}) }, chat: { provider: 'compat', model: c.model } });
+    logEvent('provider_compat_saved', { preset: c.preset ?? 'custom', keyed: !!c.key });
+    return providersState(req);
+  }));
+
+  app.delete('/api/providers/compat', h(async (req) => {
+    localOnly(req);
+    const cfg = readConfig();
+    writeConfig({ compat: undefined, ...(cfg.chat?.provider === 'compat' ? { chat: undefined } : {}) });
+    compatListed = [];
+    logEvent('provider_compat_removed', {});
+    return providersState(req);
+  }));
+
   // Refresh model lists for stored keys in the background so the chat picker is filled after a restart.
   for (const slot of ['anthropic', 'openai', 'gemini'] as KeySlot[]) {
     const { key } = keyFor(slot);
     if (key) fetchModels(slot, key).then((m) => m.ok && listed.set(slot, m.models), () => {});
   }
+  const cc = compatConfig();
+  if (cc) compatModels(cc).then((m) => { compatListed = m; }, () => {});
 }

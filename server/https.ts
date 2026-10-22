@@ -1,12 +1,13 @@
 import { createServer, type Server } from 'node:https';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Express } from 'express';
 import { PATHS } from './config.ts';
+import { allowHosts, loopback } from './guard.ts';
 
 // HTTPS for VR headsets. WebXR only runs in a secure context, and a Meta Quest reaches this Mac over
 // the LAN (not localhost), so `OPENWORLD_HTTPS=1` (or `npm run vr`) also serves the game over HTTPS
@@ -38,6 +39,7 @@ function certificate() {
       'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '825',
       '-keyout', KEY_FILE, '-out', CERT_FILE, '-subj', '/CN=OpenWorld (local)', '-addext', `subjectAltName=${san}`,
     ], { stdio: 'ignore' });
+    chmodSync(KEY_FILE, 0o600);
     writeFileSync(sanFile, san);
   }
   return { key: readFileSync(KEY_FILE), cert: readFileSync(CERT_FILE) };
@@ -49,7 +51,6 @@ function accessKey() {
   return readFileSync(ACCESS_FILE, 'utf8').trim();
 }
 
-const loopback = (addr?: string) => !addr || addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
 const cookieKey = (req: IncomingMessage) => /(?:^|;\s*)ow_key=([a-f0-9]+)/.exec(req.headers.cookie ?? '')?.[1];
 
 export const httpsEnabled = () => process.env.OPENWORLD_HTTPS === '1' || process.env.OPENWORLD_HTTPS === 'true';
@@ -60,6 +61,7 @@ export const httpsEnabled = () => process.env.OPENWORLD_HTTPS === '1' || process
  */
 export function startHttps(app: Express, port: number, attach: (srv: Server, allowed: (req: IncomingMessage) => boolean) => void) {
   const key = accessKey();
+  allowHosts(lanAddresses()); // the headset reaches it by this Mac's LAN address
   const allowed = (req: IncomingMessage) => loopback(req.socket.remoteAddress) || cookieKey(req) === key;
   const gate = (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     if (allowed(req)) return next();

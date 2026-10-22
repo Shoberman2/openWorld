@@ -17,6 +17,9 @@ import { OceanWaves } from './ocean.ts';
 import { SkylineRing } from '../sky.ts';
 import type { DayNight } from '../engine.ts';
 import { driveLeft } from './build/chunk.ts';
+// ---- Europe & Middle East
+import { EU_TAXI_SHARE, euVehicles } from './cities/eu-vehicles.ts';
+import { cityTaxiShare, tintCityTaxis } from './apac-traffic.ts';
 import type { FootprintData } from './build/types.ts';
 
 const HOME_R = 850;
@@ -60,7 +63,14 @@ const REBASE_M = 20_000;
 export async function searchPlaces(q: string): Promise<GeoPlace[]> {
   const res = await fetch(`/api/geo/search?q=${encodeURIComponent(q)}`);
   if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `Search failed (${res.status})`);
-  return res.json();
+  // Nominatim returns the district, its stations and its exits as separate hits with the same name and
+  // label ("Shibuya, Japan" six times): keep the best-ranked one of each within a few kilometres.
+  const out: GeoPlace[] = [];
+  for (const p of (await res.json()) as GeoPlace[]) {
+    const same = out.some((o) => o.name === p.name && o.label === p.label && Math.abs(o.lat - p.lat) < 0.03 && Math.abs(o.lon - p.lon) < 0.03);
+    if (!same) out.push(p);
+  }
+  return out;
 }
 
 export async function reverseGeo(lat: number, lon: number): Promise<GeoPlace | null> {
@@ -194,8 +204,10 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
   // Bikes ride with the traffic: everywhere a few couriers, in the Netherlands and Denmark a lot.
   const BIKES = 110;
   const bikesFor = (cc: string) => (['nl', 'dk'].includes(cc) ? 110 : ['de', 'be', 'jp', 'cn'].includes(cc) ? 40 : 16);
-  const traffic = new EarthTraffic(chunks.net, CARS, driveLeft(country), nyc ? 0.32 : 0, BIKES);
+  const traffic = new EarthTraffic(chunks.net, CARS, driveLeft(country), nyc ? 0.32 : cityTaxiShare(home.lat, home.lon) || (EU_TAXI_SHARE[country] ?? 0), BIKES);
+  tintCityTaxis(traffic, home.lat, home.lon); // ---- Asia-Pacific & Latin America
   traffic.bikesWanted = bikesFor(country); traffic.driveLeft = driveLeft(country);
+  traffic.restyle(euVehicles(country)); // ---- Europe & Middle East
   // Container ships out on the open sea.
   const ships = new EarthShips(low ? 3 : 6, (x, z) => chunks.waterAt(x, z), () => -e0);
   const benchesNear = (x: number, z: number, r: number) => {
@@ -262,6 +274,7 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
       traffic.net = chunks.net;
       peds.net = chunks.net;
       traffic.bikesWanted = bikesFor(country); traffic.driveLeft = driveLeft(country);
+      traffic.restyle(euVehicles(country)); // ---- Europe & Middle East
       atHome = goingHome;
       sitesGroup.visible = atHome;
       Object.assign(earth, { frame, e0, atHome, country });
@@ -322,7 +335,7 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
     earth.onShift?.(map);
     earth.onRebase?.();
     // Ask which country we're over now (driving side, regional styles).
-    void reverseGeo(base.lat, base.lon).then((g) => { if (g?.countryCode && frame === next) { country = g.countryCode; earth.country = country; traffic.bikesWanted = bikesFor(country); traffic.driveLeft = driveLeft(country); } });
+    void reverseGeo(base.lat, base.lon).then((g) => { if (g?.countryCode && frame === next) { country = g.countryCode; earth.country = country; traffic.bikesWanted = bikesFor(country); traffic.driveLeft = driveLeft(country); traffic.restyle(euVehicles(country)); } });
   }
   /** Retire ghost chunks the new world has covered, and whole ghosts once they're empty (or old). */
   function pruneGhosts() {

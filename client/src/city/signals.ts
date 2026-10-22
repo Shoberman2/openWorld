@@ -402,7 +402,7 @@ export function installCityPulse(o: CityPulseOptions) {
         col.multiplyScalar(ci === 'none' ? 0 : 0.55);
         haloCol[f.i * 3] = col.r; haloCol[f.i * 3 + 1] = col.g; haloCol[f.i * 3 + 2] = col.b;
       }
-      lamps.instanceColor!.needsUpdate = true;
+      if (lamps.instanceColor) lamps.instanceColor.needsUpdate = true;
       haloGeo.attributes.color.needsUpdate = true;
 
       // Agents come and go between pulses: keep the lit floors honest.

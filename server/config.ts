@@ -15,7 +15,9 @@ export const PATHS = {
   agents: join(HOME, 'agents.json'),
 };
 
-for (const dir of [PATHS.home, PATHS.cache, PATHS.logos, PATHS.workspaces, PATHS.boardroom]) {
+// Private to you: it holds your agents' work, chats and (in config.json) keys.
+mkdirSync(PATHS.home, { recursive: true, mode: 0o700 });
+for (const dir of [PATHS.cache, PATHS.logos, PATHS.workspaces, PATHS.boardroom]) {
   mkdirSync(dir, { recursive: true });
 }
 
@@ -26,7 +28,9 @@ export interface Config {
   /** The user's own API keys, by vendor. Only ever read on the server. */
   keys?: { anthropic?: string; openai?: string; gemini?: string };
   defaultProvider?: 'claude' | 'codex' | 'gemini';
-  chat?: { provider?: 'anthropic' | 'claude-cli' | 'openai' | 'gemini'; model?: string };
+  chat?: { provider?: 'anthropic' | 'claude-cli' | 'codex-cli' | 'openai' | 'gemini' | 'compat'; model?: string };
+  /** Any OpenAI-compatible chat endpoint (OpenRouter, Ollama, LM Studio, Groq…). The key is optional for local servers. */
+  compat?: { preset?: string; baseUrl: string; key?: string; model: string };
 }
 
 export function readConfig(): Config {

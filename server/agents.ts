@@ -142,7 +142,22 @@ export async function agentDiff(id: string) {
   return readDiff(a);
 }
 
-async function prepareWorktree(repo: Repo, id: string, branch: string): Promise<string> {
+/** One clone/fetch/worktree-add at a time per repo: two agents hired together would race on the same clone. */
+const repoLocks = new Map<string, Promise<unknown>>();
+function withRepoLock<T>(repo: string, fn: () => Promise<T>): Promise<T> {
+  const prev = repoLocks.get(repo) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  const tail = next.catch(() => {});
+  repoLocks.set(repo, tail);
+  void tail.then(() => { if (repoLocks.get(repo) === tail) repoLocks.delete(repo); });
+  return next;
+}
+
+function prepareWorktree(repo: Repo, id: string, branch: string): Promise<string> {
+  return withRepoLock(repo.name, () => addWorktree(repo, id, branch));
+}
+
+async function addWorktree(repo: Repo, id: string, branch: string): Promise<string> {
   const base = join(PATHS.workspaces, repo.name);
   if (!existsSync(join(base, '.git'))) {
     await run('gh', ['repo', 'clone', repo.fullName, base], { timeoutMs: 10 * 60_000 });
@@ -474,8 +489,21 @@ export function stopAgent(id: string): AgentInfo {
   return a.info;
 }
 
+/** Agents with a push or PR under way: a double click must not push twice or open two PRs. */
+const shipping = new Set<string>();
+
 export async function openPr(id: string, fullName?: string): Promise<AgentInfo> {
   const a = getAgent(id);
+  if (shipping.has(id)) throw Object.assign(new Error('The pull request is already being opened'), { status: 409 });
+  shipping.add(id);
+  try {
+    return await shipPr(a, fullName);
+  } finally {
+    shipping.delete(id);
+  }
+}
+
+async function shipPr(a: LiveAgent, fullName?: string): Promise<AgentInfo> {
   if (a.proc || a.fake?.timer) throw Object.assign(new Error('Agent is still working — stop it or wait for it to finish'), { status: 409 });
   if (a.info.prUrl) return a.info;
   if (a.info.review === 'discarded') throw Object.assign(new Error('This run was discarded'), { status: 410 });
@@ -493,7 +521,8 @@ export async function openPr(id: string, fullName?: string): Promise<AgentInfo> 
   const title = a.info.task.split('\n')[0].slice(0, 72);
   if (status.trim()) {
     await run('git', ['add', '-A'], { cwd: a.dir });
-    const body = `${a.info.task}\n\nMade by ${a.info.name} in OpenWorld.\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
+    const coAuthor = a.info.provider === 'claude' || !a.info.provider ? '\n\nCo-Authored-By: Claude <noreply@anthropic.com>' : '';
+    const body = `${a.info.task}\n\nMade by ${a.info.name} (${runner(a.info.provider)?.label ?? 'an AI agent'}) in OpenWorld.${coAuthor}`;
     await run('git', ['commit', '-m', title, '-m', body], { cwd: a.dir });
   }
   await run('git', ['push', '-u', 'origin', a.info.branch], { cwd: a.dir, timeoutMs: 5 * 60_000 });
@@ -501,4 +530,17 @@ export async function openPr(id: string, fullName?: string): Promise<AgentInfo> 
   update(a, { prUrl: url.split('\n').pop() || url, review: 'approved', lastAction: 'Opened a pull request' });
   logEvent('agent_pr_opened', { repo: a.info.repo });
   return a.info;
+}
+
+/** Agents run in their own process groups (detached), so they'd outlive the server: stop them with it. */
+export function stopAllAgents() {
+  for (const a of agents.values()) {
+    if (a.fake?.timer) clearTimeout(a.fake.timer);
+    if (!a.proc?.pid) continue;
+    try { process.kill(-a.proc.pid, 'SIGTERM'); } catch { a.proc.kill('SIGTERM'); }
+    a.info.status = 'stopped';
+    a.info.endedAt = new Date().toISOString();
+    a.info.lastAction = 'Stopped when OpenWorld shut down';
+  }
+  persist();
 }

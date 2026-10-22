@@ -1,146 +1,235 @@
 # OpenWorld HQ
 
-Your GitHub, as a living open world: **the whole planet**, streamed from OpenStreetMap with real terrain, in the bright, toy-like style of Charlie Chapman's "Hello World" game. You're a little robot in an orange hoodie with rocket shoes. Start anywhere, walk the real streets, or fly over the city and keep going: the world loads around you. Every repository you own becomes a building where you start: big, active projects take the tallest towers with their logo on the crown, small experiments are storefronts. Press **E** at a door to go inside.
+Your GitHub, as a living open world. Start anywhere on Earth, walk the real streets, or fly over the city: the whole planet streams in around you from OpenStreetMap, with real terrain, landmarks, traffic, weather and people. Every repository you own becomes a building. Walk in and the people at the desks explain your recent changes; hire an AI coding agent and watch it work at a desk in the Agent Lab, using **Claude, ChatGPT (Codex), Gemini, or almost any other model**.
+
+You play a robot with a white shell head and a visor face, in a navy suit and rocket shoes.
+
+Free and open source under the [MIT License](LICENSE). Everything runs on your own computer, with your own GitHub account and your own AI keys or logins.
+
+- [Quick start](#quick-start)
+- [Connect your AI](#connect-your-ai): Claude, ChatGPT, Gemini, local models, OpenRouter and more
+- [Connect GitHub](#connect-github)
+- [What's in the world](#whats-in-the-world)
+- [Controls](#controls)
+- [VR on Quest](#vr-on-quest)
+- [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [How it's built](#how-its-built) · [Credits](#credits)
+
+## Quick start
+
+You need **Node.js 22.9 or newer** and **git**. macOS, Linux and Windows (WSL) work; a computer with a decent GPU makes the city look its best.
+
+```bash
+git clone https://github.com/Shoberman2/openWorld.git
+cd openWorld
+npm install      # also downloads the two character rigs (see Credits)
+npm run dev
+```
+
+Open **http://localhost:5317**. (The API runs on port 4317; `npm run dev` starts both with hot reload.)
+
+Prefer one process? `npm start` builds the client once and serves everything on http://localhost:4317. Or `node bin/openworld.js`, which builds on first run and opens your browser.
+
+The world works straight away with no accounts at all. Then:
+
+1. **Connect GitHub** so your repos become buildings (below).
+2. **Connect an AI** in **Settings → Agents & keys** so the people inside talk back and agents can take tasks.
+
+## Connect your AI
+
+Open **Settings** (the gear, or **K**) → **Agents & keys**. There are two kinds of AI in OpenWorld, and you can use different providers for each:
+
+- **Conversations**: the receptionist, the people at the desks, each project's lead, HQ and the boardroom. Any chat model works.
+- **Coding agents**: the agents you hire in the Agent Lab, who edit code in an isolated copy of your repo. These run through a coding CLI.
+
+| You have | Conversations | Coding agents |
+| --- | --- | --- |
+| **Claude** (Pro/Max subscription) | Install Claude Code and run `claude` once to sign in | Claude Code, same login |
+| **Claude** (API key) | Paste your Anthropic key (`sk-ant-…`) | Claude Code with the same key |
+| **ChatGPT** (Plus/Pro/Team) | Install Codex, run `codex login` and choose **Sign in with ChatGPT**, then pick **ChatGPT login (Codex)** as the voice of the office | Codex, same login. No API key needed |
+| **OpenAI** (API key) | Paste your OpenAI key (`sk-…`) | Codex with the same key |
+| **Gemini** | Paste your Gemini key (`AIza…`) | Gemini CLI: run `gemini` once, or the same key |
+| **Any other model** | **Any other model** card: OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, or a custom URL | Use one of the three CLIs above |
+| **A model on your computer** | **Any other model** → Ollama or LM Studio. Free, private, no key | Use one of the three CLIs above |
+
+Install the coding CLIs you want (each is optional):
+
+```bash
+npm i -g @anthropic-ai/claude-code   # Claude Code
+npm i -g @openai/codex               # Codex (ChatGPT / OpenAI)
+npm i -g @google/gemini-cli          # Gemini CLI
+```
+
+Settings shows which ones it found, whether they're signed in, and lets you pick the default for new tasks. Every "give a task" box also lets you choose per task.
+
+### Any other model (OpenAI-compatible)
+
+In **Settings → Agents & keys → Any other model**, pick a service, paste a key if it needs one, press **Test connection** (it lists the models the server offers and sends a one-word test), then **Save and use**.
+
+| Service | Server URL | Key |
+| --- | --- | --- |
+| OpenRouter (hundreds of models, including Claude, GPT and Gemini) | `https://openrouter.ai/api/v1` | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| Ollama (on this computer) | `http://localhost:11434/v1` | none. Install from ollama.com, then `ollama pull llama3.2` |
+| LM Studio (on this computer) | `http://localhost:1234/v1` | none. Start the server in the Developer tab |
+| Groq | `https://api.groq.com/openai/v1` | console.groq.com |
+| Mistral | `https://api.mistral.ai/v1` | console.mistral.ai |
+| DeepSeek | `https://api.deepseek.com/v1` | platform.deepseek.com |
+| xAI (Grok) | `https://api.x.ai/v1` | console.x.ai |
+| Together AI | `https://api.together.xyz/v1` | api.together.ai |
+| Anything else that speaks the OpenAI chat API (llama.cpp server, vLLM, LiteLLM…) | its `/v1` URL | if it needs one |
+
+Or set it in `.env`: `OPENWORLD_LLM_BASE_URL`, `OPENWORLD_LLM_API_KEY` and `OPENWORLD_LLM_MODEL` (see [.env.example](.env.example)).
+
+With no AI connected, the world, your repos and the buildings all still work: the people inside read from a script, and the Agent Lab waits until you add an agent.
+
+### Where your keys go
+
+Keys you paste are saved only in `~/.openworld/config.json` (readable by your user only), sent only to the service they belong to, never returned to the browser (Settings shows the last 4 characters) and never logged. They can only be changed from the computer running OpenWorld, not from a headset on the network. Environment variables override saved keys. More in [SECURITY.md](SECURITY.md).
+
+## Connect GitHub
+
+Your repos become the buildings, and agents open pull requests through your account. Any one of:
+
+- **GitHub CLI**: run `gh auth login` once. OpenWorld picks it up.
+- **Token in `.env`**: `GITHUB_TOKEN=…`
+- **Paste a token** in **Settings → Agents & keys → GitHub**.
+
+A classic token needs the **`repo`** scope (to see private repos and open pull requests). A fine-grained token needs **Contents** and **Pull requests** (read and write) and **Metadata** (read) on the repos you want. Agents never open a pull request unless you ask.
+
+## What's in the world
+
+**Anywhere on Earth.** Search any place on the title screen, or pick Times Square, Russian Hill, the Jordaan, Le Marais, Shibuya… and you start there. Nothing is pre-downloaded: the world streams around you as map tiles.
+
+- **Map and terrain**: real building footprints and heights, roads, bridges, water, parks and land use from OpenMapTiles; real elevation from Mapterhorn / Copernicus; Sentinel-2 satellite imagery on the far horizon, so you can fly up and see the coast 20 km away.
+- **Streets**: regional building styles (Manhattan brick, limestone and cast iron; Paris sandstone and zinc; Amsterdam gables; Tokyo tile and glass), shopfronts with awnings and canopies, street signs and traffic lights at named corners, subway entrances, newsstands, hydrants and bus shelters, lit windows at night.
+- **Landmarks**: hand-built models for places people check first, such as Times Square's screens, the Fifth Avenue glass cube, the Plaza, Rockefeller Center, the Flatiron, Grand Central, the Washington Square Arch, the Arc de Triomphe, the Louvre Pyramid, Notre-Dame, the Colosseum, the Burj Khalifa and the Sydney Opera House.
+- **Life**: people of every kind on the sidewalks, cars and taxis driving on the correct side of the road and stopping at the lights, cyclists, container ships at sea.
+- **Go inside anything**: walk up to any building and press **E**. It gets an interior that fits its real footprint and what it is: an Apple-style store with long wooden tables, a coffee shop, fast food, a pharmacy, a grocery, a deli, a bank, a clothing store, a bookshop, a bar or restaurant, a hotel lobby, offices, apartments, a church, a mall or a warehouse. Lifts only where real buildings have them, with a roof terrace on offices and towers.
+- **Weather and time**: live weather where you are (Open-Meteo): rain with wet, reflective streets, snow, fog, storms, auroras up north. **L** runs a time-lapse.
+- **Getting around**: walk and run; hold **Space** in the air to light the rocket shoes, **Shift** for the afterburner, **C** to cut them. Vehicles on **1–8**: on foot, skateboard, bike, jeep, prop plane, kayak, motorboat and a space shuttle. **Q** opens a wingsuit in the air. **O** is autopilot to your waypoint (New York to London in about five minutes).
+- **The map** (**M**): search the world, drop anywhere, set a waypoint, or zoom out to a live globe with real clouds and storms.
+- **Photo mode** (**F**): free camera, depth of field, time of day; **Space** saves the picture to `~/.openworld/photos`.
+- **Quality**: Settings → Display offers Auto, Ultra, High and Performance. Ultra renders at up to 4K internally with sharper shadows and a wider detailed city, and lowers its resolution on its own to hold 60 fps. Add `?q=low` to the URL on a slow GPU.
+
+## Your projects
+
+Every repository you own becomes a building where you start: big, active projects take the tallest towers with their logo on the crown, small experiments are storefronts. Building size comes from commits, PRs, repo size, a live homepage and recency.
 
 Inside each building:
 
 - **Reception**: a receptionist who knows the project (README, stats, recent work) and points you around.
-- **Work floor**: one desk per past PR (or commit, for repos without PRs). The person at the desk is whoever made the change: you, a teammate, or an AI agent like Claude. Press **E** and they explain the change in their own words, with the real diff as context, then answer follow-up questions.
-- **Agent Lab**: hire an agent. Type a task and a real coding agent (Claude Code, Codex or Gemini CLI, whichever you set up) starts working in an isolated git worktree of the repo. It takes a desk, its monitor shows live progress, and you can watch the diff grow, stop it, or open a pull request when it's done.
-- **Boardroom**: put a decision to the board (Chair, CTO, Head of Product, Design Lead, Growth). They debate in turns, take positions for or against, and the Chair records a resolution with next steps. Past decisions stay on the wall.
+- **Work floor**: one desk per past PR (or commit). The person at the desk is whoever made the change: you, a teammate, or an AI agent. Press **E** and they explain the change in their own words, with the real diff as context, then answer follow-up questions.
+- **Agent Lab**: hire an agent. Type a task and a real coding agent starts working in an isolated git worktree of the repo. It takes a desk in a suit, its monitor shows live progress, and you can watch the diff grow, stop it, or open a pull request when it's done. While a task runs, busy agents get up, walk over to each other and talk through what they're doing.
+- **Boardroom**: put a decision to the board (Chair, CTO, Head of Product, Design Lead, Growth). They debate, take positions and record a resolution with next steps.
 
-## Anywhere on Earth
+### The phone
 
-Search any place on the title screen (or pick Times Square, Russian Hill, the Jordaan, Le Marais, Shibuya…) and you start there. Nothing is pre-downloaded: like the game it's inspired by, the world **streams** around you as map tiles.
+Press **P** (or click the PHONE tab) anywhere, inside or out. It stays open while you play; **Minimize** tucks it away. While the mouse is steering the camera, press **P** or hold **Option/Alt** to get your cursor onto the phone.
 
-- **Map data**: OpenMapTiles vector tiles (from OpenFreeMap) with real building footprints and heights, roads and bridges, water and coastlines, parks, woods and land use, street and neighborhood names. Lanes, traffic lights, street lights and trees are derived from it.
-- **Terrain**: real elevation (Mapterhorn / Copernicus terrain tiles), so San Francisco's hills are hills and bridges span rivers on piers.
-- **The horizon**: low-detail terrain draped with Sentinel-2 cloudless satellite imagery, so you can fly up and see the coast 20 km away.
-- **Look**: regional building styles (Amsterdam brick with gabled roofs, Paris sandstone and zinc, Manhattan brick, limestone and glass, Tokyo tile and glass), lit windows at night, a cartoon sky with big puffy clouds, golden sunsets, a starry night.
-- **Life**: cars on the correct side of the road for the country (taxis in New York), stopping at signals and pitching over hills, and white caretaker robots walking the sidewalks, a few carrying packages.
-- **Getting around**: walk, run, jump, or hold **Space** in the air to light the rocket shoes: they kick you up and burn against gravity, you fly where you look, **Shift** is the afterburner, **C** cuts them, and a hard landing ends in a roll. Land on roofs and bridges; swim if you come down in the water. Press **M** for the map of the world: search, browse famous places, then **Drop here** to be anywhere on Earth in a few seconds, or **Navigate here** for a waypoint on the compass and minimap.
-- **Vehicles** (keys **1–8** or the mode bar): skateboard, bike, jeep, prop plane (needs ~45 m of clear ground, or switch to it mid-air), kayak and motorboat (they find water within ~60 m), and the **space shuttle**: it stands on its tail and launches from anywhere dry, then flies at Mach 1 on the mains and close to Mach 2 on the boosters (**Shift**).
-- **Wingsuit** (**Q** in the air): glide at about 2.5:1, steer with the mouse and **A**/**D**, **W** to dive and **S** to flare; the rocket shoes still burn (**Space**) for a wingsuit-and-rockets run. Bail out of the shuttle high up and open it.
-- **Autopilot** (**O**, or **Autopilot** on a place in the map): the shuttle (or the plane you're in) climbs out, turns onto the great-circle course and cruises with time running up to **40×**, so the sun and clouds race past, then slows, descends and hands you the controls overhead. Any flying key takes over. New York to London takes about five minutes. It holds back the time compression while the horizon is still streaming in, and the HUD says so.
-- **The whole planet**: fly anywhere without a loading screen. Far from where you started, the world quietly re-centers under you (an exact change of coordinates: the old tiles stay on screen until the new ones cover them). From altitude, satellite terrain rings reach about 30, 200 and 600 km and bend with the Earth's curvature; the haze thins as you climb. Streaming looks ahead along your flight path. Zoom the map all the way out for a **globe** lit by the real sun, with live **clouds**, **rain and storms** and **wind** from Open-Meteo (a 15° grid of current conditions, refreshed every 30 minutes: where the weather is, not its exact shape). Container ships sail the open sea; bikes ride with the traffic (lots of them in Amsterdam), and cars switch sides of the road with the country.
-- **Go inside anything**: walk up to any building's wall and press **E**. It gets an interior that fits its real footprint: house, apartments, offices or an office tower (stairs, and a lift above three floors), shop, mall, church, warehouse, named from the map when it can ("Saint Patrick's Cathedral"). Leave by the door, or jump out a window and catch yourself on the rocket shoes.
-- **Live weather** for wherever you are (Open-Meteo): rain, snow, fog, thunderstorms, dust, auroras up north at night, big waves with whitecaps at sea when it's stormy. **L** runs a time-lapse; the map's Settings can force any weather.
-- **Photo mode** (**F**): free camera, depth of field, zoom, time of day, time-lapse, a thirds grid; **Space** saves the picture to `~/.openworld/photos`.
-- Your projects live where you started; the phone's **Go** buttons (and Tab) fly you home.
+- **Home**: your briefing, a box to give any agent a task, and one-tap **Teleport to work** chips.
+- **Projects**: every project, with a lead you can text about it.
+- **Chat**: text HQ, the agent that runs all the others ("can someone add tests to my-api?"); HQ hires agents in the right buildings and texts you back when they finish. Mail for bigger asks and finished-agent reports, and your threads with each project lead.
+- **Travel**: teleport to the front door of any of your buildings or home, or straight inside.
 
-Detail streams in near you (about 0.7 km, more when you're flying), lighter buildings out to ~3–5 km, satellite terrain beyond. Everything runs in background workers. Tiles are cached in `~/.openworld/cache/tiles` (capped at 3 GB, least recently visited trimmed first; set `OPENWORLD_TILE_CACHE_MB` to change it), and the tiles around wherever you are get fetched in the background, so places you've been, and the next block over, load instantly. Add `?q=low` to the URL on a slow GPU.
+### Teleport
 
-Map data © OpenStreetMap contributors, © OpenMapTiles; terrain © Mapterhorn, Copernicus; imagery Sentinel-2 cloudless 2016 by EOX (CC BY 4.0); weather from Open-Meteo.
-
-## The phone and HQ
-
-Press **P** (or click the phone in the corner) anywhere, outside or inside a building. The office is one agent, **HQ**, that runs every other agent:
-
-- **Messages**: text HQ ("can someone add tests to my-api?"). HQ replies, hires agents in the right buildings, and texts you back with a report when they finish.
-- **Mail**: the same thing as email, with a subject line and full reports in your inbox.
-- **Agents**: every agent across all buildings, live: status, last action, files changed, cost. Stop one, open its log, or jump to its building.
-- **Maps**: every project HQ in the current place; pin a waypoint or fast-travel.
-
-HQ never opens a pull request unless you ask for one in your message.
-
-## Run it
-
-Requirements: Node 22+ and git. Everything else is your own: your GitHub account, and whichever coding agents you want working for you.
-
-1. **Install and start**
-   ```bash
-   git clone <this repo> && cd openWorld
-   npm install
-   npm run dev        # Vite on :5317 with hot reload, API on :4317. Open http://localhost:5317
-   # or: npm start    # builds the client once and serves it on http://localhost:4317
-   ```
-2. **Connect GitHub.** Either log in with the [GitHub CLI](https://cli.github.com) (`gh auth login`), set `GITHUB_TOKEN`, or paste a token with `repo` scope on the landing page. Your repos become the buildings.
-3. **Add at least one agent** in **Settings → Agents & keys** (the landing page shows a short setup card until you have). Each agent works with its own CLI login or with an API key you paste:
-
-   | Agent | Install | Sign in, or key |
-   | --- | --- | --- |
-   | [Claude Code](https://claude.com/claude-code) | `npm i -g @anthropic-ai/claude-code` | run `claude` once, or an Anthropic key (`ANTHROPIC_API_KEY`) |
-   | [Codex CLI](https://github.com/openai/codex) | `npm i -g @openai/codex` | run `codex` once, or an OpenAI key (`OPENAI_API_KEY` / `CODEX_API_KEY`) |
-   | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `npm i -g @google/gemini-cli` | run `gemini` once, or a Gemini key (`GEMINI_API_KEY`) |
-
-   Pick a default agent there; every "give a task" box also lets you choose per task. The same tab sets who voices the office (the receptionist, project leads, HQ and the boardroom): your Anthropic, OpenAI or Gemini key, or your Claude Code login, and which model. With no key at all the world, your repos and the buildings still work; the people inside read from a script and agents wait until you add one.
-
-**Privacy.** Everything runs on your computer. Keys you paste are stored only in `~/.openworld/config.json` (readable by your user only), sent only to the company that made that agent or model, never returned to the browser (Settings shows the last 4 characters), and can only be changed from the computer running OpenWorld, not from a headset on the network. Environment variables override stored keys. Your GitHub token is only used to call GitHub. Other state lives in `~/.openworld/` too (map tile and logo cache, agent worktrees, boardroom minutes, local analytics); delete the folder to start over.
-
-## VR on Quest
-
-OpenWorld runs in a Meta Quest's browser (WebXR). WebXR only works on a secure page, so the headset needs either an HTTPS address or a USB tunnel to `localhost`.
-
-**Over Wi-Fi (HTTPS):**
-
-1. On the Mac: `npm run vr`. This serves the game as usual on http://localhost:4317 and also over HTTPS on port 4318, using a self-signed certificate it makes once in `~/.openworld/certs`. It prints a line like `On your Quest, open: https://192.168.1.20:4318/?key=…`.
-2. Put the Quest on the same Wi-Fi, open the Browser, and type that full address, including `?key=…`. The key keeps other people on the network out, since the server drives agents with your GitHub token. You only need it once; it's remembered after that.
-3. The browser warns about the certificate the first time: **Advanced → Proceed**.
-4. Pick a place, enter the world, then press **Enter VR** at the top of the screen.
-
-**Over USB instead (no certificate):** with the Quest in developer mode and plugged in, run `adb reverse tcp:4317 tcp:4317` and open http://localhost:4317 on the Quest. `localhost` counts as secure, so plain `npm start` is enough.
-
-**Controls:**
-
-| Controller | Action |
-| --- | --- |
-| Left stick | Walk (same speeds as the keyboard); steer vehicles |
-| Left stick click / left grip / left trigger | Run (stick click toggles it) |
-| Right stick left/right | Turn (snap 30°, or smooth) |
-| Right stick down | Dive (in the air) |
-| Right stick click | Switch view: first person or behind the robot |
-| A | Jump; hold in the air for rocket shoes |
-| B, or right trigger | Use / enter / talk (the game's E); B closes a panel |
-| Right trigger at a panel | Click |
-| X | Wrist phone |
-| Y | Next vehicle |
-
-The **wrist phone** on your left hand has every thread: HQ and each project's lead (master) agent. There's no keyboard, so it offers canned replies ("What's the latest here?", "Start on the most useful next thing. No PR."). It also has the agent roster with Stop buttons, vehicles, and VR settings (view, snap or smooth turning, comfort vignette, time of day, Exit VR). When the game opens a panel (desk conversations, the Agent Lab, the boardroom), a copy floats in front of you with its buttons and a few canned questions.
-
-To keep it smooth on the headset, VR streams a smaller area, uses a smaller shadow map and foveated rendering, and skips bloom and color grading. The map screen's Settings have **VR headset** (hide the button) and **VR view**; `?vr=0` in the URL also turns VR off.
+The **Teleport** button in the bottom-right corner (or **M**) opens the map with your buildings and home marked. Click one and you land inside it, from anywhere, including from inside another building.
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
 | WASD / arrows | Move (steer while flying) |
-| Shift | Run (burst while flying) |
-| **Space** | Jump; hold in the air to light the rocket shoes and burn (let go and gravity takes over) |
-| C | Dive (drop out of rocket flight); pitch down in the plane |
+| Shift | Run (afterburner while flying) |
+| **Space** | Jump; hold in the air to light the rocket shoes |
+| C | Cut the rocket shoes (dive) |
 | 1–8 | On foot, skateboard, bike, jeep, prop plane, kayak, motorboat, space shuttle |
 | Q | Wingsuit (in the air) |
 | O | Autopilot to the waypoint (shuttle or plane) |
+| **E** | Enter a building, talk to someone, use a kiosk |
+| **P** | Phone (or free the cursor for it while looking around) |
+| Option / Alt (hold) | Free the cursor while looking around |
+| **M** | Map, and teleport to your buildings |
+| Tab | City directory: waypoint or fast travel to any project |
+| K | Settings (rebind any key there) |
 | F | Photo mode |
 | L | Time-lapse |
-| Mouse (click to capture) | Look |
-| Wheel | Camera distance |
-| **E** | Enter a building, talk to someone, use a kiosk |
-| **P** | Phone: text or email HQ, see every agent, map |
-| **M** | Map of the world: search, Drop here, Navigate here |
-| Tab | Directory: waypoint or fast travel to any project |
+| T | Skip ahead 3 hours |
 | G / X | Wave / sit down |
-| T | Skip ahead 3 hours (day/night cycle) |
+| Mouse | Click the game to look around, or drag |
+| Wheel | Camera distance |
 | Esc | Close a panel or release the mouse |
+
+## VR on Quest
+
+OpenWorld runs in a Meta Quest's browser (WebXR). WebXR needs a secure page, so the headset needs either an HTTPS address or a USB tunnel to `localhost`.
+
+**Over Wi-Fi (HTTPS):**
+
+1. On your computer: `npm run vr`. This serves the game on http://localhost:4317 and over HTTPS on port 4318, with a self-signed certificate made once in `~/.openworld/certs`. It prints a line like `On your Quest, open: https://192.168.1.20:4318/?key=…`.
+2. Put the Quest on the same Wi-Fi and open that full address, including `?key=…`. The key keeps other people on the network out, since the server drives agents with your GitHub token. It's remembered after the first time.
+3. The browser warns about the certificate the first time: **Advanced → Proceed**.
+4. Pick a place, enter the world, then press **Enter VR**.
+
+**Over USB instead:** with the Quest in developer mode and plugged in, run `adb reverse tcp:4317 tcp:4317` and open http://localhost:4317 on the Quest. `npm start` is enough.
+
+| Controller | Action |
+| --- | --- |
+| Left stick | Walk; steer vehicles |
+| Left stick click / grip / trigger | Run |
+| Right stick left/right | Turn (snap or smooth) |
+| Right stick down | Dive (in the air) |
+| Right stick click | First person or behind the robot |
+| A | Jump; hold in the air for rocket shoes |
+| B, or right trigger | Use / enter / talk; B closes a panel |
+| X | Wrist phone |
+| Y | Next vehicle |
+
+The wrist phone on your left hand has every thread, with canned replies, the agent roster with Stop buttons, vehicles and VR settings. To stay smooth, VR streams a smaller area and skips some effects. `?vr=0` in the URL turns VR off.
+
+## Configuration
+
+Everything is optional. Copy [.env.example](.env.example) to `.env`; the `npm` scripts load it automatically.
+
+| Variable | What it does |
+| --- | --- |
+| `GITHUB_TOKEN` | GitHub access (or use `gh auth login`) |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` / `CODEX_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY` | AI keys (or paste them in Settings) |
+| `OPENWORLD_LLM_BASE_URL`, `OPENWORLD_LLM_API_KEY`, `OPENWORLD_LLM_MODEL` | Any OpenAI-compatible server for conversations |
+| `OPENWORLD_MODEL` | Force the chat model by name |
+| `PORT` / `HTTPS_PORT` | Server ports (default 4317 / 4318) |
+| `OPENWORLD_HTTPS=1` | Also serve over HTTPS on the LAN (VR) |
+| `OPENWORLD_HOME` | Where OpenWorld keeps its data (default `~/.openworld`) |
+| `OPENWORLD_TILE_CACHE_MB` | Map tile cache size (default 3000) |
+| `OPENWORLD_FAKE_AGENTS=1`, `OPENWORLD_DRY_PR=1`, `OPENWORLD_DRY_GITHUB=1` | Testing: scripted agents, no real PRs, no GitHub writes |
+
+OpenWorld keeps its state in `~/.openworld/`: settings and keys, the map tile cache, agent worktrees, boardroom minutes, photos and a local event log. Delete the folder to start over. Nothing is sent anywhere except the map, terrain and weather requests, GitHub, and the AI services you connect.
+
+## Troubleshooting
+
+- **"Nothing is answering at http://localhost:11434"**: start Ollama (`ollama serve`) and pull a model (`ollama pull llama3.2`). For LM Studio, start its server in the Developer tab.
+- **"The server rejected that key"**: copy the key again; make sure it belongs to the service you picked.
+- **A coding agent shows "Not installed" or "Update needed"**: run the install command Settings shows, then reopen Settings.
+- **No buildings for my repos**: connect GitHub (see above), then reload.
+- **The city is slow**: choose **High** or **Performance** in Settings → Display, or add `?q=low` to the URL.
+- **Port already in use**: something else is on 4317 or 5317. Stop it, or set `PORT`.
+- **Can't click the phone**: while the mouse steers the camera, press **P** or hold **Option/Alt** first.
 
 ## How it's built
 
 - `client/`: Three.js + Vite + TypeScript.
-  - `src/earth/`: the streaming world. `frame.ts` (local meters ↔ lat/lon ↔ tiles), `worker.ts` + `build/` (decode a vector tile and its terrain into meshes off the main thread: draped ground with a painted land-use texture, water, buildings with facade coordinates and gabled roofs, roads, bridges, markings, signals, lights, trees), `chunks.ts` (what to load at which detail as you move, physics, the road network), `far.ts` (satellite horizon), `traffic.ts` + `crowd.ts` (cars and robots), `sites.ts` (project HQs), `style.ts` (the look: facade, ground, water and tree materials).
-  - `src/robot.ts` (the player), `player.ts` (walk, jump, rocket shoes, roofs, swimming), `sky.ts` + `engine.ts` (sky dome, clouds, light, grading).
-  - `src/ui/`: HUD (compass, info panel, navigation card, hints, mode bar), the heading-up minimap and the world map (`tilemap.ts` renders vector tiles in a worker), the phone, panels.
-  - `src/xr/`: VR (WebXR on Meta Quest): controllers, play space, wrist phone, panel mirror, comfort vignette.
-  - Classic cities (`src/city/`), interiors (`interior.ts`), aircraft (`aircraft.ts`).
-- `server/`: Express + WebSocket. Map tiles proxied and cached (`tiles.ts`), place search (`geo.ts`, Nominatim), the HQ office agent (`office.ts`), GitHub GraphQL/REST (`github.ts`), conversations through your chosen key or CLI (`llm.ts`), agent runs in git worktrees streamed over the socket (`agents.ts`, with one adapter per coding CLI in `providers/`: Claude Code, Codex, Gemini; keys and readiness in `providers/index.ts`), the boardroom (`boardroom.ts`), and HTTPS for VR headsets (`https.ts`, with `OPENWORLD_HTTPS=1`).
+  - `src/earth/`: the streaming world. `frame.ts` (local meters ↔ lat/lon ↔ tiles), `worker.ts` + `build/` (vector tiles and terrain to meshes off the main thread), `chunks.ts` (what to load at which detail), `far.ts` (satellite horizon), `traffic.ts` + `crowd.ts` (cars and people), `landmarks/` (hand-built landmarks, signs, Times Square), `sites.ts` (project HQs), `style.ts` (materials).
+  - `src/robot.ts` (the player), `player.ts` (movement, rocket shoes, collisions), `characters.ts` (people indoors and agents), `engine.ts` + `sky.ts` (rendering, quality tiers, sky and light).
+  - `src/interior.ts` (project HQs) and `src/rooms/` (interiors for any building, `stores.ts` for shops).
+  - `src/ui/`: HUD, minimap and world map, the phone, settings, panels. `src/xr/`: VR.
+- `server/`: Express + WebSocket. Map tiles proxied and cached (`tiles.ts`), place search (`geo.ts`), GitHub (`github.ts`), conversations through your chosen provider (`llm.ts`), agent runs in git worktrees (`agents.ts`, one adapter per coding CLI in `providers/`, plus `providers/compat.ts` for OpenAI-compatible servers), HQ (`office.ts`), the boardroom (`boardroom.ts`), HTTPS for headsets (`https.ts`).
 - `shared/types.ts`: the contract between them.
 
-Building size comes from a score of commits, PRs, repo size, a live homepage and recency, ranked into landmark, tower, mid-rise and storefront tiers.
+Want to help? See [CONTRIBUTING.md](CONTRIBUTING.md). Product experiments and local analytics are described in [docs/experiments.md](docs/experiments.md).
 
-## What we're testing
+## Credits
 
-Value hypothesis: developers who walk into a repo's building will understand recent changes faster by talking to the desk workers than by reading the PR list, and will come back to hire agents from inside the game.
+Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, © OpenMapTiles (served by OpenFreeMap); terrain © Mapterhorn, Copernicus; imagery Sentinel-2 cloudless 2016 by EOX (CC BY 4.0); weather from Open-Meteo (CC BY 4.0); place search by Nominatim. Built with three.js, Vite, Express and ws; every npm dependency is MIT, ISC or BSD-3-Clause.
 
-Growth hypothesis: a screenshot or clip of *your own* code as a skyline gets shared, and people install it to see theirs.
+The two character rigs (`Xbot.glb`, `Soldier.glb`) come from the [three.js examples](https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf) and were made with Adobe Mixamo. Mixamo allows them in games but not redistribution of the raw files, so they aren't in this repository: `npm install` downloads them (`npm run models` to retry), and the game loads them from the same place if they're missing. The water normal map (`client/public/textures/waternormals.jpg`) is from the three.js examples (MIT).
 
-Exploration hypothesis: being able to go *anywhere* (and fly there) brings people back more than a fixed city does. Measured as the share of Earth sessions that leave the home district (`explore.exploreShare` in `/api/stats`).
-
-Local, cohort-ready events go to `~/.openworld/events.jsonl` (`session_start` with the city or real place, `explore_far`, `explore_teleport`, `building_entered`, `desk_talk`, `agent_started`, `agent_pr_opened`, `boardroom_convened`, `office_message_sent`, `office_dispatch`); `GET /api/stats` summarizes them per day and session. Automated test runs are tagged and left out.
+OpenWorld's own code and assets are released under the [MIT License](LICENSE). Map data, terrain, imagery and the character rigs above keep their own terms.

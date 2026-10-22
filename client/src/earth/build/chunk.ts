@@ -4,11 +4,20 @@ import { WORLD } from '../frame.ts';
 import { demFor } from '../dem.ts';
 import { clipLine, clipRing, decodeTile, num, str, type Layers } from '../mvt.ts';
 import { GROUND, regionKey, regionOf, taggedColor } from './palette.ts';
+import { isGreenPark, streetPalmShare } from './apac-climate.ts';
 import { GROUND_KIND, STYLE, STYLES, chooseStyle, encodeSeed, facadeDims, groundFromPoi, knownStyle } from './facades.ts';
+// ---- Europe & Middle East
+import { canalGables } from '../cities/eu-gables.ts';
+// ---- East US
+import { eastFlatRoof, eastGlass, eastGlassBalconies, eastHeight } from '../cities/east.ts';
+import { eastExtras, isEastStyle } from '../cities/east-geo.ts';
 import { Buf, alongY, cleanRing, cumLen, densify, disc, hash01, hashStr, inRing, reversed, ribbon, signedArea, strip, triangulate } from './geo.ts';
 import type { ChunkJob, ChunkOut, EdgeData, FootprintData, SignalData } from './types.ts';
 import { buildParks } from './parks.ts';
 import { assignHousenumbers, landmarkZones, type LandmarkClaim } from '../landmarks/zones.ts';
+// ---- NYC: real deck heights for the East River suspension bridges
+import { realDecks } from './nyc-bridges.ts';
+import { westBridgeDeck, westClimate } from '../cities/west.ts'; // ---- West Coast
 
 const EMPTY: Layers = { extent: 4096, buffer: 0, polys: {}, lines: {}, points: {} };
 const DRIVE = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'minor', 'service', 'busway']);
@@ -99,6 +108,10 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
   const mxW = tx * s - WORLD / 2, myN = WORLD / 2 - ty * s;
   const reg = regionOf(job.country);
   const tropical = Math.abs(job.lat) < 27;
+  // ---- West Coast: desert and chaparral ground, palm-lined streets, tile roofs.
+  const west = job.country === 'us' ? westClimate(job.lat, (((tx + 0.5) / 2 ** z) * 360) - 180) : null;
+  // ---- Asia-Pacific & Latin America: palms or broadleaf street trees by city (apac-climate.ts).
+  const palmShare = streetPalmShare(job.country, tropical);
   const north = Math.abs(job.lat) > 52;
 
   const [layers, dem] = await Promise.all([
@@ -279,7 +292,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       let gmin = Infinity, cx = 0, cz = 0;
       for (let q = 0; q < ring.length; q += 2) { gmin = Math.min(gmin, hAt(ring[q], ring[q + 1])); cx += ring[q]; cz += ring[q + 1]; }
       cx /= ring.length / 2; cz /= ring.length / 2;
-      const h = Math.max(hTag, minH + 1.5);
+      const h = eastHeight(job.country, latAt(cz), lonAt(cx), Math.max(hTag, minH + 1.5), minH, area, seed); // ---- East US: untagged Deco hotels, row houses
       const lmId = lmZones.any ? lmZones.claim(cx, cz, h) : null;
       if (lmId) { lmClaims.push({ id: lmId, ring, holes: hs, base: gmin, top: gmin + h, minH }); return; }
       // Ensembles everyone knows (Rockefeller Center, the Place des Vosges) are never glass.
@@ -292,11 +305,11 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       const groundK = poiG >= 0 ? poiG : h < 7 ? GROUND_KIND.none : sty.ground0 === 1 ? GROUND_KIND.shops : sty.ground0 === 2 ? (hash01(key + 103) < 0.55 ? GROUND_KIND.lobby : GROUND_KIND.shops) : GROUND_KIND.none;
       // A few towers in colored glass (green, bronze, red, deep blue), like the video's red one.
       const tint = glass && hash01(key + 107) < 0.14 ? [0x4f7a6a, 0x7a5c44, 0x8a3c38, 0x3c5a86][Math.floor(hash01(key + 109) * 4)] : null;
-      const pal = glass ? reg.glass : style === STYLE.generic ? reg.walls : sty.walls;
+      const pal = glass ? (eastGlass(job.country, latAt(cz), lonAt(cx)) ?? reg.glass) : style === STYLE.generic ? reg.walls : sty.walls; // ---- East US: Miami / Toronto glass
       const tagged = colourTag ? taggedColor(colourTag) : null;
       const wall = tint ?? (!glass && known < 0 && tagged !== null && seed < 0.8 ? tagged : pal[Math.floor(hash01(key + 3) * pal.length)]);
-      const roof = glass ? 0x9aa4ad : reg.roofs[Math.floor(hash01(key + 5) * reg.roofs.length)];
-      const flat = (reg.flat ?? 0xc9c6bf) - Math.floor(hash01(key + 7) * 3) * 0x060606;
+      const roof = glass ? 0x9aa4ad : west?.roof(sty.name, hash01(key + 5)) ?? reg.roofs[Math.floor(hash01(key + 5) * reg.roofs.length)];
+      const flat = (eastFlatRoof(job.country, latAt(cz), lonAt(cx)) ?? reg.flat ?? 0xc9c6bf) - Math.floor(hash01(key + 7) * 3) * 0x060606;
       const y0 = minH > 0.5 ? gmin + minH : gmin - 1.6;
       const top = gmin + h;
       const cell = Math.min(CELLS - 1, Math.max(0, Math.floor((cz / size) * CELLS))) * CELLS + Math.min(CELLS - 1, Math.max(0, Math.floor((cx / size) * CELLS)));
@@ -339,7 +352,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       }
       // Roof: gabled for small houses in places that build them, flat otherwise.
       let pitched = false;
-      const pitchy = style === STYLE.generic || style === STYLE.stucco || style === STYLE.mediterranean || style === STYLE.canal || style === STYLE.altbau || style === STYLE.latin || style === STYLE.asiamodern;
+      const pitchy = style === STYLE.generic || style === STYLE.stucco || style === STYLE.mediterranean || style === STYLE.canal || style === STYLE.altbau || style === STYLE.latin || style === STYLE.asiamodern || !!west?.pitchy(sty.name);
       if (!glass && pitchy && !hs.length && reg.pitch > 0 && h <= reg.pitch && area >= 25 && area <= 520 && minH < 0.5 && hash01(key + 11) < 0.85) {
         pitched = gable(bld, ring, area, top, h, gmin, sd, W, rgb(roof));
       }
@@ -366,7 +379,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
           roofBox(bld, bx, bz, w, d, top, top + hh, glass ? [196, 200, 204] : [178, 175, 168], sd, h);
         }
         const towerP = style === STYLE.prewar || style === STYLE.tenement || style === STYLE.castiron ? 0.55 : style === STYLE.office || style === STYLE.deco ? 0.35 : 0.2;
-        if (job.country === 'us' && !glass && h > 15 && h < 90 && area > 220 && hash01(key + 21) < towerP) {
+        if (job.country === 'us' && !glass && !isEastStyle(style) && h > 15 && h < 90 && area > 220 && hash01(key + 21) < towerP) {
           const tx0 = cx + (hash01(key + 23) - 0.5) * Math.sqrt(area) * 0.4, tz0 = cz + (hash01(key + 25) - 0.5) * Math.sqrt(area) * 0.4;
           if (inRing(ring, tx0, tz0)) waterTower(bld, tx0, tz0, top, sd, h);
         }
@@ -383,6 +396,8 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
           trimBand(bld, ring, top - (big ? 0.9 : 0.5), top + par, top, Math.max(0.06, proj), 0.3, cc, sd, h, gmin);
         }
       }
+      // ---- Europe & Middle East: Amsterdam's canal houses get their gables (cities/eu-gables.ts).
+      if (lod === 0 && style === STYLE.canal && !glass && !pitched && !hs.length && minH < 0.5 && h >= 8) canalGables(bld, ring, streetR, gmin, top, h, W, sd, key);
       if (lod === 0 && !glass && h >= 7 && minH < 0.5 && dims.groundH > 0) {
         // Same shop-floor height as the facade shader (both read it from facades.ts).
         ledge(bld, ring, gmin + dims.groundH - 0.02, 0.13, 0.22, trimColor(W, key), sd, h, gmin);
@@ -438,6 +453,10 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
           }
           if (wantShed && len >= 8) shed(bld, ax, az, tx0, tz0, nx, nz, len, gmin, sd, h);
         });
+      }
+      // ---- East US: Deco eyebrows and neon fins, bowfronts, condo balconies (cities/east-geo.ts).
+      if (lod === 0 && minH < 0.5 && !hs.length && (glass || isEastStyle(style))) {
+        eastExtras(bld, style, glass, eastGlassBalconies(job.country, lat0, lon0), ring, (x, zz) => streetR.get(x, zz), gmin, h, top, fs, sd, W, key, groundK);
       }
       nBuildings++;
       if (minH < 2.5) {
@@ -535,6 +554,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
   const us = job.country === 'us' || job.country === 'ca';
   const nodes = new Map<string, { x: number; z: number; edges: EdgeData[]; maxW: number; drive: number; major: number }>();
   const LIFT_ROAD = 0.1, LIFT_WALK = 0.07, CURB = 0.14;
+  const decks = realDecks(job); // ---- NYC
   for (const r of roads) {
     // Densify for draping, remembering where the original vertices landed.
     const dense: number[] = [r.pts[0], r.pts[1]];
@@ -547,6 +567,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
     }
     const np = dense.length / 2;
     const ys: number[] = new Array(np);
+    const deckOf = r.bridge && decks.any ? decks.of(r.pts) : null; // ---- NYC
     if (r.bridge) {
       const cum = cumLen(dense), len = cum[np - 1];
       const clr = r.layer >= 1 ? 6.5 * Math.min(3, r.layer) : 0;
@@ -561,9 +582,14 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
         const x = dense[q * 2], zz = dense[q * 2 + 1], t = len > 0 ? cum[q] / len : 0;
         const over = wetAt(x, zz) ? 7 : clr;
         let y = Math.max(A.y + (Bn.y - A.y) * t, Math.max(raw(x, zz), hAt(x, zz)) + over);
+        // ---- NYC: a great bridge's roadway at its real height.
+        const real = deckOf?.(x, zz);
+        if (real) y = Math.max(y, Math.max(raw(x, zz), hAt(x, zz)) + real.lift);
         if (A.free) y = Math.min(y, A.y + cum[q] * 0.12);
         if (Bn.free) y = Math.min(y, Bn.y + (len - cum[q]) * 0.12);
         ys[q] = Math.max(y, hAt(x, zz) + LIFT_ROAD);
+        // ---- West Coast: the Golden Gate and Bay Bridge decks at their real height.
+        if (us) { const deck = westBridgeDeck(latAt(zz), lonAt(x)); if (deck !== null) ys[q] = deck - e0; }
       }
       for (let pass = 0; pass < 3; pass++) for (let q = 1; q < np - 1; q++) ys[q] = (ys[q - 1] + ys[q] * 2 + ys[q + 1]) / 4;
     } else {
@@ -582,7 +608,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
           ribbon(walkBuf, dense, r.spec.width + sw * 2, yWalk, 0, (o) => 500 + o);
         }
       } else ribbon(walkBuf, dense, r.spec.width, yWalk, 0, (o) => 500 + o);
-      if (r.bridge) bridgeSides(deckBuf, dense, ys, r.spec.width + (r.spec.drive ? 1 : 0.4), pillars, hAt);
+      if (r.bridge) bridgeSides(deckBuf, dense, ys, r.spec.width + (r.spec.drive ? 1 : 0.4), pillars, hAt, deckOf ? (x, zz) => !!deckOf(x, zz)?.hung : undefined);
     }
     for (let q = 2; q < dense.length; q += 2) rd.seg(dense[q - 2], dense[q - 1], dense[q], dense[q + 1], r.spec.width / 2 + (r.spec.drive ? 2.5 : 0.8));
     // Split into graph edges at intersections.
@@ -764,7 +790,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
           const sd = q % 2 ? 1 : -1, off = e.width / 2 + 1.5;
           const x = tmp.x - tmp.tz * off * sd, zz = tmp.z + tmp.tx * off * sd;
           if (x < 0 || zz < 0 || x > size || zz > size || occ.get(x, zz) || wetAt(x, zz)) continue;
-          trees.push(x, hAt(x, zz), zz, hash01(q * 13 + sv) * 6.28, 0.75 + hash01(q + sv) * 0.4, tropical ? 2 : 0);
+          trees.push(x, hAt(x, zz), zz, hash01(q * 13 + sv) * 6.28, 0.75 + hash01(q + sv) * 0.4, west ? west.treeKind(hash01(hashStr(e.a) + q * 3 + 1)) : hash01(q * 7 + sv + 3) < palmShare ? 2 : 0);
           // A tree pit in the paving, square to the street.
           pits.push(x, zz, Math.atan2(-tmp.tz, tmp.tx));
         }
@@ -824,6 +850,10 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
         if (h < 0.28) put(sv, side, inner + 1.15, 0);
         else if (h < 0.56) put(sv, side, inner + 0.5, 1);
         else if (us && h < 0.63) put(sv, side, inner + 0.55, 4);
+        // ---- Europe & Middle East: Royal Mail pillar boxes and red K6 telephone kiosks in Britain, Morris columns in France.
+        else if (job.country === 'gb' && !poiBoxes && h < 0.595) put(sv, side, inner + 0.55, 20);
+        else if (job.country === 'gb' && h >= 0.595 && h < 0.62) put(sv, side, inner + 0.9, 21);
+        else if (job.country === 'fr' && h < 0.585) put(sv, side, inner + 1.1, 22);
       }
       if (us && hash01(seed + 3) < 0.6) put(s0 + 1.6, 1, inner + 0.45, 2);
       if (us && hash01(seed + 5) < 0.45) put(s1 - 1.6, -1, inner + 0.45, 2);
@@ -869,7 +899,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
     for (const p of layers.points.poi ?? []) {
       const cls = str(p.props.class), sub = str(p.props.subclass);
       const kind = sub === 'subway_entrance' ? 6 : cls === 'bus' && sub === 'bus_stop' && city ? 8 : cls === 'bicycle_rental' && city ? 9
-        : cls === 'waste_basket' ? 1 : cls === 'post' && sub === 'post_box' && us ? 4 : (sub === 'kiosk' || sub === 'newsagent') && city ? 7 : -1;
+        : cls === 'waste_basket' ? 1 : cls === 'post' && sub === 'post_box' && us ? 4 : cls === 'post' && sub === 'post_box' && job.country === 'gb' ? 20 : (sub === 'kiosk' || sub === 'newsagent') && city ? 7 : -1;
       if (kind < 0) continue;
       let x = p.x * S, zz = p.y * S;
       if (x < 0 || zz < 0 || x >= size || zz >= size) continue;
@@ -879,7 +909,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       const side = (x - nr.px) * -nr.tz + (zz - nr.pz) * nr.tx >= 0 ? 1 : -1;
       const rx = -nr.tz * side, rz = nr.tx * side;
       const curbOff = nr.w / 2;
-      if (kind === 8 || kind === 4 || kind === 1 || kind === 7) {
+      if (kind === 8 || kind === 4 || kind === 1 || kind === 7 || kind === 20) {
         // Put it on the sidewalk by the curb.
         const off = curbOff + (kind === 8 ? 1.5 : kind === 7 ? 2.0 : 0.6);
         x = nr.px + rx * off; zz = nr.pz + rz * off;
@@ -948,7 +978,10 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
     const P = T / size;
     // Base: grass where it's open, paving where it's built up.
     const small = new OffscreenCanvas(16, 16), sg = small.getContext('2d', { willReadFrequently: true })!;
-    const grass = rgb(parseInt(GROUND.grass.slice(1), 16)), urban = rgb(parseInt(GROUND.urban.slice(1), 16));
+    // ---- Europe & Middle East: the open ground in the deserts (Giza, Cairo, Dubai, Riyadh) is sand, not lawn.
+    const arid = ['eg', 'ae', 'sa', 'qa', 'kw', 'bh', 'om', 'jo', 'ly', 'iq'].includes(job.country);
+    const openGround = arid ? '#cfb88c' : west?.ground ?? GROUND.grass;
+    const grass = rgb(parseInt(openGround.slice(1), 16)), urban = rgb(parseInt(GROUND.urban.slice(1), 16));
     const cellA = (size / 16) ** 2;
     for (let q = 0; q < 256; q++) {
       const cov = density[q] / cellA;
@@ -979,13 +1012,19 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       if (c === 'residential' || c === 'suburb' || c === 'neighbourhood') return null;
       return null;
     });
+    // ---- Asia-Pacific & Latin America: only the park layer's green classes, under the landcover (sand stays sand).
+    fillLayer('park', (p) => (!arid && isGreenPark(p) ? GROUND.park : null)); // ---- Europe & Middle East: desert reserves aren't lawns
     fillLayer('landcover', (p) => {
       const c = str(p.class), sub = str(p.subclass);
-      return c === 'wood' ? GROUND.wood : c === 'grass' ? (sub === 'park' ? GROUND.park : GROUND.grass) : c === 'farmland' ? GROUND.farmland
+      if (arid && c === 'grass' && !['park', 'garden', 'golf_course', 'pitch'].includes(sub)) return openGround; // ---- Europe & Middle East: desert scrub
+      return c === 'wood' ? GROUND.wood : c === 'grass' ? (sub === 'park' ? GROUND.park : west?.ground ?? GROUND.grass) : c === 'farmland' ? GROUND.farmland
         : c === 'sand' ? GROUND.sand : c === 'wetland' ? GROUND.wetland : c === 'ice' ? GROUND.ice : c === 'rock' ? GROUND.rock : null;
     });
-    fillLayer('park', () => GROUND.park);
     parks.paint(g, P);
+    // ---- West Coast: beaches stay sand where a park polygon covers them (Santa Monica State Beach).
+    fillLayer('landcover', (p) => (str(p.class) === 'sand' ? GROUND.sand : null));
+    // ---- Asia-Pacific & Latin America: pedestrian squares (the Zócalo, plazas) are paved, not lawn.
+    fillLayer('transportation', (p) => (str(p.class) === 'path' && str(p.subclass) === 'pedestrian' ? GROUND.paved : null));
     // Soft contact shadow around buildings.
     // One path, one blur (a filter applies per draw call).
     g.save();
@@ -1046,7 +1085,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
     water: waterBuf.out(), buildings: cells.map((b) => b.out()), footprints,
     iron: iron.out(),
     road: roadBuf.out(), walk: walkBuf.out(), paintW: whiteBuf.out(), paintY: yellowBuf.out(), deck: deckBuf.out(),
-    trees: new Float32Array(trees), parks: parks.out, lamps: new Float32Array(lamps), poles: new Float32Array(poles), pillars: new Float32Array(pillars),
+    trees: new Float32Array(trees), parks: parks.out, lamps: new Float32Array(lamps), poles: new Float32Array(poles), pillars: new Float32Array(us ? westPillars(pillars, (x, zz) => westBridgeDeck(latAt(zz), lonAt(x)) !== null && wetAt(x, zz)) : pillars),
     props: new Float32Array(props), curbs: new Float32Array(curbs), shore: shoreBuf.out(),
     signals, landmarks: lmClaims, edges: lod === 0 ? edges : [], names: lod === 0 ? names : [], places,
     stats: { buildings: nBuildings, roads: roads.length, ms: Math.round(performance.now() - t0), verts: cells.reduce((a, b) => a + b.count, 0) },
@@ -1123,7 +1162,7 @@ function gable(b: Buf, ring: number[], area: number, top: number, h: number, gmi
 }
 
 /** Bridge deck edges (parapets), underside, and pillars down to the ground. */
-function bridgeSides(b: Buf, pts: number[], ys: number[], width: number, pillars: number[], hAt: (x: number, z: number) => number) {
+function bridgeSides(b: Buf, pts: number[], ys: number[], width: number, pillars: number[], hAt: (x: number, z: number) => number, hung?: (x: number, z: number) => boolean) {
   const n = pts.length / 2;
   let acc = 0, next = 12;
   for (let q = 0; q + 1 < n; q++) {
@@ -1143,7 +1182,7 @@ function bridgeSides(b: Buf, pts: number[], ys: number[], width: number, pillars
       const t = 1 - (acc - next) / l;
       const x = ax + (bx - ax) * t, zz = az + (bz - az) * t, y = ya + (yb - ya) * t;
       const g = hAt(x, zz);
-      if (y - g > 3.5) pillars.push(x, g - 1, zz, y - 1.3 - g + 1);
+      if (y - g > 3.5 && !hung?.(x, zz)) pillars.push(x, g - 1, zz, y - 1.3 - g + 1);
       next += 30;
     }
   }
@@ -1581,4 +1620,12 @@ function shoreline(b: Buf, rings: number[][], level: number, size: number, stren
       u += len;
     }
   });
+}
+
+// ---- West Coast
+/** Suspension spans hang from their cables: no piers under them (pillars are x, y, z, h quads). */
+function westPillars(p: number[], hung: (x: number, z: number) => boolean) {
+  const out: number[] = [];
+  for (let i = 0; i < p.length; i += 4) if (!hung(p[i], p[i + 2])) out.push(p[i], p[i + 1], p[i + 2], p[i + 3]);
+  return out;
 }

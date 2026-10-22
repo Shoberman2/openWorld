@@ -180,7 +180,12 @@ const DUST: [number, number, number] = [0.66, 0.61, 0.54];
 const SMOKE: [number, number, number] = [0.9, 0.9, 0.92];
 // Rocket shoes (m/s²). Thrust against quadratic drag gives the top speeds: ~38 m/s (85 mph)
 // cruising, ~95 m/s (210 mph) on the afterburner, ~28 m/s straight up.
-const LAUNCH_KICK = 13; // m/s added on ignition
+const LAUNCH_KICK = 13; // m/s the ignition burn adds (from the ground, ×1.25)
+// The ignition is a short hard burn, not a teleport in velocity: ~0.3 s at ~6 g, so you're seen to
+// leave the ground (about 2.5 m up when it ends) instead of being somewhere else the next frame.
+const IGNITION_BURN = 0.3;
+/** Seconds the camera lingers low after a ground launch, watching you go before it follows. */
+const LAUNCH_CAM = 1.8;
 const CLIMB = 12;
 const THRUST = 22;
 const BOOST = 3;
@@ -214,6 +219,12 @@ export class Player {
   private rocketHold = 0;
   /** Ignition flash 1→0, afterburner 0..1, seconds left tumbling after a hard landing. */
   private kick = 0;
+  /** Ignition burn: seconds left and its extra upward acceleration (m/s²). */
+  private ignT = 0;
+  private ignAcc = 0;
+  /** 1→0 over launchDur seconds after a ground launch: the camera's slow-to-rise launch shot. */
+  private launchCam = 0;
+  private launchDur = LAUNCH_CAM;
   private boost = 0;
   private stun = 0;
   private heading = 0;
@@ -295,7 +306,7 @@ export class Player {
     this.ch.root.position.copy(this.position);
     this.ch.root.rotation.set(0, facing, 0);
     this.ch.rockets = 0;
-    this.kick = 0; this.boost = 0; this.stun = 0;
+    this.kick = 0; this.boost = 0; this.stun = 0; this.ignT = 0; this.launchCam = 0;
     this.crouchT = -1; this.tumbleT = 0; this.loose = 0; this.tumbleRot.set(0, 0);
     this.haveFxPos = false;
     this.ch.root.rotation.x = this.ch.root.rotation.z = 0;
@@ -391,7 +402,7 @@ export class Player {
           if (ground < p.y - 1.2) { this.mode = 'air'; v.y = 0; } // walked off a ledge
           else p.y = ground;
         }
-        if (pressed && this.mode === 'swim' && canFly) { this.mode = 'fly'; v.y = LAUNCH_KICK; this.ignite(false); } // blast out of the water
+        if (pressed && this.mode === 'swim' && canFly) { this.mode = 'fly'; v.y = Math.max(v.y, 2); this.burnIgnition(LAUNCH_KICK); this.ignite(false); } // blast out of the water
         else if (pressed && this.mode === 'walk' && !crouching) {
           // Anticipation: sink into a crouch first. Let go quickly for a jump; keep holding to launch.
           if (canFly) { this.crouchT = 0; this.ch.play('crouch'); }
@@ -403,7 +414,10 @@ export class Player {
             // Lift-off: thrown off the ground on the ignition kick, then the burn carries you.
             this.crouchT = -1;
             this.mode = 'fly';
-            v.y = LAUNCH_KICK * 1.25;
+            v.y = Math.max(v.y, 1.5); // the legs push off as the burn lights
+            p.y += 0.02; // clear the ground so this frame isn't a touchdown
+            this.burnIgnition(LAUNCH_KICK * 1.25);
+            this.launchCam = 1; this.launchDur = LAUNCH_CAM;
             this.rocketHold = 0;
             this.ignite(true);
           } else if (!space && this.crouchT >= JUMP_CROUCH) { this.crouchT = -1; this.jump(); }
@@ -425,7 +439,8 @@ export class Player {
         if (this.mode === 'air' && space) this.rocketHold += dt; else if (!space) this.rocketHold = 0;
         if (canFly && this.mode === 'air' && space && (pressed || this.rocketHold > 0.22)) {
           this.mode = 'fly';
-          v.y = Math.max(v.y, 0) + LAUNCH_KICK; // ignition: you get thrown up, not lifted
+          v.y = Math.max(v.y, 0); // ignition: a hard burn throws you up, not a gentle lift
+          this.burnIgnition(LAUNCH_KICK);
           this.ignite(false);
         }
         if (this.mode === 'fly' && dive) this.mode = 'air';
@@ -443,6 +458,11 @@ export class Player {
         const boost = burn && shift;
         this.boost = THREE.MathUtils.damp(this.boost, boost ? 1 : 0, boost ? 4 : 1.5, dt);
         const acc = new THREE.Vector3(0, -GRAVITY, 0);
+        if (this.ignT > 0) {
+          const t = Math.min(dt, this.ignT);
+          acc.y += this.ignAcc * (t / Math.max(dt, 1e-6));
+          this.ignT -= dt;
+        }
         if (fly) {
           // Fly where you look: camera pitch aims the climb while you're moving.
           const aim = moving ? THREE.MathUtils.clamp(0.1 - (this.pitch - 0.18) * 2.4, -1, 1) : 1;
@@ -543,6 +563,12 @@ export class Player {
     this.vel.y = JUMP;
     this.ch.play('jump');
     this.rocketHold = 0;
+  }
+
+  /** Light the ignition burn: `dv` m/s upward, delivered over IGNITION_BURN seconds. */
+  private burnIgnition(dv: number) {
+    this.ignT = IGNITION_BURN;
+    this.ignAcc = dv / IGNITION_BURN;
   }
 
   /** Where the heel thrusters are (world), for smoke. */
@@ -677,6 +703,8 @@ export class Player {
     const sp = v.length();
     const nextSp = THREE.MathUtils.damp(sp, vEq, 0.7, dt);
     v.lerp(dir.multiplyScalar(nextSp), 1 - Math.exp(-dt * 2.2));
+    // Below flying speed the suit stops lifting (pinned against a wall, say): gravity takes over.
+    if (sp < 15) v.y -= GRAVITY * (1 - sp / 15) * dt;
     p.addScaledVector(v, dt);
     this.speed = Math.hypot(v.x, v.z);
     this.mode = burn ? 'fly' : 'air';
@@ -693,7 +721,7 @@ export class Player {
     const tumbling = this.tumbling;
     p.y = ground; v.y = 0;
     this.mode = 'walk';
-    this.kick = 0;
+    this.kick = 0; this.ignT = 0; this.launchCam = 0;
     this.crouchT = -1;
     this.tumbleT = 0; this.spin.set(0, 0); this.loose = 0;
     // The ground answers: a thud, dust kicked up, and the camera dips with you.
@@ -739,6 +767,7 @@ export class Player {
       this.shake = Math.min(1, into / 40);
       v.x += n.x * into * 0.15; v.z += n.z * into * 0.15; // bounce off a little
       if (this.mode === 'fly' && into > 30) this.mode = 'air'; // knocked the burn out of you
+      if (this.wingsuit && into > 22) { this.wingsuit = false; this.mode = 'air'; } // the suit folds: you fall
       if (into > 26 && this.mode === 'air') this.knock(1.1, Math.min(1, into / 60));
       this.sfx.thud(into * 0.7);
     }
@@ -766,7 +795,8 @@ export class Player {
     // Close on foot; the faster you go the more the camera falls back to show where you're headed.
     const vs = this.vel.length();
     const flyBack = r ? Math.min(4, Math.abs(r.speed) / 15) : this.mode === 'fly' ? 1.3 + Math.min(4.5, vs / 14) : this.mode === 'air' ? 0.4 + Math.min(2.4, vs / 20) : 0;
-    const dist = Math.max(1.5, (r ? r.cam.dist : this.distance) + flyBack + this.zoom);
+    // The launch shot also stands back a few meters so the ground and the blast stay in frame.
+    const dist = Math.max(1.5, (r ? r.cam.dist : this.distance) + flyBack + this.zoom + this.launchCam * (r ? 35 : 3.5));
     const back = new THREE.Vector3(
       -Math.sin(this.yaw) * Math.cos(this.pitch),
       Math.sin(this.pitch),
@@ -805,9 +835,24 @@ export class Player {
     // Fast (a vehicle past ~60 m/s, or you past ~22 m/s: flying, falling) the camera rides along with
     // you and only the offset is smoothed; otherwise it trails far behind (kilometers at Mach 1).
     const subjectSpeed = this.ride ? this.ride.speed : this.vel.length();
-    if (this.haveHead && subjectSpeed > (this.ride ? 60 : 22)) this.camPos.add(head.clone().sub(this.lastHead));
+    // Launch shot: for a beat after a ground launch the camera barely rises, so it tilts up and
+    // watches you leave the ground (the dust ring below), then eases up after you.
+    this.launchCam = Math.max(0, this.launchCam - dt / this.launchDur);
+    // (A shuttle's pad camera holds still for the first half of the shot, then eases up after her.)
+    const l0 = this.ride ? Math.min(1, this.launchCam * 2) : this.launchCam;
+    const lc = l0 * l0 * (3 - 2 * l0);
+    if (this.haveHead && subjectSpeed > (this.ride ? 60 : 22)) {
+      const d = head.clone().sub(this.lastHead);
+      d.y *= 1 - lc;
+      this.camPos.add(d);
+    }
     this.lastHead.copy(head); this.haveHead = true;
-    this.camPos.lerp(want, 1 - Math.exp(-dt * (this.mode === 'fly' || this.ride ? 9 + fast : 14)));
+    const rate = this.mode === 'fly' || this.ride ? 9 + fast : 14;
+    // On foot the camera lags upward; for a shuttle it holds its height outright (a launch-pad camera).
+    const k = 1 - Math.exp(-dt * rate), ky = 1 - Math.exp(-dt * rate * (1 - (this.ride ? 1 : 0.96) * lc));
+    this.camPos.x += (want.x - this.camPos.x) * k;
+    this.camPos.z += (want.z - this.camPos.z) * k;
+    this.camPos.y += (want.y - this.camPos.y) * ky;
     this.camera.position.copy(this.camPos);
     const look = head.clone();
     const sh = this.ride ? 0 : 0.4;
@@ -891,6 +936,8 @@ export class Player {
     }, this.vw);
     v.sync(dt);
     if (r === 'crash') { this.crash(); return; }
+    // The shuttle leaving the pad: the camera stays down there for a few seconds and watches her climb.
+    if (v instanceof Shuttle && v.liftoff) { v.liftoff = false; this.launchCam = 1; this.launchDur = 9; }
     this.position.copy(v.pos);
     this.facing = v.heading;
     this.speed = Math.abs(v.speed);

@@ -3,6 +3,7 @@
 // stands of big trees with clearings, and the lawns, ball fields, playgrounds, rock outcrops, water
 // and paths the map knows about stay open. Also rock outcrops, the low stone wall along a big park's
 // edge (with gaps where paths come in), and earthy banks with boulders around park lakes.
+import { isGreenPark } from './apac-climate.ts';
 import { clipRing, str, type Layers } from '../mvt.ts';
 import { Buf, hash01, hashStr, inRing, signedArea } from './geo.ts';
 import type { MeshData } from './types.ts';
@@ -93,6 +94,7 @@ export function buildParks(c: ParkCtx) {
     for (const p of f.polys) { const r = rings(p); if (r) { fillRaster(cover, n, C, r, PARK); parkPolys.push(r); } }
   }
   for (const f of layers.polys.park ?? []) {
+    if (!isGreenPark(f.props)) continue; // ---- Asia-Pacific & Latin America: heritage/planning zones aren't woods
     for (const p of f.polys) { const r = rings(p); if (r) { fillRaster(cover, n, C, r, PARK, (o) => o === NONE); parkPolys.push(r); } }
   }
   // 2. Woods and scrub.
@@ -180,7 +182,8 @@ export function buildParks(c: ParkCtx) {
     if (c.road(x, z) || c.built(x, z) || c.wetAt(x, z) || (nearWater(x, z) && inWater(x, z))) continue;
     const big = v === SCRUB ? 0.55 + hash01(h + 3) * 0.35 : (v === WOOD ? 1.35 : 1.55) + hash01(h + 3) * 0.9 + (stand - 0.5) * 0.4;
     const conifer = c.north ? hash01(h + 4) < 0.7 : v === WOOD ? hash01(h + 4) < 0.18 : hash01(h + 4) < 0.05;
-    const kind = c.tropical && hash01(h + 5) < 0.35 ? 2 : conifer ? 1 : 0;
+    // ---- East US: tropical city parks (Miami's Lummus Park, Bayfront Park) are mostly palms.
+    const kind = c.tropical && hash01(h + 5) < (v === PARK ? 0.7 : 0.35) ? 2 : conifer ? 1 : 0;
     trees.push(x, c.hAt(x, z), z, hash01(h + 6) * 6.28, big * (lod === 1 ? 1.15 : 1) * Math.min(1.5, grow), kind);
   }
 
