@@ -19,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Third-party data and assets keep their own licenses and are not covered above:
-map data © OpenStreetMap contributors (ODbL) and OpenMapTiles; terrain from
-Mapterhorn / Copernicus; Sentinel-2 cloudless imagery by EOX (CC BY 4.0);
-weather from Open-Meteo (CC BY 4.0); the character rigs in client/public/models
-come from the three.js examples (Mixamo). See README.md, "Credits".

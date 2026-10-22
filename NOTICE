@@ -1,0 +1,7 @@
+OpenWorld HQ is released under the MIT License (see LICENSE).
+
+Third-party data and assets keep their own licenses and are not covered by it:
+map data © OpenStreetMap contributors (ODbL) and OpenMapTiles; terrain from
+Mapterhorn / Copernicus; Sentinel-2 cloudless imagery by EOX (CC BY 4.0);
+weather from Open-Meteo (CC BY 4.0); the character rigs in client/public/models
+come from the three.js examples (Mixamo). See README.md, "Credits".

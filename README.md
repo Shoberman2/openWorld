@@ -237,4 +237,4 @@ Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributor
 
 The two character rigs (`Xbot.glb`, `Soldier.glb`) come from the [three.js examples](https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf) and were made with Adobe Mixamo. Mixamo allows them in games but not redistribution of the raw files, so they aren't in this repository: `npm install` downloads them (`npm run models` to retry), and the game loads them from the same place if they're missing. The water normal map (`client/public/textures/waternormals.jpg`) is from the three.js examples (MIT).
 
-OpenWorld's own code and assets are released under the [MIT License](LICENSE). Map data, terrain, imagery and the character rigs above keep their own terms.
+OpenWorld's own code and assets are released under the [MIT License](LICENSE). Map data, terrain, imagery and the character rigs above keep their own terms (see [NOTICE](NOTICE)).
