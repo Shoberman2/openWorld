@@ -1,4 +1,4 @@
-// Cars and robot pedestrians on the streamed road network: lanes, one-ways, signals, hills, bridges.
+// Cars and pedestrians on the streamed road network: lanes, one-ways, signals, hills, bridges.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeTypes, pickType, type CarType, type TypeId } from '../traffic.ts';
@@ -19,7 +19,7 @@ function paint() {
   return PAINT[0][0];
 }
 
-/** A car type, or the bicycle (with its caretaker rider), which shares the lanes with them. */
+/** A car type, or the bicycle (with its rider), which shares the lanes with them. */
 type VType = Omit<CarType, 'id'> & { id: TypeId | 'bike' };
 
 /** Paint a piece one color (vertex colors; the instance color stays white for bikes). */
@@ -32,7 +32,7 @@ function tint(g: THREE.BufferGeometry, c: number) {
   return geo;
 }
 
-/** A city bike with a white caretaker robot riding it, facing +Z, wheels on y = 0. */
+/** A city bike with a cyclist riding it (jacket, jeans, a helmet), facing +Z, wheels on y = 0. */
 function bikeType(): VType {
   const frame = [0x2f6f6a, 0x9a2f2a, 0x1c1e21, 0xd8cbb4][Math.floor(Math.random() * 4)];
   const tube = (ax: number, ay: number, az: number, bx: number, by: number, bz: number, r: number, c: number) => {
@@ -41,7 +41,9 @@ function bikeType(): VType {
     g.applyMatrix4(new THREE.Matrix4().compose(a.clone().add(b).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize()), new THREE.Vector3(1, 1, 1)));
     return tint(g, c);
   };
-  const R = 0.34, W = 0xf2f1ee, D = 0x2a2d32;
+  const R = 0.34, D = 0x2a2d32;
+  const jacket = [0x2b3a55, 0x3d5a3d, 0x6b2e2e, 0x1f1f24, 0x8a7a5c][Math.floor(Math.random() * 5)];
+  const jeans = 0x2f4466, skin = [0xe8bf9c, 0xc89068, 0x8d5a3b, 0x6d4229][Math.floor(Math.random() * 4)], helmet = [0xf2f1ee, 0x1c1e21, 0xd8452f][Math.floor(Math.random() * 3)];
   const parts = [
     tint(new THREE.TorusGeometry(R, 0.03, 6, 18).rotateY(Math.PI / 2).translate(0, R, -0.52), D),
     tint(new THREE.TorusGeometry(R, 0.03, 6, 18).rotateY(Math.PI / 2).translate(0, R, 0.52), D),
@@ -49,14 +51,16 @@ function bikeType(): VType {
     tube(0, 0.32, 0, 0, 0.8, 0.36, 0.028, frame), tube(0, 0.86, -0.16, 0, 0.88, 0.34, 0.024, frame), tube(0, 0.8, 0.36, 0, R, 0.52, 0.02, D),
     tube(-0.25, 1.04, 0.42, 0.25, 1.04, 0.42, 0.018, D), tube(0, 0.8, 0.36, 0, 1.04, 0.4, 0.02, D),
     tint(new THREE.BoxGeometry(0.12, 0.05, 0.24).translate(0, 0.98, -0.2), D),
-    // The rider: a white caretaker, leaning onto the bars.
-    tint(new THREE.CapsuleGeometry(0.15, 0.4, 3, 8).rotateX(0.45).translate(0, 1.32, -0.05), W),
-    tint(new THREE.SphereGeometry(0.13, 10, 8).scale(0.9, 1.1, 1).translate(0, 1.73, 0.12), W),
-    tint(new THREE.CylinderGeometry(0.06, 0.06, 0.04, 8).rotateZ(Math.PI / 2).translate(0.13, 1.74, 0.1), D),
-    tint(new THREE.CylinderGeometry(0.06, 0.06, 0.04, 8).rotateZ(Math.PI / 2).translate(-0.13, 1.74, 0.1), D),
-    tube(0.17, 1.48, 0.05, 0.22, 1.06, 0.4, 0.04, W), tube(-0.17, 1.48, 0.05, -0.22, 1.06, 0.4, 0.04, W),
-    tube(0.1, 1.0, -0.18, 0.1, 0.62, 0.12, 0.05, W), tube(0.1, 0.62, 0.12, 0.08, 0.32, 0.05, 0.045, W),
-    tube(-0.1, 1.0, -0.18, -0.1, 0.72, -0.1, 0.05, W), tube(-0.1, 0.72, -0.1, -0.08, 0.32, -0.08, 0.045, W),
+    // The rider, leaning onto the bars.
+    tint(new THREE.CapsuleGeometry(0.15, 0.36, 3, 8).scale(1.05, 1, 0.75).rotateX(0.45).translate(0, 1.3, -0.05), jacket),
+    tint(new THREE.CylinderGeometry(0.045, 0.05, 0.1, 8).translate(0, 1.56, 0.06), skin),
+    tint(new THREE.SphereGeometry(0.1, 10, 8).scale(0.9, 1.15, 1).translate(0, 1.66, 0.11), skin),
+    tint(new THREE.SphereGeometry(0.115, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2).scale(0.95, 0.85, 1.15).translate(0, 1.69, 0.1), helmet),
+    tube(0.17, 1.48, 0.05, 0.22, 1.06, 0.4, 0.045, jacket), tube(-0.17, 1.48, 0.05, -0.22, 1.06, 0.4, 0.045, jacket),
+    tint(new THREE.SphereGeometry(0.04, 6, 4).translate(0.22, 1.05, 0.41), skin), tint(new THREE.SphereGeometry(0.04, 6, 4).translate(-0.22, 1.05, 0.41), skin),
+    tube(0.1, 1.0, -0.18, 0.1, 0.62, 0.12, 0.065, jeans), tube(0.1, 0.62, 0.12, 0.08, 0.32, 0.05, 0.05, jeans),
+    tube(-0.1, 1.0, -0.18, -0.1, 0.72, -0.1, 0.065, jeans), tube(-0.1, 0.72, -0.1, -0.08, 0.32, -0.08, 0.05, jeans),
+    tint(new THREE.BoxGeometry(0.09, 0.07, 0.24).translate(0.08, 0.3, 0.09), D), tint(new THREE.BoxGeometry(0.09, 0.07, 0.24).translate(-0.08, 0.3, -0.04), D),
   ];
   for (const g of parts) if (!g.attributes.normal) g.computeVertexNormals();
   const lamp = tint(new THREE.SphereGeometry(0.045, 6, 4).translate(0, 0.9, 0.48), 0xfff2c8);
@@ -324,9 +328,8 @@ interface Ped {
 }
 
 /**
- * The city's caretakers: white robots on every sidewalk. Most walk (some in twos and threes, some
- * carrying packages), wait at signals, step in and out of doors; others sit on benches, wipe shop
- * windows or sweep the pavement.
+ * The people on every sidewalk. Most walk (some in twos and threes, some carrying packages), wait
+ * at signals, step in and out of doors; others sit on benches, wipe shop windows or sweep the pavement.
  */
 export class EarthPedestrians {
   group = new THREE.Group();
@@ -338,7 +341,7 @@ export class EarthPedestrians {
   private nearV = -1;
   private clock = 0;
   private seated = new Set<number>();
-  /** How many robots are out (the rest stay hidden): lowered for slow GPUs and VR. */
+  /** How many people are out (the rest stay hidden): lowered for slow GPUs and VR. */
   budget: number;
 
   constructor(

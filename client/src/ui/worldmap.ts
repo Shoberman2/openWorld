@@ -2,6 +2,8 @@
 // The map screen (M): a full-screen slippy map of the whole planet. Pick any spot and drop in, set a
 // waypoint or fly there on autopilot; browse famous places and your project HQs; flip between the
 // street map and satellite. Zoom out and it turns into a globe with live clouds, storms and wind.
+// Your HQs and Home are clickable: click one and you teleport straight inside. The Teleport button
+// (bottom right) opens it in teleport mode, framed on your buildings with a list beside the map.
 import type { TileMap } from './tilemap.ts';
 import type { MapMarker } from './earthMinimap.ts';
 import { setOverlayOpen } from './panel.ts';
@@ -27,6 +29,8 @@ export interface WorldMapOpts {
   imperial?: boolean;
   /** Starting zoom (default 15). */
   zoom?: number;
+  /** Opened from the Teleport button: frame your buildings and list them beside the map. */
+  teleport?: boolean;
 }
 
 export const FAMOUS_PLACES: { name: string; sub: string; lat: number; lon: number }[] = [
@@ -89,6 +93,8 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
     <div class="ow-wm-zoom"><button data-z="1">+</button><button data-z="-1">−</button><div class="ow-wm-z"></div></div>
     <div class="ow-wm-sheet hidden"></div>
     <div class="ow-wm-card"></div>
+    <div class="ow-wm-tp hidden"><h5>Teleport inside</h5><p>Click one of your buildings on the map, or pick it here.</p><input class="ow-wm-tp-q" type="text" placeholder="Find a building" autocomplete="off" /><div class="ow-wm-tp-list"></div></div>
+    <div class="ow-wm-tip hidden"><b></b><span>Click to teleport inside</span></div>
     <div class="ow-wm-attrib">${ATTRIBUTION}</div>`;
   document.body.appendChild(el);
   const cv = el.querySelector('canvas')!;
@@ -118,6 +124,16 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
   const input = el.querySelector<HTMLInputElement>('input')!;
   const styleBtn = el.querySelector<HTMLButtonElement>('.ow-wm-style')!;
   const zLabel = el.querySelector<HTMLDivElement>('.ow-wm-z')!;
+  const tpEl = el.querySelector<HTMLDivElement>('.ow-wm-tp')!;
+  const tip = el.querySelector<HTMLDivElement>('.ow-wm-tip')!;
+  // Teleport markers as drawn last frame, in CSS pixels, for hover and click.
+  let hits: { x: number; y: number; m: MapMarker }[] = [];
+  const hitAt = (x: number, y: number) => {
+    let best: { x: number; y: number; m: MapMarker } | null = null, bd = 16;
+    for (const h of hits) { const d = Math.hypot(h.x - x, h.y - y); if (d < bd) { bd = d; best = h; } }
+    return best;
+  };
+  const teleport = (m: MapMarker) => { api.close(); m.teleport!(); };
   setOverlayOpen(true);
 
   const resize = () => {
@@ -144,12 +160,12 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
           ${opts.onAutopilot ? '<button data-a="auto"><i>✈</i>Autopilot</button>' : ''}
           <button data-a="back"><i>◎</i>Back to you</button>
         </div>
-        <div class="ow-wm-help"><span><kbd>drag</kbd>Move</span><span><kbd>wheel</kbd>Zoom</span><span><kbd>click</kbd>Pick a spot</span><span>${kbd('map')}Close</span></div>`;
+        <div class="ow-wm-help"><span><kbd>drag</kbd>Move</span><span><kbd>wheel</kbd>Zoom</span><span><kbd>click</kbd>Pick a spot, or a building to teleport in</span><span>${kbd('map')}Close</span></div>`;
     } else {
       card.innerHTML = `
         <div><h4>You are here</h4><p>${fmtCoord(h.lat, h.lon)}</p></div>
         <div class="ow-wm-acts"><button data-a="back"><i>◎</i>Back to you</button></div>
-        <div class="ow-wm-help"><span><kbd>drag</kbd>Move</span><span><kbd>wheel</kbd>Zoom</span><span><kbd>click</kbd>Pick a spot</span><span>${kbd('map')}Close</span></div>`;
+        <div class="ow-wm-help"><span><kbd>drag</kbd>Move</span><span><kbd>wheel</kbd>Zoom</span><span><kbd>click</kbd>Pick a spot, or a building to teleport in</span><span>${kbd('map')}Close</span></div>`;
     }
   };
   card.addEventListener('click', (e) => {
@@ -180,8 +196,9 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
       const mk = opts.markers().filter((m) => m.label);
       const places = opts.places ?? FAMOUS_PLACES;
       const h = opts.here();
-      sheet.innerHTML = `${mk.length ? `<h5>Your projects</h5>${mk.map((m, i) => `<div class="ow-wm-row"><span class="dot" style="background:${esc(m.color)}"></span><div><b>${esc(m.label!)}</b><small>${formatDistance(haversine(h, m), !!opts.imperial)} away</small></div><button data-m="${i}">Go</button></div>`).join('')}` : ''}
+      sheet.innerHTML = `${mk.length ? `<h5>Your projects</h5>${mk.map((m, i) => `<div class="ow-wm-row"><span class="dot" style="background:${esc(m.color)}"></span><div><b>${esc(m.label!)}</b><small>${formatDistance(haversine(h, m), !!opts.imperial)} away</small></div>${m.teleport ? `<button data-t="${i}" title="Teleport straight inside">Teleport inside</button>` : ''}<button data-m="${i}">Show</button></div>`).join('')}` : ''}
         <h5>Around the world</h5>${places.map((p, i) => `<div class="ow-wm-row"><div><b>${esc(p.name)}</b><small>${esc(p.sub ?? '')}</small></div><button data-p="${i}">Go</button></div>`).join('')}`;
+      sheet.querySelectorAll<HTMLButtonElement>('button[data-t]').forEach((b) => b.addEventListener('click', () => teleport(mk[Number(b.dataset.t)])));
       sheet.querySelectorAll<HTMLButtonElement>('button[data-m]').forEach((b) => b.addEventListener('click', () => { const m = mk[Number(b.dataset.m)]; flyTo(m.lat, m.lon, 17, m.label); }));
       sheet.querySelectorAll<HTMLButtonElement>('button[data-p]').forEach((b) => b.addEventListener('click', () => { const p = places[Number(b.dataset.p)]; flyTo(p.lat, p.lon, 15, p.name); }));
     } else if (tab === 'settings') {
@@ -234,7 +251,16 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
     results.innerHTML = '';
   });
   cv.addEventListener('pointermove', (e) => {
-    if (!drag) return;
+    if (!drag) {
+      const h = hitAt(e.clientX, e.clientY);
+      cv.classList.toggle('pick', !!h);
+      tip.classList.toggle('hidden', !h);
+      if (h) {
+        tip.querySelector('b')!.textContent = h.m.label ?? 'Building';
+        tip.style.left = `${h.x}px`; tip.style.top = `${h.y}px`;
+      }
+      return;
+    }
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (Math.hypot(dx, dy) > 4) { drag.moved = true; cv.classList.add('drag'); }
     if (!drag.moved) return;
@@ -245,6 +271,8 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
   cv.addEventListener('pointerup', (e) => {
     cv.classList.remove('drag');
     if (drag && !drag.moved) {
+      const h = hitAt(e.clientX, e.clientY);
+      if (h) { drag = null; teleport(h.m); return; }
       if (globe && globeAlpha() > 0.5) {
         const p = globe.pick(e.clientX, e.clientY, window.innerWidth, window.innerHeight);
         if (p) select(p.lat, p.lon, map.nearestName(p.lat, p.lon, zoom) ?? `${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`);
@@ -255,8 +283,10 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
     }
     drag = null;
   });
+  cv.addEventListener('pointerleave', () => { tip.classList.add('hidden'); cv.classList.remove('pick'); });
   cv.addEventListener('wheel', (e) => {
     e.preventDefault();
+    tip.classList.add('hidden');
     // Zoom around the cursor.
     const ox = e.clientX - window.innerWidth / 2, oy = e.clientY - window.innerHeight / 2;
     const at = map.unproject(ox, oy, lat, lon, zoom);
@@ -271,10 +301,10 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
 
   // ---- keys: M / Esc close (capture phase, so the game's own M handler doesn't reopen it) ----
   const onKey = (e: KeyboardEvent) => {
-    const typing = document.activeElement === input;
+    const typing = document.activeElement === input || document.activeElement === tpEl.querySelector('input');
     if (e.code === 'Escape') {
       e.preventDefault(); e.stopImmediatePropagation();
-      if (typing) { input.blur(); results.innerHTML = ''; } else if (tab !== 'map') setTab('map'); else api.close();
+      if (typing) { (document.activeElement as HTMLElement).blur(); results.innerHTML = ''; } else if (tab !== 'map') setTab('map'); else api.close();
       return;
     }
     if (typing) return;
@@ -326,21 +356,28 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
 
     // Project HQs: dots for all, names where they fit (big ones first, never overlapping).
     const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
+    hits = [];
     const ms = opts.markers().slice().sort((a, b) => Number(!!b.big) - Number(!!a.big));
     gx.font = `700 ${12 * dpr}px Inter, sans-serif`; gx.textAlign = 'center'; gx.textBaseline = 'bottom';
     for (const m of ms) {
       const p = toScreen(m.lat, m.lon);
       if (p.x < -20 || p.y < -20 || p.x > W + 20 || p.y > H + 20) continue;
-      gx.beginPath(); gx.arc(p.x, p.y, (m.big ? 7 : 5) * dpr, 0, Math.PI * 2);
+      if (m.teleport) {
+        // Clickable: a bigger pin with a dark ring, and always named once the city is in view.
+        hits.push({ x: p.x / dpr, y: p.y / dpr, m });
+        gx.beginPath(); gx.arc(p.x, p.y, 11 * dpr, 0, Math.PI * 2);
+        gx.fillStyle = 'rgba(43,38,34,.85)'; gx.fill();
+      }
+      gx.beginPath(); gx.arc(p.x, p.y, (m.teleport ? 7.5 : m.big ? 7 : 5) * dpr, 0, Math.PI * 2);
       gx.fillStyle = m.color; gx.fill();
       gx.lineWidth = 2 * dpr; gx.strokeStyle = '#fff'; gx.stroke();
-      if (!m.label || !(m.big || zoom >= 16)) continue;
+      if (!m.label || !(m.big || zoom >= 16 || (m.teleport && zoom >= 12.5))) continue;
       const w = gx.measureText(m.label).width / 2 + 3 * dpr;
-      const r = { x0: p.x - w, x1: p.x + w, y0: p.y - 24 * dpr, y1: p.y - 6 * dpr };
+      const r = { x0: p.x - w, x1: p.x + w, y0: p.y - 30 * dpr, y1: p.y - 12 * dpr };
       if (placed.some((q) => r.x0 < q.x1 && q.x0 < r.x1 && r.y0 < q.y1 && q.y0 < r.y1)) continue;
       placed.push(r);
-      gx.lineWidth = 3 * dpr; gx.strokeStyle = 'rgba(255,255,255,.9)'; gx.strokeText(m.label, p.x, p.y - 8 * dpr);
-      gx.fillStyle = '#2b2622'; gx.fillText(m.label, p.x, p.y - 8 * dpr);
+      gx.lineWidth = 3 * dpr; gx.strokeStyle = 'rgba(255,255,255,.9)'; gx.strokeText(m.label, p.x, p.y - 14 * dpr);
+      gx.fillStyle = '#2b2622'; gx.fillText(m.label, p.x, p.y - 14 * dpr);
     }
     // Selected spot.
     if (selected) {
@@ -364,6 +401,35 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
     gx.fillStyle = '#1f7cf2'; gx.fill(); gx.lineWidth = 2 * dpr; gx.strokeStyle = '#fff'; gx.stroke();
     gx.restore();
   };
+  // Teleport mode: frame your buildings (and you) and list them beside the map.
+  if (opts.teleport) {
+    const tps = opts.markers().filter((m) => m.teleport);
+    const near = tps.filter((m) => haversine(here0, m) < 15000);
+    if (near.length) {
+      const pts = [...near, here0];
+      const la0 = Math.min(...pts.map((q) => q.lat)), la1 = Math.max(...pts.map((q) => q.lat));
+      const lo0 = Math.min(...pts.map((q) => q.lon)), lo1 = Math.max(...pts.map((q) => q.lon));
+      lat = (la0 + la1) / 2; lon = (lo0 + lo1) / 2;
+      // Web Mercator: 256 px tiles; fit the span into about 60% of the screen.
+      const spanX = Math.max(1e-4, (lo1 - lo0) / 360), spanY = Math.max(1e-4, (la1 - la0) / 360 / Math.cos((lat * Math.PI) / 180));
+      zoom = clampZ(Math.min(17, Math.log2(Math.min((window.innerWidth * 0.6) / 256 / spanX, (window.innerHeight * 0.6) / 256 / spanY))));
+    }
+    const list = tpEl.querySelector<HTMLDivElement>('.ow-wm-tp-list')!;
+    list.innerHTML = tps.map((m, i) => `<button data-i="${i}"><span class="dot" style="background:${esc(m.color)}"></span><span><b>${esc(m.label ?? 'Building')}</b><small>${esc(m.sub ?? `${formatDistance(haversine(here0, m), !!opts.imperial)} away`)}</small></span></button>`).join('');
+    const tq = tpEl.querySelector<HTMLInputElement>('.ow-wm-tp-q')!;
+    tq.classList.toggle('hidden', tps.length < 8);
+    tq.addEventListener('input', () => {
+      const q = tq.value.trim().toLowerCase();
+      list.querySelectorAll<HTMLButtonElement>('button[data-i]').forEach((b) => b.classList.toggle('hidden', !!q && !(tps[Number(b.dataset.i)].label ?? '').toLowerCase().includes(q)));
+    });
+    tq.addEventListener('keydown', (e) => { if (e.key === 'Enter') { const b = list.querySelector<HTMLButtonElement>('button[data-i]:not(.hidden)'); b?.click(); } });
+    list.querySelectorAll<HTMLButtonElement>('button[data-i]').forEach((b) => {
+      const m = tps[Number(b.dataset.i)];
+      b.addEventListener('click', () => teleport(m));
+      b.addEventListener('mouseenter', () => { lat = m.lat; lon = m.lon; zoom = Math.max(zoom, 16); dirty = true; });
+    });
+    tpEl.classList.toggle('hidden', !tps.length);
+  }
   raf = requestAnimationFrame(frame);
   renderCard();
 

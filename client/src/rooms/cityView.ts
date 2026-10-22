@@ -110,7 +110,12 @@ export class FloorViews {
   private shots = new Map<number, CityViewShot>();
   private cur = -1;
   private inside: { x: number; z: number } | undefined;
-  constructor(private scene: THREE.Scene, private place: CityViewPlacement | undefined, private at: (f: number) => THREE.Vector3, private envIntensity = 1) {
+  /**
+   * `envIntensity` null: the view is only the background, and the room keeps its own (even) light.
+   * A capture's light swings with what it happens to see (sunlit pavement, a sun disk, the next
+   * building's wall), so rooms lit by it change exposure floor to floor.
+   */
+  constructor(private scene: THREE.Scene, private place: CityViewPlacement | undefined, private at: (f: number) => THREE.Vector3, private envIntensity: number | null = 1) {
     if (place) {
       // Interior directions -> world directions: rotate by the placement's yaw.
       this.scene.backgroundRotation.set(0, place.yaw, 0);
@@ -137,13 +142,15 @@ export class FloorViews {
     }
     this.cur = f;
     this.scene.background = s.cube;
-    this.scene.environment = s.env;
-    this.scene.environmentIntensity = this.envIntensity;
+    if (this.envIntensity != null) {
+      this.scene.environment = s.env;
+      this.scene.environmentIntensity = this.envIntensity;
+    }
     return true;
   }
   dispose() {
     for (const s of this.shots.values()) s.dispose();
     this.shots.clear();
-    if (this.place) { this.scene.background = null; this.scene.environment = null; }
+    if (this.place) { this.scene.background = null; if (this.envIntensity != null) this.scene.environment = null; }
   }
 }

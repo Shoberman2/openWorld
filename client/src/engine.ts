@@ -1,23 +1,72 @@
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { Clouds, SkyDome, SkylineRing, artSky, makeStars } from './sky.ts';
 import { WeatherState, Precipitation, Lightning, Aurora } from './weather.ts';
 import { AtmospherePass } from './atmosphere.ts';
 
+export type QualityTier = 'ultra' | 'high' | 'low';
+
 /**
- * Rendering quality tier: `?q=low` (slow GPUs, headless tests) or a VR headset turns off the costly
- * extras (big shadow maps, soft shadow filtering). Read it; set `low` before a DayNight is built.
+ * A desktop GPU that can take Ultra: Apple silicon Macs, recent NVIDIA / AMD / Intel Arc cards.
+ * Phones, tablets and integrated laptop graphics stay on High.
  */
-export const quality = { low: new URLSearchParams(location.search).get('q') === 'low' };
+function capableGpu() {
+  try {
+    const ua = navigator.userAgent;
+    if (/Mobi|Android|iPhone|iPad|Quest|OculusBrowser/i.test(ua) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua))) return false;
+    if ((navigator.hardwareConcurrency || 4) < 8) return false;
+    const gl = document.createElement('canvas').getContext('webgl2');
+    if (!gl) return false;
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const name = String(dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    if (/SwiftShader|llvmpipe|Software/i.test(name)) return false;
+    // Safari only says "Apple GPU": on a Mac with 8+ cores that's Apple silicon.
+    if (/Apple GPU/.test(name)) return /Macintosh/.test(ua);
+    return /Apple M\d|RTX|Radeon RX ?[5-9]\d{3}|Radeon Pro|GTX 1[06-9]\d0|GTX 16\d0|Arc\(TM\) A|Arc A\d/i.test(name);
+  } catch {
+    return false;
+  }
+}
+
+const Q = new URLSearchParams(location.search).get('q');
+const TIER: QualityTier = Q === 'low' ? 'low' : Q === 'ultra' ? 'ultra' : Q === 'high' ? 'high' : capableGpu() ? 'ultra' : 'high';
+
+/**
+ * Rendering quality tier, from `?q=` (Settings writes it) or, with none, the GPU:
+ *  - `ultra`: up to a 4K-sized frame (Retina, or supersampled on a 1080p screen), an 8K sun shadow
+ *    map, SMAA on top of the multisampling, finer ambient occlusion, max texture filtering and a
+ *    wider detailed city;
+ *  - `high`: the standard look;
+ *  - `low` (`?q=low`: slow GPUs, headless tests) or a VR headset: the costly extras off (big shadow
+ *    maps, soft shadow filtering, AO). Read it; set `low` before a DayNight is built.
+ */
+export const quality = { low: TIER === 'low', ultra: TIER === 'ultra', tier: TIER };
+document.documentElement.dataset.quality = TIER;
+
+// Sharp ground, roads and facades at grazing angles (three clamps this to what the GPU supports).
+THREE.Texture.DEFAULT_ANISOTROPY = TIER === 'ultra' ? 16 : TIER === 'high' ? 8 : 1;
+
+/** Pixel ratio a tier asks for at this window size (Ultra: up to a 3840x2160-sized frame). */
+function tierPixelRatio(w: number, h: number) {
+  const dpr = window.devicePixelRatio || 1;
+  if (quality.low) return 0.6;
+  if (!quality.ultra) return Math.min(dpr, 1.75);
+  const k4 = Math.sqrt((3840 * 2160) / Math.max(1, w * h));
+  return Math.max(1, Math.min(2, Math.max(dpr, 1.5), k4));
+}
 
 /** Uniforms shared by every procedural material (windows, streetlights...). */
 export const shared = {
   uNight: { value: 0 },
   uTime: { value: 0 },
+  /** How wet the streets are (0 dry .. 1 soaked): rises within a minute of rain, dries over a few. */
+  uWet: { value: 0 },
 };
 
 export interface SkyLook {
@@ -72,6 +121,8 @@ export class Engine {
   composer: EffectComposer;
   renderPass: RenderPass;
   bloom: UnrealBloomPass;
+  /** Edge antialiasing on the final image (Ultra). */
+  smaa: SMAAPass | null = null;
   /** Ambient occlusion, sun-lit haze, ground fog and light shafts (needs the scene's depth). */
   atmo: AtmospherePass;
   pmrem: THREE.PMREMGenerator;
@@ -82,9 +133,8 @@ export class Engine {
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-    // ?q=low renders at a lower resolution (slow GPUs, headless tests).
-    const low = new URLSearchParams(location.search).get('q') === 'low';
-    this.renderer.setPixelRatio(low ? 0.6 : Math.min(window.devicePixelRatio, 1.75));
+    // ?q=low renders at a lower resolution (slow GPUs, headless tests); Ultra at up to 4K.
+    this.renderer.setPixelRatio(tierPixelRatio(window.innerWidth, window.innerHeight));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -100,6 +150,10 @@ export class Engine {
     const rt = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, { type: THREE.HalfFloatType, samples: quality.low ? 0 : 4 });
     rt.depthTexture = new THREE.DepthTexture(window.innerWidth, window.innerHeight, THREE.FloatType);
     this.composer = new EffectComposer(this.renderer, rt);
+    // Only the scene render needs multisampling: the second buffer just takes post passes, and keeping
+    // it plain saves a full-screen multisample resolve after each pass that writes to it.
+    this.composer.renderTarget2.dispose();
+    this.composer.renderTarget2.samples = 0;
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.composer.addPass(this.renderPass);
     this.atmo = new AtmospherePass(this.camera, quality.low);
@@ -110,7 +164,16 @@ export class Engine {
     this.composer.addPass(new OutputPass());
     this.grade = new ShaderPass(GradeShader);
     if (quality.low) this.grade.uniforms.uSharpen.value = 0;
+    // Ultra renders more pixels: less sharpening, so edges don't ring.
+    if (quality.ultra) this.grade.uniforms.uSharpen.value = 0.16;
     this.composer.addPass(this.grade);
+    if (quality.ultra) {
+      // SMAA on the graded image catches what multisampling can't: shader edges (window frames,
+      // mullions, road paint) and specular sparkle.
+      this.smaa = new SMAAPass();
+      this.composer.addPass(this.smaa);
+    }
+    this.gpuTimer = this.renderer.getContext().getExtension('EXT_disjoint_timer_query_webgl2');
     this.resize();
 
     window.addEventListener('resize', () => this.resize());
@@ -130,15 +193,29 @@ export class Engine {
     this.composer.setSize(w, h);
     const pr = this.renderer.getPixelRatio();
     (this.grade.uniforms.uTexel.value as THREE.Vector2).set(1 / (w * pr), 1 / (h * pr));
+    // Supersampled 1.5x or more past the screen's own pixels, the edges are smooth already: SMAA
+    // only earns its cost below that.
+    if (this.smaa) this.smaa.enabled = pr / (window.devicePixelRatio || 1) < 1.5;
   }
 
   /**
    * Adaptive resolution: if frames run long for a couple of seconds, render fewer pixels (down to
-   * 1x); when there's headroom, climb back up. Keeps flying smooth on big Retina screens.
+   * 1x); when there's headroom, climb back up. Keeps flying smooth on big Retina screens. Where the
+   * browser can time the GPU (Chrome, Firefox), headroom is judged from real GPU milliseconds, so a
+   * step up is only taken if it should still fit in a 60 fps frame; elsewhere from the frame rate.
    */
   private frameMs = 16;
   private judge = 0;
   private lastFrame = 0;
+  private gpuTimer: { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null = null;
+  private queries: WebGLQuery[] = [];
+  /** GPU milliseconds per frame (smoothed), or 0 if the browser can't tell. */
+  gpuMs = 0;
+  /** Time the GPU per frame (tests turn it off to run their own timer). */
+  gpuTiming = true;
+  private calm = 0;
+  private ceiling = 0;
+  private ceilingUntil = 0;
   maxPixelRatio = 0;
   render() {
     // In VR the headset sets the resolution and post-processing doesn't run per eye: draw straight out.
@@ -152,9 +229,23 @@ export class Engine {
         this.judge = 0;
         if (!this.maxPixelRatio) this.maxPixelRatio = this.renderer.getPixelRatio();
         const pr = this.renderer.getPixelRatio();
+        const gpu = this.gpuTiming ? this.gpuMs : 0;
         let next = pr;
-        if (this.frameMs > 24 && pr > 1) next = Math.max(1, pr - 0.25);
-        else if (this.frameMs < 14 && pr < this.maxPixelRatio) next = Math.min(this.maxPixelRatio, pr + 0.25);
+        // Frames are missing 60 fps, and (where we can tell) the GPU is what's holding them up:
+        // when the CPU is the bottleneck (a dense city's draw calls), fewer pixels wouldn't help.
+        const slow = this.frameMs > 21 && (!gpu || gpu > this.frameMs * 0.7);
+        if (slow && pr > 1) {
+          next = Math.max(1, pr - (this.frameMs > 30 ? 0.5 : 0.25));
+          // Don't climb straight back to a resolution that didn't hold up.
+          this.ceiling = pr; this.ceilingUntil = now + 45000; this.calm = 0;
+        } else if (pr < this.maxPixelRatio) {
+          const up = Math.min(this.maxPixelRatio, pr + 0.25);
+          // Cost scales with pixel count: will the next step still fit in a 60 fps frame (with a margin)?
+          const fits = gpu ? this.frameMs < 18 && gpu * (up / pr) ** 2 < 14 : this.frameMs < 14;
+          const banned = now < this.ceilingUntil && up >= this.ceiling;
+          this.calm = fits && !banned ? this.calm + 1 : 0;
+          if (this.calm >= 2) { next = up; this.calm = 0; }
+        }
         if (next !== pr) {
           this.renderer.setPixelRatio(next);
           this.composer.setPixelRatio(next);
@@ -163,7 +254,28 @@ export class Engine {
       }
     }
     this.lastFrame = now;
+    // A faint daytime glow is all but invisible, and bloom is one of the costliest passes in the chain
+    // (~5-8 ms at 1080p on an M-series GPU): it runs when it shows (dusk, night, lit interiors).
+    this.bloom.enabled = this.bloom.strength > 0.1;
+    const ext = this.gpuTiming ? this.gpuTimer : null;
+    if (!ext) { this.composer.render(); return; }
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    // Collect finished timings (they arrive a frame or two late).
+    const disjoint = gl.getParameter(ext.GPU_DISJOINT_EXT);
+    while (this.queries.length && gl.getQueryParameter(this.queries[0], gl.QUERY_RESULT_AVAILABLE)) {
+      const q = this.queries.shift()!;
+      if (!disjoint) {
+        const ms = gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6;
+        this.gpuMs = this.gpuMs ? this.gpuMs + (ms - this.gpuMs) * 0.1 : ms;
+      }
+      gl.deleteQuery(q);
+    }
+    if (this.queries.length > 4) { this.composer.render(); return; }
+    const q = gl.createQuery()!;
+    gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
     this.composer.render();
+    gl.endQuery(ext.TIME_ELAPSED_EXT);
+    this.queries.push(q);
   }
 }
 
@@ -236,12 +348,15 @@ export class DayNight {
     scene.add(this.cloudLayer.mesh);
 
     this.sun.castShadow = true;
-    const map = quality.low ? 2048 : 4096;
+    // Ultra: an 8K map, so shadows stay crisp (railings, lamp posts, people) across the whole frustum.
+    const ultraMap = quality.ultra && engine.renderer.capabilities.maxTextureSize >= 8192;
+    const map = quality.low ? 2048 : ultraMap ? 8192 : 4096;
     this.sun.shadow.mapSize.set(map, map);
     const s = this.sun.shadow.camera;
     s.left = -150; s.right = 150; s.top = 150; s.bottom = -150; s.near = 10; s.far = 2600;
     this.sun.shadow.bias = -0.0003;
-    this.sun.shadow.normalBias = 0.4;
+    // Finer texels need less offset: contact shadows tuck in closer under ledges and feet.
+    this.sun.shadow.normalBias = ultraMap ? 0.25 : 0.4;
     this.sun.shadow.radius = quality.low ? 1 : 2.5;
     scene.add(this.sun, this.sun.target, this.hemi);
 
@@ -295,6 +410,12 @@ export class DayNight {
     shared.uTime.value += dt;
     const w = this.weather;
     w.update(this.lapse ? dt * 8 : dt, focus.y);
+    // Streets get wet quickly in rain (and melting snow) and dry off slowly after.
+    {
+      const want = Math.min(1, w.rain * 1.2 + w.snow * 0.35), wet = shared.uWet;
+      const rate = (want > wet.value ? 1 / 40 : 1 / 240) * (this.lapse ? 20 : 1);
+      wet.value += THREE.MathUtils.clamp(want - wet.value, -rate * dt, rate * dt);
+    }
     this.apply(false);
     // Keep the shadow frustum around the player (wider when flying), snapped to texels to avoid shimmering.
     const reach = Math.round(this.shadowReach / 20) * 20;

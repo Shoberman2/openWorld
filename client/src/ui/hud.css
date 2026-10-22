@@ -47,20 +47,10 @@
 .ow-minimap { position: absolute; right: 16px; bottom: 62px; width: 176px; height: 176px; border-radius: 10px; background: #f3efe8;
   border: 2px solid rgba(255,255,255,.9); box-shadow: 0 6px 22px rgba(0,0,0,.35); pointer-events: none; }
 
-/* ---- mode bar ---- */
-.ow-modes { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; gap: 4px; padding: 5px; border-radius: 12px;
-  background: rgba(28,30,36,.62); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
-.ow-mode { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 64px; padding: 5px 10px 6px; border-radius: 8px; font-size: 11px; font-weight: 600; color: rgba(255,255,255,.8); }
-.ow-mode-i { font-size: 15px; line-height: 1; }
-.ow-mode.on { background: rgba(255,255,255,.18); color: #fff; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
-
 /* ---- attribution ---- */
 .ow-attrib { position: absolute; right: 16px; bottom: 12px; width: 300px; font-size: 8.5px; line-height: 1.35; text-align: right; color: rgba(255,255,255,.85);
   padding: 5px 7px; border-radius: 7px; background: rgba(28,30,36,.55); }
 
-@media (max-width: 900px) {
-  .ow-modes { display: none; }
-}
 @media (max-width: 700px) {
   .ow-minimap { width: 120px; height: 120px; }
   .ow-nav { bottom: 190px; width: 120px; }
@@ -122,6 +112,43 @@
 .ow-wm-row.set:hover { border-color: #ff5a1f; }
 .ow-wm-row .val { flex: none; font-weight: 700; font-size: 13px; color: #ff5a1f; }
 .ow-wmap .hidden { display: none !important; }
+.ow-wmap canvas.pick { cursor: pointer; }
+.ow-wm-row button + button { margin-left: -4px; }
+/* Teleport: the list beside the map and the hover tip over a building. */
+.ow-wm-tp { position: absolute; left: 16px; top: 78px; bottom: 150px; width: 260px; max-width: calc(100vw - 32px); display: flex; flex-direction: column; padding: 12px;
+  border-radius: 14px; background: #f4ead8; border: 2px solid #2b2622; box-shadow: 0 6px 24px rgba(0,0,0,.3); }
+.ow-wm-tp h5 { margin: 0 2px 2px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: #8a7d70; }
+.ow-wm-tp p { margin: 0 2px 10px; font-size: 12px; color: #6d6156; }
+.ow-wm-tp-q { margin: 0 0 8px; padding: 7px 10px; border-radius: 10px; border: 1px solid rgba(43,38,34,.25); background: #fffaf0; font: 500 13px Inter, sans-serif; color: #2b2622; outline: none; }
+.ow-wm-tp-q:focus { border-color: #ff5a1f; }
+.ow-wm-tp-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.ow-wm-tp-list button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 8px 10px; border-radius: 11px; border: 2px solid #2b2622; background: #fffaf0;
+  font: 500 12px Inter, sans-serif; color: #2b2622; cursor: pointer; }
+.ow-wm-tp-list button:hover { border-color: #ff5a1f; background: #fff; }
+.ow-wm-tp-list .dot { flex: none; width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 0 0 2px #2b2622; }
+.ow-wm-tp-list b { display: block; font-size: 13.5px; }
+.ow-wm-tp-list small { display: block; color: #7a6e62; font-size: 11.5px; }
+.ow-wm-tip { position: absolute; transform: translate(-50%, calc(-100% - 22px)); pointer-events: none; padding: 7px 11px; border-radius: 10px; background: #2b2622; color: #f4ead8;
+  font: 500 12px Inter, sans-serif; white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,.3); }
+.ow-wm-tip b { display: block; font-size: 13.5px; color: #fff; }
+.ow-wm-tip span { color: #ffb48f; }
+@media (max-width: 700px) { .ow-wm-tp { top: auto; bottom: 150px; height: 34vh; left: 16px; right: 16px; width: auto; } }
+
+/* ---- Teleport button (above the minimap) ---- */
+.ow-tp-btn { position: absolute; right: 16px; bottom: 246px; width: 176px; display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 10px; border: 0;
+  background: rgba(28,30,36,.82); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: #fff; font: 700 14px Inter, -apple-system, system-ui, sans-serif;
+  cursor: pointer; pointer-events: auto; box-shadow: 0 6px 22px rgba(0,0,0,.3); }
+.ow-tp-btn:hover { background: #ff5a1f; }
+.ow-tp-btn svg { flex: none; width: 20px; height: 20px; }
+.ow-tp-btn span { flex: 1; text-align: left; }
+.ow-tp-btn kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 5px; background: #ffcc33; color: #2b2622; font: 800 11px Inter, sans-serif; }
+.ow-tp-btn.indoors { bottom: 62px; }
+.ow-nav { bottom: 298px; }
+@media (max-width: 700px) {
+  .ow-tp-btn { bottom: 190px; width: 120px; padding: 7px 8px; font-size: 13px; gap: 6px; }
+  .ow-tp-btn kbd { display: none; }
+  .ow-nav { bottom: 236px; }
+}
 
 /* Phone button sits left of the minimap in the streaming world. */
 body.earth-mode #phone-btn { right: 206px; bottom: 62px; width: 52px; height: 52px; }
@@ -150,12 +177,6 @@ body.earth-mode #phone-btn { right: 206px; bottom: 62px; width: 52px; height: 52
 .ow-photo-flash.go { animation: owflash .45s ease-out; }
 @keyframes owflash { 0% { opacity: .85; } 100% { opacity: 0; } }
 body.photo-mode #hud, body.photo-mode #labels, body.photo-mode #phone-btn, body.photo-mode #prompt { visibility: hidden; }
-
-/* Ten modes now (vehicles): keep the bar compact so it clears the credits. */
-.ow-modes { gap: 2px; padding: 4px; }
-.ow-mode { min-width: 50px; padding: 4px 6px 5px; font-size: 10px; }
-.ow-mode-i { font-size: 14px; }
-@media (max-width: 1150px) { .ow-mode span:not(.ow-mode-i) { display: none; } .ow-mode { min-width: 34px; } }
 
 /* What you're looking at: a quiet caption under the compass. */
 .ow-look { position: absolute; left: 50%; top: 74px; transform: translate(-50%, -4px); max-width: min(560px, 80vw); padding: 6px 13px; border-radius: 9px;

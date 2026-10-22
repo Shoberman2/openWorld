@@ -144,6 +144,20 @@ const ROOMS = /* glsl */ `
       float yb = rel.y, zb = rel.z;
       if (kind > 2.5) {
         c = kind < 3.5 ? vec3(0.84, 0.83, 0.81) : kind < 4.5 ? vec3(0.32, 0.22, 0.15) * (0.85 + 0.3 * step(0.5, fract(zb * 6.0))) : vec3(0.74, 0.7, 0.62);
+        if (kind < 3.5) {
+          // Boutique: garments hanging along the side walls too, and shelves of folded stock above them.
+          float rail = step(0.22, yb) * step(yb, 0.6) * step(0.1, zb) * step(zb, 0.92);
+          float gi = floor(zb * 22.0);
+          float garment = step(0.3, fract(zb * 22.0)) * rail * step(0.15, fract(gi * 0.53 + rs));
+          c = mix(c, vec3(0.18 + 0.6 * fract(gi * 0.61 + rs), 0.18 + 0.5 * fract(gi * 0.27), 0.22 + 0.5 * fract(gi * 0.83)), garment);
+          float shelf = step(0.7, yb) * step(yb, 0.82) * step(0.1, zb) * step(zb, 0.92) * step(0.25, fract(zb * 9.0));
+          c = mix(c, vec3(0.55, 0.5, 0.46) * (0.7 + 0.5 * fract(floor(zb * 9.0) * 0.37 + rs)), shelf);
+        } else if (kind > 4.5) {
+          // Lobby: stone panels, a long bench, artwork.
+          c *= 0.9 + 0.1 * step(0.02, fract(zb * 4.0)) * step(0.02, fract(yb * 3.0));
+          c = mix(c, vec3(0.2, 0.17, 0.15), step(0.1, yb) * step(yb, 0.18) * step(0.2, zb) * step(zb, 0.7));
+          c = mix(c, vec3(0.25 + 0.4 * h2, 0.3 + 0.3 * h3, 0.38 + 0.3 * h1), step(0.42, yb) * step(yb, 0.75) * step(0.35, zb) * step(zb, 0.6));
+        }
       } else if (kind > 1.5) {
         float row = step(0.18, fract(yb * 4.5)) * step(yb, 0.85) * step(0.08, zb);
         vec3 goods = vec3(0.4 + 0.4 * fract(floor(zb * 16.0) * 0.37 + rs), 0.35 + 0.4 * fract(floor(zb * 16.0) * 0.71 + yb), 0.3 + 0.4 * fract(floor(zb * 16.0) * 0.13 + h1));
@@ -397,6 +411,10 @@ export function buildingMaterial() {
             float near = (1.0 - smoothstep(0.025, 0.06, px / paneW)) * uRooms;
             metal = win * mix(1.0, 0.55, near);
             hgt = -mull * (sys > 1.5 ? 0.12 : 0.02);
+            // Every pane sits a hair out of true (real curtain walls do), so the sky and the towers
+            // across the street reflect broken up pane by pane, not as one flawless mirror.
+            float tilt = (1.0 - farG) * (1.0 - clamp(mull, 0.0, 1.0)) * (1.0 - step(fract(fv), spH));
+            hgt += tilt * ((pr - 0.5) * 0.07 * (fract(fu) - 0.5) * paneW + (eh21(pane + 7.3) - 0.5) * 0.05 * (fract(fv) - 0.5) * floorH);
             float hs = eh21(pane + vec2(seed * 57.0, 3.0));
             float on = step(0.7, hs) * step(1.0, v) * (0.35 + 0.65 * fract(hs * 17.3));
             lit = win * on;
@@ -421,7 +439,7 @@ export function buildingMaterial() {
             }
             if (shopLit > 0.01) {
               float nearS = (1.0 - smoothstep(0.03, 0.08, px)) * uRooms;
-              roomE += owRoom(spu, vec3(R.x / 1.6, R.y / 3.0, R.z / 1.6), vec2(0.4, 0.1), sDepth, seed + floor(u / 7.5), sKind, mix(0.45, 0.85, uNight), day) * shopLit * nearS * mix(0.6, 1.0, uNight);
+              roomE += owRoom(spu, vec3(R.x / 1.6, R.y / 3.0, R.z / 1.6), vec2(0.4, 0.1), sDepth, seed + floor(u / 7.5), sKind, mix(0.3, 0.85, uNight), day) * shopLit * nearS * mix(0.42, 1.0, uNight);
               shopLit *= 1.0 - nearS;
             }
           } else {
@@ -601,12 +619,19 @@ export function buildingMaterial() {
             rough = mix(0.88, mix(0.06, 0.5, farW), paneG) * (1.0 - shop) + shop * mix(0.08, 0.5, farW);
             // Windows sit back in the wall: a reveal around each opening.
             hgt += -paneG * 0.12 + frame * 0.03;
+            // Each window's glass is a little out of plane, older panes slightly wavy: reflections waver.
+            {
+              float gt = eh21(cell + seed * 13.0), gw = eh21(cell + seed * 5.0);
+              hgt += paneG * (1.0 - farW) * ((gt - 0.5) * 0.06 * (fr.x - 0.5) * bayW + (gw - 0.5) * 0.04 * (fr.y - 0.5) * floorH
+                + 0.0015 * sin(fr.y * floorH * 9.0 + gt * 6.28) * step(0.5, brick + sash));
+            }
             float hs = eh21(cell + vec2(seed * 71.0, lotI * 13.0 + floor(u / max(W, 1.0)) * 13.0 + W));
             float on = step(0.62, hs) * (0.35 + 0.65 * fract(hs * 17.3));
             lit = paneG * on * (1.0 - blind * 0.5) * (0.75 + 0.35 * fr.y);
             litTint = fract(hs * 31.7);
             shopLit = shop;
-            metal = shop * 0.3 * day;
+            // Plate glass mirrors the street by day.
+            metal = shop * 0.42 * day;
             // Up close: rooms behind the glass, with parallax.
             float near = (1.0 - smoothstep(0.025, 0.06, px / min(bayW, floorH))) * uRooms;
             if (paneG > 0.01 && near > 0.0) {
@@ -618,7 +643,8 @@ export function buildingMaterial() {
             }
             if (shop > 0.01) {
               float nearS = (1.0 - smoothstep(0.03, 0.08, px)) * uRooms;
-              roomE += owRoom(spu, vec3(R.x / 1.6, R.y / 3.0, R.z / 1.6), vec2(0.4, 0.1), sDepth, seed + floor(u / 7.5), sKind, mix(0.45, 0.85, uNight), day) * shop * nearS * mix(0.6, 1.0, uNight);
+              // By day the shop is dimmer than the street outside (the glass reflects more of the street).
+              roomE += owRoom(spu, vec3(R.x / 1.6, R.y / 3.0, R.z / 1.6), vec2(0.4, 0.1), sDepth, seed + floor(u / 7.5), sKind, mix(0.3, 0.85, uNight), day) * shop * nearS * mix(0.42, 1.0, uNight);
               shopLit *= 1.0 - nearS;
             }
             // The lobby behind the entrance door.
@@ -641,11 +667,23 @@ export function buildingMaterial() {
           diffuseColor.rgb = base * (0.82 + 0.25 * n1);
           rough = 0.95;
         } else {
-          // Gable ends (-2), stone trim, awnings (-3) and signs (-4): the plain material, a little weathered.
+          // Gable ends (-2), stone trim and canopies (-3), signs (-4), awning canvas (-5, striped -6):
+          // the plain material, a little weathered.
           float n1 = evn(vec2(u * 1.3 + vWy * 0.4, vWy * 1.7) + seed * 20.0);
           diffuseColor.rgb = base * (0.88 + 0.2 * n1);
           rough = W < -3.5 ? 0.4 : 0.85;
           signLit = step(W, -3.5);
+          if (W < -4.5) {
+            // Canvas: a fine weave, cream stripes on striped awnings, matte; the shop's light shows through it after dark.
+            float weave = 0.96 + 0.04 * step(0.5, fract(u * 40.0)) * (1.0 - smoothstep(0.004, 0.01, px));
+            // The underside is authored darker; its cream stripes are too.
+            vec3 cream = vec3(0.74, 0.7, 0.6) * (vWn.y < -0.2 ? 0.3 : 1.0);
+            float far = smoothstep(0.08, 0.16, px);
+            float stripe = step(W, -5.5) * mix(step(0.5, fract(u / 0.3)), 0.5, far);
+            diffuseColor.rgb = mix(base * (0.92 + 0.12 * n1), cream, stripe) * weave;
+            rough = 0.95;
+            signLit = 0.1;
+          }
         }
         float facadeWin = win; float facadeLit = lit; float facadeTint = litTint; float facadeShop = shopLit; float facadeRough = rough; float facadeMetal = metal; float facadeH = hgt; float facadePx = max(px, 0.002); float facadeSign = signLit;
         vec3 facadeRoom = roomE;`)
@@ -665,7 +703,7 @@ export function buildingMaterial() {
         vec3 warm = facadeTint < 0.55 ? vec3(1.0, 0.68, 0.38) : facadeTint < 0.85 ? vec3(1.0, 0.86, 0.66) : vec3(0.72, 0.84, 1.0);
         totalEmissiveRadiance += facadeLit * warm * uNight * 0.6;
         // Shop windows glow warm all day (lit interiors), brighter after dark (far away: an average).
-        totalEmissiveRadiance += facadeShop * vec3(1.0, 0.82, 0.58) * (0.16 + uNight * 0.85);
+        totalEmissiveRadiance += facadeShop * vec3(1.0, 0.82, 0.58) * (0.09 + uNight * 0.92);
         // Rooms behind the glass (seen through it: less where the glass reflects, at grazing angles).
         {
           float ndv = clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0);
@@ -676,7 +714,7 @@ export function buildingMaterial() {
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
         ${NEUTRAL_SHADE}`);
   };
-  mat.customProgramCacheKey = () => 'earth-building-v7';
+  mat.customProgramCacheKey = () => 'earth-building-v9';
   mat.userData.quality = facadeQuality;
   buildingMat = mat;
   return mat;
@@ -689,11 +727,13 @@ const groundPatch = (sh: THREE.WebGLProgramParametersWithUniforms) => {
     .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
       vGw = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
   sh.uniforms.uCityGlow = shared.uNight;
+  sh.uniforms.uWet = shared.uWet;
   sh.fragmentShader = sh.fragmentShader
     .replace('#include <common>', `#include <common>
-      varying vec3 vGw; uniform float uCityGlow;
+      varying vec3 vGw; uniform float uCityGlow; uniform float uWet;
       ${NOISE}`)
     .replace('#include <map_fragment>', `#include <map_fragment>
+      float gWetPave = 0.0;
       {
         vec3 c = diffuseColor.rgb;
         float green = smoothstep(0.004, 0.03, c.g - max(c.r, c.b));
@@ -712,11 +752,15 @@ const groundPatch = (sh: THREE.WebGLProgramParametersWithUniforms) => {
         pv *= 1.0 - 0.25 * smoothstep(0.72, 0.9, evn(p * 0.21 + 5.0));
         vec2 slab = abs(fract(p / 1.8) - 0.5);
         pv *= 1.0 - 0.06 * step(0.48, max(slab.x, slab.y)) * fine;
+        // Rain darkens the paving and leaves it glossy; grass just darkens a little.
+        gWetPave = uWet * (1.0 - green);
+        pv *= mix(1.0, 0.62, uWet);
+        g *= mix(1.0, 0.85, uWet);
         c = mix(pv, g, green);
         diffuseColor.rgb = c;
       }`)
     .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-      roughnessFactor = 0.95;`)
+      roughnessFactor = mix(0.95, 0.38, gWetPave);`)
     .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
       ${NEUTRAL_SHADE}
       ${NIGHT_GLOW}`);
@@ -726,7 +770,7 @@ const groundPatch = (sh: THREE.WebGLProgramParametersWithUniforms) => {
 export function groundMaterial(tex: THREE.Texture | null) {
   const m = new THREE.MeshStandardMaterial({ map: tex, color: tex ? 0xffffff : 0xa9c77a, roughness: 0.97, metalness: 0 });
   m.onBeforeCompile = groundPatch;
-  m.customProgramCacheKey = () => (tex ? 'earth-ground-map' : 'earth-ground-plain');
+  m.customProgramCacheKey = () => (tex ? 'earth-ground-map-v2' : 'earth-ground-plain-v2');
   return m;
 }
 
@@ -839,9 +883,10 @@ function street<T extends THREE.MeshStandardMaterial>(m: T, kind: 'road' | 'walk
       .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
         vSw = (modelMatrix * vec4(transformed, 1.0)).xyz; vSt = uv;`);
     sh.uniforms.uCityGlow = shared.uNight;
+    sh.uniforms.uWet = shared.uWet;
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
-        varying vec3 vSw; varying vec2 vSt; uniform float uCityGlow;
+        varying vec3 vSw; varying vec2 vSt; uniform float uCityGlow; uniform float uWet;
         ${NOISE}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec2 sp = vSw.xz;
@@ -935,6 +980,18 @@ function street<T extends THREE.MeshStandardMaterial>(m: T, kind: 'road' | 'walk
             c *= 0.8 + 0.25 * big + 0.1 * mid;
             sRough = 0.9;
           `}
+          if (uWet > 0.001) {
+            // Rain: the surface darkens as it soaks up water and turns glossy (the sky and the lit
+            // windows show in it), and puddles gather in the low spots and along the gutters,
+            // mirror-smooth.
+            float low = evn(sp * 0.33 + 11.0) * 0.7 + evn(sp * 1.6 + 2.0) * 0.3;
+            ${kind === 'road' ? `if (vSt.x > -0.5 && vSt.y > 2.0) low += 0.28 * (1.0 - smoothstep(0.2, 0.9, min(vSt.x, vSt.y - vSt.x)));` : ''}
+            float puddle = smoothstep(0.56, 0.66, low) * smoothstep(0.35, 0.95, uWet);
+            c *= mix(1.0, ${kind === 'paint' ? '0.78' : '0.5'}, uWet);
+            c *= 1.0 - 0.12 * puddle;
+            sRough = mix(sRough, ${kind === 'paint' ? '0.26' : '0.24'}, uWet * 0.85);
+            sRough = mix(sRough, 0.03, puddle);
+          }
           diffuseColor.rgb = c;
         }`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
@@ -943,7 +1000,7 @@ function street<T extends THREE.MeshStandardMaterial>(m: T, kind: 'road' | 'walk
         ${NEUTRAL_SHADE}
         ${NIGHT_GLOW}`);
   };
-  m.customProgramCacheKey = () => `earth-street-${kind}-v6`;
+  m.customProgramCacheKey = () => `earth-street-${kind}-v7`;
   return m;
 }
 
@@ -1385,16 +1442,19 @@ export function ironMaterial() {
             // Stair / ladder: two stringers and treads.
             keep = clamp(step(q.x, 0.05) + step(0.55, q.x) + step(fract(q.y / 0.25), 0.22), 0.0, 1.0);
           }
-          // Far away the bars would shimmer: keep the frame only (rails, posts, stringers) and a solid platform.
+          // Far away the bars would shimmer: the pattern coarsens with distance instead (bars and slats a
+          // few pixels apart), so a fire escape stays an open grille rather than turning into solid slabs.
           if (px > 0.03) {
-            if (vPat < 1.5) keep = clamp(step(0.88, q.y) + step(q.y, 0.14) + step(min(q.x, 0.06), 0.06), 0.0, 1.0);
-            else if (vPat < 2.5) keep = 1.0;
+            // In steps of 2x (a pitch that changed smoothly would swim as you walk).
+            float pitch = 0.1 * exp2(ceil(log2(px * 6.0 / 0.1)));
+            if (vPat < 1.5) keep = clamp(step(0.88, q.y) + step(q.y, 0.14) + step(fract(q.x / pitch), 0.3), 0.0, 1.0);
+            else if (vPat < 2.5) keep = clamp(step(fract(q.y / pitch), 0.45) + step(q.y, 0.06) + step(q.x, 0.06), 0.0, 1.0);
             else keep = clamp(step(q.x, 0.1) + step(0.5, q.x), 0.0, 1.0);
           }
           if (keep < 0.5) discard;
         }`);
   };
-  m.customProgramCacheKey = () => 'earth-iron-v1';
+  m.customProgramCacheKey = () => 'earth-iron-v2';
   ironMat = m;
   return m;
 }

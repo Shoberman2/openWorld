@@ -100,15 +100,7 @@ async function start(where: CityId | GeoPlace) {
   const tileMap = earth ? new TileMap() : null;
   const earthMini = tileMap ? new EarthMinimap(tileMap) : null;
   const minimap = earth ? null : new Minimap(place.map, place.sites);
-  const hud: Hud | null = earth ? installHud({
-    modes: [{ id: 'walk', label: 'On foot', icon: '🚶' }, { id: 'fly', label: 'Thrusters', icon: '🚀' }, ...VEHICLES.slice(1).map((v) => ({ id: v.id, label: v.label, icon: v.icon })), { id: 'map', label: 'Map', icon: '🗺️' }, { id: 'photo', label: 'Camera', icon: '📷' }],
-    onMode: (id) => {
-      if (id === 'map') openMap();
-      else if (id === 'photo') { if (!photo.active) photo.toggle(player.yaw, player.pitch); }
-      else if (id === 'walk' || id === 'fly') ride('foot');
-      else ride(id as VehicleId);
-    },
-  }) : null;
+  const hud: Hud | null = earth ? installHud() : null;
   document.body.classList.toggle('earth-mode', !!earth);
   let waypoint: { lat: number; lon: number; name: string } | null = null;
   const imperial = () => !!earth && ['us', 'gb', 'lr', 'mm'].includes(earth.country);
@@ -283,7 +275,7 @@ async function start(where: CityId | GeoPlace) {
     try {
       const f = hit.fp;
       const ring = f.ring.map((v, i) => v - (i % 2 ? f.cz : f.cx));
-      const it = make ? make() : buildGenericInterior({ key: f.key, ring, height: f.h, kind: kindOverride ?? kindOf(hit), name: f.poi?.name, doorWall: hit.wall, seed: f.key, country: earth?.country, view: { capture: cityView, origin: new THREE.Vector3(f.cx, hit.point.y, f.cz), yaw: 0, footprint: hit.ring }, pmrem: engine.pmrem, sun: dayNight.sun, lite: engine.renderer.xr.isPresenting });
+      const it = make ? make() : buildGenericInterior({ key: f.key, ring, height: f.h, kind: kindOverride ?? kindOf(hit), name: f.poi?.name, poi: f.poi, doorWall: hit.wall, seed: f.key, country: earth?.country, view: { capture: cityView, origin: new THREE.Vector3(f.cx, hit.point.y, f.cz), yaw: 0, footprint: hit.ring }, pmrem: engine.pmrem, sun: dayNight.sun, lite: engine.renderer.xr.isPresenting });
       generic = { it, hit };
       interactions.remove('door:generic'); doorHit = null;
       labels.clear();
@@ -367,12 +359,36 @@ async function start(where: CityId | GeoPlace) {
     } else minimap!.waypoint = { x: s.approach.x, z: s.approach.z, name: s.repo.name };
     toast(`Waypoint set: <b>${esc(s.repo.name)}</b>`);
   };
+  /**
+   * Where to stand outside a door: 6 m out on the street if that's open, else the nearest open spot in
+   * front of it (not inside a wall, on top of a canopy or in water). Faces the door.
+   */
+  const doorstep = (s: Site) => {
+    const w = player.world;
+    const clear = (x: number, z: number) => {
+      const g = w.groundY(x, z);
+      if (w.water && !Number.isNaN(w.water(x, z))) return false;
+      if (w.colliders.topBelow(x, z, g + 400) > g + 0.6) return false;
+      const p = new THREE.Vector3(x, g + 0.1, z);
+      w.colliders.resolve(p, 0.9);
+      return Math.hypot(p.x - x, p.z - z) < 0.05;
+    };
+    const side = new THREE.Vector3(-s.doorOut.z, 0, s.doorOut.x);
+    let at: THREE.Vector3 | null = null;
+    search: for (const d of [6, 5, 7, 4, 8, 3.5, 9, 3, 10, 2.5]) for (const l of [0, 1.5, -1.5, 3, -3]) {
+      const p = s.approach.clone().addScaledVector(s.doorOut, d).addScaledVector(side, l);
+      if (clear(p.x, p.z)) { at = p; break search; }
+    }
+    at ??= s.approach.clone().addScaledVector(s.doorOut, 2.5);
+    return { at, facing: Math.atan2(s.door.x - at.x, s.door.z - at.z) };
+  };
   const travelTo = async (s: Site) => {
     if (interior) await exitBuilding();
     if (generic) await exitGeneric('door', 0);
     if (earth && !earth.atHome) await dropAt(earth.home.lat, earth.home.lon, 'home');
     await fade(true);
-    player.setWorld(player.world, s.approach.clone().addScaledVector(s.doorOut, 6), Math.atan2(-s.doorOut.x, -s.doorOut.z));
+    const { at, facing } = doorstep(s);
+    player.setWorld(player.world, at, facing);
     waypoint = null;
     if (minimap) minimap.waypoint = null;
     await fade(false);
@@ -418,8 +434,9 @@ async function start(where: CityId | GeoPlace) {
     sites: () => place.sites,
     setWaypoint: (name) => { const s = siteByRepo.get(name); if (s) setWaypoint(s); },
     travelTo: async (name) => { const s = siteByRepo.get(name); if (s) await travelTo(s); },
+    enter: async (name) => { const s = siteByRepo.get(name); if (!s) return; await travelTo(s); await enterBuilding(s.repo); },
     placeName: () => `${place.title}${place.subtitle ? `, ${place.subtitle}` : ''}`,
-    home: { address: HOME.address, go: goHome, pin: waypointHome },
+    home: { address: HOME.address, go: goHome, pin: waypointHome, enter: earth ? async () => { await goHome(); await enterHome(); } : undefined },
     currentRepo: () => interior?.repo.name ?? lastDoor?.repo.name ?? null,
     openSettings: () => toggleSettings(),
   });
@@ -430,16 +447,20 @@ async function start(where: CityId | GeoPlace) {
   };
 
   // ---- The map screen (M) ----
+  // Your HQs and Home are teleport targets: click one on the map and you're inside.
+  const teleportInside = async (s: Site) => { await travelTo(s); await enterBuilding(s.repo); };
   const markers = (): MapMarker[] => [
-    ...(earth && earth.atHome ? place.sites.map((s) => ({ ...earth.frame.toGeo(s.center.x, s.center.z), color: s.repo.brandColor || '#ffcc33', label: s.repo.name, big: s.repo.tier === 'landmark' || s.repo.tier === 'tower' })) : []),
-    ...(earth ? [{ lat: HOME.lat, lon: HOME.lon, color: '#3ddc97', label: 'Home', big: true }] : []),
+    ...(earth ? [{ lat: HOME.lat, lon: HOME.lon, color: '#3ddc97', label: 'Home', sub: HOME.address, big: true, teleport: () => { void goHome().then(() => enterHome()); } }] : []),
+    ...(earth && earth.atHome ? place.sites.map((s) => ({ ...earth.frame.toGeo(s.center.x, s.center.z), color: s.repo.brandColor || '#ffcc33', label: s.repo.name, sub: tierWord(s.repo), big: s.repo.tier === 'landmark' || s.repo.tier === 'tower', teleport: () => { void teleportInside(s); } })) : []),
   ];
-  const openMap = () => {
-    if (!earth || !tileMap) return;
+  const openMap = (teleport = false) => {
+    if (!earth || !tileMap || busy || worldMapOpen()) return;
     hud?.setMode('map');
     openWorldMap({
       map: tileMap,
-      here: () => ({ ...earth.frame.toGeo(player.position.x, player.position.z), heading: headingDeg() }),
+      teleport,
+      // Indoors you stand in the interior's own space: the map shows the building you're in.
+      here: () => { const a = interior && lastDoor ? lastDoor.door : generic ? generic.hit.point : player.position; return { ...earth.frame.toGeo(a.x, a.z), heading: headingDeg() }; },
       markers,
       places: [
         { name: 'Home', sub: HOME.address, lat: HOME.lat, lon: HOME.lon },
@@ -497,10 +518,12 @@ async function start(where: CityId | GeoPlace) {
   // ---- Keys ----
   input.onPress('KeyE', () => { if (!panelOpen() && !busy && !photo.active) interactions.trigger(); });
   input.onPress('KeyM', () => {
-    if (interior || busy) return;
+    if (busy) return;
+    // The map opens indoors too, so you can teleport from one building straight into another.
     if (earth) { if (!worldMapOpen() && !panelOpen()) openMap(); }
-    else if (!panelOpen()) minimap!.toggle();
+    else if (!interior && !panelOpen()) minimap!.toggle();
   });
+  if (hud) hud.onTeleport = () => { if (photo.active) return; if (panelOpen() && !worldMapOpen()) closePanel(); openMap(true); };
   input.onPress('KeyT', () => { dayNight.hour = (dayNight.hour + 3) % 24; });
   // Time-lapse (L): clouds race and the day flies by, like sitting down in his game.
   input.onPress('KeyL', () => { dayNight.timelapse(!dayNight.timelapsing); toast(dayNight.timelapsing ? `Time-lapse on (<b>${keymap.label('timelapse')}</b> to stop)` : 'Time-lapse off', 2500); });

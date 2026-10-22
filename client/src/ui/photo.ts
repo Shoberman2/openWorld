@@ -43,7 +43,6 @@ export class PhotoMode {
   private sel = 0;
   private hidden = false;
   private rows: Row[];
-  private drag: { x: number; y: number } | null = null;
 
   constructor(private d: PhotoDeps) {
     this.el = document.createElement('div');
@@ -70,13 +69,7 @@ export class PhotoMode {
       { label: 'Grid', value: () => (this.grid.classList.contains('hidden') ? 'Off' : 'On'), step: () => this.grid.classList.toggle('hidden') },
     ];
     window.addEventListener('keydown', (e) => this.key(e), true);
-    window.addEventListener('mousedown', (e) => { if (this.active && !this.d.input.locked && e.target === this.d.engine.renderer.domElement) this.drag = { x: e.clientX, y: e.clientY }; });
-    window.addEventListener('mouseup', () => { this.drag = null; });
-    window.addEventListener('mousemove', (e) => {
-      if (!this.drag) return;
-      this.yaw -= (e.clientX - this.drag.x) * 0.005; this.pitch = THREE.MathUtils.clamp(this.pitch + (e.clientY - this.drag.y) * 0.004, -1.2, 1.45);
-      this.drag = { x: e.clientX, y: e.clientY };
-    });
+    // Dragging on the game view looks around through Input (consumeMouse in update), like mouse-look.
     window.addEventListener('wheel', (e) => { if (this.active) this.dist = THREE.MathUtils.clamp(this.dist * (e.deltaY > 0 ? 1.1 : 1 / 1.1), 0.8, 400); }, { passive: true });
   }
 

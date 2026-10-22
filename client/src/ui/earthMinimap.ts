@@ -4,7 +4,13 @@
 import type { TileMap } from './tilemap.ts';
 import './hud.css';
 
-export interface MapMarker { lat: number; lon: number; color: string; label?: string; big?: boolean }
+export interface MapMarker {
+  lat: number; lon: number; color: string; label?: string; big?: boolean;
+  /** On the map screen: click the marker to teleport straight inside (your HQs and Home). */
+  teleport?: () => void;
+  /** Shown under the name in the teleport list ("Skyscraper HQ", the address). */
+  sub?: string;
+}
 
 export class EarthMinimap {
   readonly canvas: HTMLCanvasElement;

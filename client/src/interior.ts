@@ -33,6 +33,8 @@ export interface Interior extends Scene3D {
   detail: RepoDetail;
   /** Testing: jump straight to floor f (0 lobby .. 3 boardroom), standing by the lifts. */
   debugFloor?(f: number): void;
+  /** Testing: put n made-up running agents in the Agent Lab (they get up and talk like real ones). */
+  debugBusy?(n: number): void;
 }
 
 // ---------- helpers ----------
@@ -691,7 +693,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
       ['2  Work floor', `${detail.workers.length} desks · past PRs & commits`],
       ['3  Agent Lab', 'Hire Claude agents'],
       ['4  Boardroom', 'Big decisions'],
-      ['R  Roof', 'Lifts are behind the logo wall'],
+      ['R  Roof terrace', 'Out on top of the tower · lifts behind the logo wall'],
     ]);
     const g = new THREE.PlaneGeometry(1.2, 2.14);
     geos.push(g);
@@ -965,7 +967,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
       { y: fy(WORK_F), label: '2', title: `Work floor · ${detail.workers.length} desks` },
       { y: fy(LAB_F), label: '3', title: 'Agent Lab · hire agents' },
       { y: fy(BOARD_F), label: '4', title: 'Boardroom · big decisions' },
-      { y: fy(FLOORS), label: 'R', title: 'Roof · step out on top' },
+      { y: fy(FLOORS), label: 'R', title: 'Roof terrace · step outside on top of the tower' },
     ],
     onDepart: (to) => { if (to < FLOORS) showFloor(to); },
     onArrive: (to) => { if (to === FLOORS) ctx.exitBuilding('roof'); },
@@ -1077,7 +1079,16 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
   }
 
   // ---------- live agents ----------
-  interface AgentSlot { info: AgentInfo; npc: Npc; slot: (typeof labSlots)[number]; diff: string; recent: string[]; dirty: boolean; leaving?: boolean }
+  interface AgentSlot {
+    info: AgentInfo; npc: Npc; slot: (typeof labSlots)[number]; diff: string; recent: string[]; dirty: boolean; leaving?: boolean;
+    /** Up from the desk: walking over to someone (or the activity wall), talking, walking back. */
+    round?: Round;
+    /** Someone who came over to talk to this agent (it stays at its desk, turned to them). */
+    host?: AgentSlot | null;
+    /** Seconds until this agent next gets up (while its task is running). */
+    nextOut?: number;
+  }
+  interface Round { phase: 'out' | 'talk' | 'back'; partner: AgentSlot | null; t: number; step: number; script: { at: number; run: () => void }[] }
   const agentSlots = new Map<string, AgentSlot>();
   /** Agents with a hand up (they're blocked on a question for you). */
   const hands = new Map<Npc, boolean>();
@@ -1146,6 +1157,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
   function removeAgent(id: string) {
     const s = agentSlots.get(id);
     if (!s) return;
+    cancelRound(s);
     s.npc.ch.root.parent?.remove(s.npc.ch.root);
     npcs.splice(npcs.indexOf(s.npc), 1);
     removeLabel(`lbl-a-${id}`);
@@ -1238,9 +1250,12 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
       box.position.set(0, 1.02, 0.34);
       s.npc.ch.root.add(box);
     }
-    // Out from behind the desk, round the lift shaft, into the lift.
+    // Out from behind the desk (or from wherever they were talking), round the lift shaft, into the lift.
+    const away = cancelRound(s);
     const aisle = s.slot.x + (s.slot.x >= labCx ? 2 : -2);
-    walk(s.npc, [[aisle, s.npc.ch.root.position.z], [aisle, 15.2], [3.2, 15.2], [3.2, 10.0], [0, 10.0], [0, liftDoor]], () => {
+    const pos = s.npc.ch.root.position;
+    const out: [number, number][] = away ? (findPath(pos.x, pos.z, 3.2, 15.2) ?? [[3.2, 15.2]]) : [[aisle, pos.z], [aisle, 15.2], [3.2, 15.2]];
+    walk(s.npc, [...out, [3.2, 10.0], [0, 10.0], [0, liftDoor]], () => {
       dropNpc(s.npc);
       agentSlots.delete(a.id);
       s.slot.agentId = null;
@@ -1268,6 +1283,256 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
         setTimeout(() => walk(n, [[-7.9, behind], [-7.9, 10.0], [0, 10.0], [0, liftDoor]], () => dropNpc(n)), 1400);
       }, 700);
     });
+  }
+
+  // ---------- agents at work: a busy agent gets up, walks over to a teammate, talks it through, and goes back ----------
+  // Paths come from a grid over the Agent Lab rasterized from its colliders (desks, the kiosk, the lounge,
+  // the lift shaft, the other agents), searched with A* and pulled straight where the way is clear.
+  const NAV = 0.3, navX0 = -W / 2 + 0.5, navZ0 = 0.5;
+  const navW = Math.ceil((W - 1) / NAV), navH = Math.ceil((DEPTH[LAB_F] - 1) / NAV);
+  const blocked = new Uint8Array(navW * navH);
+  const gScore = new Float32Array(navW * navH), cameFrom = new Int32Array(navW * navH), closed = new Uint8Array(navW * navH);
+  const heap: number[] = [], heapF: number[] = [];
+  const cellOf = (x: number, z: number) => {
+    const i = THREE.MathUtils.clamp(Math.floor((x - navX0) / NAV), 0, navW - 1), j = THREE.MathUtils.clamp(Math.floor((z - navZ0) / NAV), 0, navH - 1);
+    return j * navW + i;
+  };
+  function rasterNav(free: number[]) {
+    blocked.fill(0);
+    const y0 = fy(LAB_F), R = 0.3;
+    for (const bx of colliders.near(0, DEPTH[LAB_F] / 2)) {
+      if ((bx.minY ?? -Infinity) > y0 + 1.6 || bx.maxY < y0 + 0.25) continue;
+      // The walker's own spot and the one it's going to are never in its way.
+      let skip = false;
+      for (let k = 0; k < free.length; k += 2) if (free[k] > bx.minX - R && free[k] < bx.maxX + R && free[k + 1] > bx.minZ - R && free[k + 1] < bx.maxZ + R) skip = true;
+      if (skip) continue;
+      const i0 = Math.max(0, Math.floor((bx.minX - R - navX0) / NAV)), i1 = Math.min(navW - 1, Math.floor((bx.maxX + R - navX0) / NAV));
+      const j0 = Math.max(0, Math.floor((bx.minZ - R - navZ0) / NAV)), j1 = Math.min(navH - 1, Math.floor((bx.maxZ + R - navZ0) / NAV));
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) blocked[j * navW + i] = 1;
+    }
+  }
+  const clearLine = (x0: number, z0: number, x1: number, z1: number) => {
+    const n = Math.ceil(Math.hypot(x1 - x0, z1 - z0) / (NAV * 0.4));
+    for (let k = 1; k < n; k++) if (blocked[cellOf(x0 + ((x1 - x0) * k) / n, z0 + ((z1 - z0) * k) / n)]) return false;
+    return true;
+  };
+  /** A walkable path (not including the start) from one spot on the lab floor to another, or null. */
+  function findPath(x0: number, z0: number, x1: number, z1: number): [number, number][] | null {
+    rasterNav([x0, z0, x1, z1]);
+    const start = cellOf(x0, z0), goal = cellOf(x1, z1);
+    blocked[start] = 0; blocked[goal] = 0;
+    if (clearLine(x0, z0, x1, z1)) return [[x1, z1]];
+    gScore.fill(Infinity); closed.fill(0);
+    heap.length = 0; heapF.length = 0;
+    const gi = goal % navW, gj = Math.floor(goal / navW);
+    const h = (c: number) => { const dx = Math.abs((c % navW) - gi), dz = Math.abs(Math.floor(c / navW) - gj); return Math.max(dx, dz) + 0.414 * Math.min(dx, dz); };
+    const push = (c: number, f: number) => {
+      let k = heap.length;
+      heap.push(c); heapF.push(f);
+      while (k > 0) { const p = (k - 1) >> 1; if (heapF[p] <= f) break; heap[k] = heap[p]; heapF[k] = heapF[p]; k = p; }
+      heap[k] = c; heapF[k] = f;
+    };
+    const pop = () => {
+      const top = heap[0], lc = heap.pop()!, lf = heapF.pop()!;
+      if (heap.length) {
+        let k = 0;
+        for (;;) {
+          const l = 2 * k + 1, r = l + 1;
+          let m = k, mf = lf;
+          if (l < heap.length && heapF[l] < mf) { m = l; mf = heapF[l]; }
+          if (r < heap.length && heapF[r] < mf) m = r;
+          if (m === k) break;
+          heap[k] = heap[m]; heapF[k] = heapF[m]; k = m;
+        }
+        heap[k] = lc; heapF[k] = lf;
+      }
+      return top;
+    };
+    gScore[start] = 0; cameFrom[start] = -1; push(start, h(start));
+    let found = false;
+    while (heap.length) {
+      const c = pop();
+      if (c === goal) { found = true; break; }
+      if (closed[c]) continue;
+      closed[c] = 1;
+      const ci = c % navW, cj = Math.floor(c / navW);
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        if (!di && !dj) continue;
+        const ni = ci + di, nj = cj + dj;
+        if (ni < 0 || nj < 0 || ni >= navW || nj >= navH) continue;
+        const nc = nj * navW + ni;
+        if (blocked[nc] || closed[nc]) continue;
+        // No cutting corners past a desk.
+        if (di && dj && (blocked[cj * navW + ni] || blocked[nj * navW + ci])) continue;
+        const g = gScore[c] + (di && dj ? 1.414 : 1);
+        if (g < gScore[nc]) { gScore[nc] = g; cameFrom[nc] = c; push(nc, g + h(nc)); }
+      }
+    }
+    if (!found) return null;
+    const cells: [number, number][] = [];
+    for (let c = goal; c !== -1 && c !== start; c = cameFrom[c]) cells.push([navX0 + ((c % navW) + 0.5) * NAV, navZ0 + (Math.floor(c / navW) + 0.5) * NAV]);
+    cells.reverse();
+    if (!cells.length) return [[x1, z1]];
+    cells[cells.length - 1] = [x1, z1];
+    // Straighten it: from each corner, on to the farthest point in plain sight.
+    const out: [number, number][] = [];
+    let fx = x0, fz = z0, k = 0;
+    while (k < cells.length) {
+      let far = k;
+      for (let m = cells.length - 1; m > k; m--) if (clearLine(fx, fz, cells[m][0], cells[m][1])) { far = m; break; }
+      out.push(cells[far]);
+      [fx, fz] = cells[far];
+      k = far + 1;
+    }
+    return out;
+  }
+
+  const isBusy = (s: AgentSlot) => !s.leaving && (s.info.status === 'running' || s.info.status === 'preparing');
+  const short = (t: string, n = 84) => { const x = t.replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
+  /** What they'd say about where their task is: from the run's latest step. */
+  function statusLine(s: AgentSlot) {
+    let raw = s.info.lastAction ?? '';
+    for (let k = s.recent.length - 1; k >= 0; k--) if (!/^Status →/.test(s.recent[k])) { raw = s.recent[k]; break; }
+    raw = raw.trim();
+    const cmd = /^Running (.*)$/.exec(raw)?.[1] ?? '';
+    if (/\b(test|tests|vitest|jest|pytest|mocha|spec)\b/i.test(cmd)) return 'Running the tests now…';
+    if (/\b(tsc|build|lint|eslint|typecheck)\b/i.test(cmd)) return 'Checking the build…';
+    if (/\bgh pr\b|git push/i.test(cmd)) return 'The PR is going up for review.';
+    if (/\bgit (commit|add)\b/i.test(cmd)) return 'Committing the changes.';
+    if (/^Planning/i.test(raw)) return 'Planning the next steps.';
+    if (/^Error:/i.test(raw)) return `Hit an error, looking into it: ${short(raw.slice(6), 60)}`;
+    if (raw && !/^(Finished|Status|Starting)/i.test(raw)) return `${short(raw)}${/[.…!?]$/.test(raw) ? '' : '…'}`;
+    return `Working on: ${short(s.info.task, 60)}`;
+  }
+  const replies = (p: AgentSlot) => [`Nice. I'm on ${short(p.info.task, 46)}. ${statusLine(p)}`, `Makes sense. ${statusLine(p)}`, `Good call. Over here: ${statusLine(p)}`];
+  const closers = ['Great, back to it.', 'Sounds good, I\'ll pick it up from there.', 'Perfect. Ping me when it\'s green.', 'Thanks, that helps.'];
+  const pick = <T,>(a: T[]) => a[Math.floor(Math.random() * a.length)];
+  const followLabel = (id: string, x: number, y: number, z: number) => {
+    const l = labelDefs.get(id);
+    if (!l) return;
+    l.pos.set(x, fy(l.floor) + y, z);
+    if (l.floor === cur) ctx.labels.move(id, l.pos);
+  };
+  const standSpot = (s: AgentSlot): [number, number] => [s.slot.x, s.slot.z - 0.78];
+
+  function startRound(s: AgentSlot) {
+    const pos = s.npc.ch.root.position;
+    const mates = [...agentSlots.values()].filter((o) => o !== s && isBusy(o) && !o.round && !o.host);
+    const far = (o: AgentSlot) => Math.hypot(o.slot.x - pos.x, o.slot.z - pos.z) + Math.random() * 3;
+    mates.sort((a, b) => far(a) - far(b));
+    const partner = mates[0] ?? null;
+    let goal: [number, number];
+    if (partner) {
+      const side = Math.sign(pos.x - partner.slot.x) || (partner.slot.x >= labCx ? -1 : 1);
+      goal = [partner.slot.x + side * 1.05, partner.slot.z - 1.05];
+    } else goal = [THREE.MathUtils.clamp(s.slot.x, -2.6, 2.6) + (Math.random() - 0.5) * 1.2, DEPTH[LAB_F] - 2.1]; // the activity wall
+    const path = findPath(pos.x, pos.z, goal[0], goal[1]);
+    if (!path) return;
+    if (partner) partner.host = s;
+    s.round = { phase: 'out', partner, t: 0, step: 0, script: [] };
+    s.npc.ch.life!.away = true;
+    walk(s.npc, path, () => arrive(s));
+  }
+
+  function arrive(s: AgentSlot) {
+    const r = s.round;
+    if (!r) return;
+    r.phase = 'talk'; r.t = 0; r.step = 0;
+    const me = s.npc, life = me.ch.life!;
+    me.ch.play('idle', 0.3);
+    const p = r.partner;
+    if (p) {
+      const them = p.npc;
+      life.partner = them.ch.root.position;
+      them.ch.life!.partner = me.ch.root.position;
+      me.look = angleTo(me.ch.root.position, them.ch.root.position);
+      them.look = angleTo(them.ch.root.position, me.ch.root.position);
+      r.script = [
+        { at: 0.5, run: () => { life.talking = true; speak(me, statusLine(s)); } },
+        { at: 2.6, run: () => gesture(them.ch, 'agree') },
+        { at: 4.4, run: () => { life.talking = false; hush(me, 300); them.ch.life!.talking = true; speak(them, pick(replies(p))); } },
+        { at: 6.4, run: () => gesture(me.ch, Math.random() < 0.8 ? 'agree' : 'headShake') },
+        { at: 8.6, run: () => { them.ch.life!.talking = false; hush(them, 300); life.talking = true; speak(me, pick(closers)); } },
+        { at: 10.8, run: () => { hush(me, 200); goBack(s); } },
+      ];
+    } else {
+      // Nobody else is busy: over to the activity wall to read the feed, thinking out loud.
+      me.look = 0;
+      life.partner = new THREE.Vector3(me.ch.root.position.x, 0.75, DEPTH[LAB_F] - 0.3);
+      r.script = [
+        { at: 0.8, run: () => { life.talking = false; speak(me, `Checking the feed. ${statusLine(s)}`); } },
+        { at: 4.2, run: () => gesture(me.ch, 'agree') },
+        { at: 6.5, run: () => { hush(me, 200); goBack(s); } },
+      ];
+    }
+  }
+
+  function goBack(s: AgentSlot) {
+    const r = s.round;
+    if (!r) return;
+    endTalk(s);
+    r.phase = 'back';
+    const pos = s.npc.ch.root.position, [hx, hz] = standSpot(s);
+    walk(s.npc, findPath(pos.x, pos.z, hx, hz) ?? [[hx, hz]], () => {
+      s.round = undefined;
+      s.npc.ch.life!.away = false;
+      s.npc.ch.play('idle', 0.3);
+      s.npc.look = null;
+      s.npc.turnToPlayer = true;
+      followLabel(`lbl-a-${s.info.id}`, hx, 2.12, hz);
+    });
+  }
+
+  /** The conversation is over (both sides): voices off, eyes back to the work. */
+  function endTalk(s: AgentSlot) {
+    const r = s.round;
+    const life = s.npc.ch.life!;
+    life.partner = null; life.talking = false;
+    s.npc.look = null;
+    const p = r?.partner;
+    if (p) {
+      p.host = null;
+      p.npc.ch.life!.partner = null; p.npc.ch.life!.talking = false;
+      p.npc.look = null;
+      hush(p.npc, 200);
+      if (r) r.partner = null;
+    }
+  }
+
+  const tmpV = new THREE.Vector3();
+  /** Stop whatever round s is on, or is hosting. True if s is away from its desk. */
+  function cancelRound(s: AgentSlot) {
+    if (s.host) { const v = s.host; s.host = null; if (v.round?.phase === 'talk') goBack(v); else if (v.round) v.round.partner = null; }
+    if (!s.round) return false;
+    endTalk(s);
+    hush(s.npc, 100);
+    const k = walks.findIndex((w) => w.n === s.npc);
+    if (k >= 0) walks.splice(k, 1);
+    s.round = undefined;
+    s.npc.ch.life!.away = false;
+    return s.npc.ch.root.position.distanceTo(tmpV.set(s.slot.x, 0, s.slot.z - 0.78)) > 0.3;
+  }
+
+  function tickRounds(dt: number) {
+    for (const s of agentSlots.values()) {
+      const r = s.round;
+      if (r) {
+        const pos = s.npc.ch.root.position;
+        if (r.phase !== 'talk') followLabel(`lbl-a-${s.info.id}`, pos.x, 2.12, pos.z);
+        else {
+          // Walked over to someone who has since packed up: back to the desk.
+          if (r.partner && (r.partner.leaving || !agentSlots.has(r.partner.info.id))) { goBack(s); continue; }
+          r.t += dt;
+          while (r.step < r.script.length && r.t >= r.script[r.step].at) r.script[r.step++].run();
+        }
+        continue;
+      }
+      if (!isBusy(s) || s.host) continue;
+      s.nextOut = (s.nextOut ?? 3 + Math.random() * 7) - dt;
+      if (s.nextOut > 0) continue;
+      s.nextOut = 12 + Math.random() * 16;
+      startRound(s);
+    }
   }
 
   // ---------- parcels in the lobby (open PRs, runs to review) and issues on the work floor ----------
@@ -1333,10 +1598,22 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
       ctx.player.position.set(0, fy(f), LIFT_FRONT - 2.5);
       ctx.player.vel.set(0, 0, 0);
     },
+    debugBusy(n: number) {
+      const tasks = ['Fix the flaky login test', 'Add dark mode to settings', 'Speed up the search index', 'Write docs for the API', 'Upgrade the build to Vite 6', 'Clean up unused CSS'];
+      const steps = ['Running npm test', 'Editing src/auth/session.ts', 'Reading src/search/index.ts', 'Writing docs/api.md', 'Running npx tsc --noEmit', 'Searching for "unused"'];
+      const names = ['Nova', 'Atlas', 'Iris', 'Orion', 'Vega', 'Lyra'];
+      for (let k = 0; k < Math.min(n, labSlots.length); k++) {
+        upsertAgent({
+          id: `debug-${k}`, repo: repo.name, task: tasks[k % tasks.length], name: `Agent ${names[k % names.length]}`, status: 'running', branch: '',
+          startedAt: new Date(Date.now() - k * 60_000).toISOString(), endedAt: null, lastAction: steps[k % steps.length], filesChanged: [], prUrl: null, costUsd: null,
+        });
+      }
+    },
     world: {
       colliders,
       groundY: () => fy(cur),
       support: (x, z) => lift.floorAt(x, z) ?? fy(cur),
+      canFly: false, // no rocket boots indoors: there's nothing above but the next floor's slab
       bounds,
     },
     update(dt: number) {
@@ -1363,6 +1640,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
           else { if (Math.random() < 0.4) gesture(n.ch, 'agree'); n.nextGesture = 8 + Math.random() * 14; }
         }
       }
+      if (cur === LAB_F) tickRounds(dt);
       // Walkers: along their path at an office pace, turning into each leg.
       for (let k = walks.length - 1; k >= 0; k--) {
         const w = walks[k], pos = w.n.ch.root.position, to = w.pts[w.i];
@@ -1419,5 +1697,8 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
     },
   };
   void screens;
+  // ?busyAgents=3: made-up running agents in the lab, to see them at work without a real task.
+  const busyN = Number(new URLSearchParams(location.search).get('busyAgents'));
+  if (busyN > 0) interior.debugBusy!(busyN);
   return interior;
 }

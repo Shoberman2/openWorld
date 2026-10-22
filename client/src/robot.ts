@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
-// The player: the site engineer of your city. A little robot with a white shell head, a visor-screen face
-// and a yellow hard hat, a navy work jacket with hi-vis vest bands and the OpenWorld mark, a tool belt,
-// and work boots with heel thrusters. Built from primitives on a simple joint hierarchy and animated procedurally.
+// The player: your city's executive robot. A glossy white shell head with a visor-screen face, a
+// tailored navy two-piece suit (notched lapels, a white shirt, a yellow OpenWorld tie, a pocket square
+// and the OpenWorld lapel pin), and polished oxfords with heel thrusters in the soles. Built from
+// primitives on a simple joint hierarchy and animated procedurally.
 
 export type RobotState = 'idle' | 'walk' | 'run' | 'jump' | 'fall' | 'fly' | 'land' | 'roll' | 'sit' | 'wave'
   | 'crouch' | 'sprawl'
@@ -48,23 +49,28 @@ const SEAT_DROP = HIP_Y - 0.71;
 
 export function makeRobot(): Robot {
   const mats = {
-    shell: new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 0.32, metalness: 0.08 }),
+    // Glazed ceramic: a clear lacquer over the white shell, and a glass visor.
+    shell: new THREE.MeshPhysicalMaterial({ color: 0xf1f3f5, roughness: 0.35, metalness: 0.02, clearcoat: 1, clearcoatRoughness: 0.08 }),
     shellDark: new THREE.MeshStandardMaterial({ color: 0xb9c2cc, roughness: 0.45, metalness: 0.2 }),
-    visor: new THREE.MeshStandardMaterial({ color: 0x0c1424, roughness: 0.12, metalness: 0.6 }),
+    visor: new THREE.MeshPhysicalMaterial({ color: 0x0a1120, roughness: 0.18, metalness: 0.4, clearcoat: 1, clearcoatRoughness: 0.02 }),
     eyeGlow: new THREE.MeshBasicMaterial({ color: 0x8fe0ff, toneMapped: false }),
-    hat: new THREE.MeshStandardMaterial({ color: 0xf4bf1d, roughness: 0.38 }),
-    jacket: new THREE.MeshStandardMaterial({ color: 0x1f3358, roughness: 0.82 }),
-    jacketDark: new THREE.MeshStandardMaterial({ color: 0x15233f, roughness: 0.85 }),
-    hivis: new THREE.MeshStandardMaterial({ color: 0xf6c21c, roughness: 0.5, emissive: 0x3a2a00 }),
-    pants: new THREE.MeshStandardMaterial({ color: 0x9a7a4e, roughness: 0.9 }),
-    pantsDark: new THREE.MeshStandardMaterial({ color: 0x7d6240, roughness: 0.92 }),
-    belt: new THREE.MeshStandardMaterial({ color: 0x2a2420, roughness: 0.75 }),
-    boot: new THREE.MeshStandardMaterial({ color: 0x24272d, roughness: 0.7 }),
-    sole: new THREE.MeshStandardMaterial({ color: 0x15161a, roughness: 0.9 }),
+    // Worsted wool: a soft sheen across the cloth.
+    jacket: new THREE.MeshPhysicalMaterial({ color: 0x1c2740, roughness: 0.78, sheen: 1, sheenRoughness: 0.5, sheenColor: 0x3b4a6b }),
+    jacketDark: new THREE.MeshStandardMaterial({ color: 0x131b2d, roughness: 0.8 }),
+    lapel: new THREE.MeshPhysicalMaterial({ color: 0x151d31, roughness: 0.55, sheen: 1, sheenRoughness: 0.35, sheenColor: 0x56688f }),
+    shirt: new THREE.MeshPhysicalMaterial({ color: 0xf6f7f9, roughness: 0.7, sheen: 0.6, sheenColor: 0xffffff }),
+    tie: new THREE.MeshPhysicalMaterial({ color: 0xf2bd1c, roughness: 0.45, sheen: 1, sheenRoughness: 0.3, sheenColor: 0xffe28a }),
+    pocket: new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.5, sheen: 1, sheenColor: 0xffffff }),
+    pants: new THREE.MeshPhysicalMaterial({ color: 0x1c2740, roughness: 0.8, sheen: 1, sheenRoughness: 0.5, sheenColor: 0x3b4a6b }),
+    belt: new THREE.MeshStandardMaterial({ color: 0x1a1412, roughness: 0.35 }),
+    buckle: new THREE.MeshStandardMaterial({ color: 0xd4d7db, roughness: 0.2, metalness: 1 }),
+    button: new THREE.MeshStandardMaterial({ color: 0x0e1118, roughness: 0.3 }),
+    // Polished calf leather.
+    boot: new THREE.MeshPhysicalMaterial({ color: 0x141416, roughness: 0.28, clearcoat: 0.8, clearcoatRoughness: 0.15 }),
+    sole: new THREE.MeshStandardMaterial({ color: 0x2a1c14, roughness: 0.75 }),
     dark: new THREE.MeshStandardMaterial({ color: 0x23272d, roughness: 0.6 }),
     metal: new THREE.MeshStandardMaterial({ color: 0xa3abb3, roughness: 0.3, metalness: 0.8 }),
     thruster: new THREE.MeshBasicMaterial({ color: 0x6cc6ff, toneMapped: false }),
-    screen: new THREE.MeshBasicMaterial({ color: 0x5fd0ff }),
     logo: new THREE.MeshStandardMaterial({ map: logoTexture(), roughness: 0.55, transparent: true }),
   };
   const geos: THREE.BufferGeometry[] = [];
@@ -93,16 +99,12 @@ export function makeRobot(): Robot {
   root.name = 'robot';
   const hips = joint(root, 0, HIP_Y, 0);
 
-  // ---- Pelvis: work trousers, with a tool belt over the jacket hem ----
-  part(g(new THREE.CylinderGeometry(0.14, 0.155, 0.16, 16).scale(1, 1, 0.7)), mats.pants, hips, 0, -0.07, 0);
-  part(g(new THREE.CylinderGeometry(0.172, 0.172, 0.045, 22).scale(1, 1, 0.72)), mats.belt, hips, 0, -0.03, 0);
-  part(g(new RoundedBoxGeometry(0.06, 0.045, 0.02, 2, 0.008)), mats.hivis, hips, 0, -0.03, 0.125); // buckle
-  for (const s of [-1, 1]) part(g(new RoundedBoxGeometry(0.075, 0.085, 0.055, 2, 0.015)), mats.belt, hips, s * 0.155, -0.075, 0.03); // pouches
-  // A tablet holstered on the right hip, its screen glowing.
-  part(g(new RoundedBoxGeometry(0.02, 0.12, 0.085, 2, 0.006)), mats.dark, hips, -0.178, -0.07, -0.04);
-  part(g(new THREE.PlaneGeometry(0.1, 0.07)), mats.screen, hips, -0.189, -0.06, -0.04, 0, -Math.PI / 2, Math.PI / 2);
+  // ---- Pelvis: suit trousers and a slim leather belt (mostly under the jacket) ----
+  part(g(new THREE.CylinderGeometry(0.14, 0.152, 0.16, 20).scale(1, 1, 0.7)), mats.pants, hips, 0, -0.07, 0);
+  part(g(new THREE.CylinderGeometry(0.163, 0.163, 0.03, 24).scale(1, 1, 0.71)), mats.belt, hips, 0, -0.025, 0);
+  part(g(new RoundedBoxGeometry(0.04, 0.028, 0.012, 2, 0.004)), mats.buckle, hips, 0, -0.025, 0.117);
 
-  // ---- Torso: a boxy navy work jacket with hi-vis vest bands and the OpenWorld mark ----
+  // ---- Torso: a tailored suit jacket with notched lapels, open over a white shirt and a tie ----
   const spine = joint(hips, 0, 0.05, 0);
   const torsoGeo = g(new RoundedBoxGeometry(0.33, 0.5, 0.23, 4, 0.07));
   {
@@ -116,25 +118,50 @@ export function makeRobot(): Robot {
     torsoGeo.computeVertexNormals();
   }
   part(torsoGeo, mats.jacket, spine, 0, 0.13, 0);
-  const FRONT = 0.118, BACK = -0.118;
-  part(g(new THREE.BoxGeometry(0.008, 0.46, 0.006)), mats.jacketDark, spine, 0, 0.13, FRONT + 0.008); // zip
-  part(g(new THREE.CylinderGeometry(0.1, 0.112, 0.07, 20, 1, true).scale(1, 1, 0.8)), mats.jacketDark, spine, 0, 0.41, -0.005); // stand-up collar
-  // Vest bands: two straps over the shoulders, front and back, and a band right round the middle.
+  /**
+   * A flat piece laid on the jacket front (lapels, the shirt, the tie): an outline in spine space,
+   * each corner pushed onto the jacket's front, which bulges at the chest and rounds back at the top.
+   */
+  const TOP = 0.38, RAD = 0.07, FRONT = 0.115;
+  const frontZ = (y: number) => {
+    const dy = y - (TOP - RAD);
+    const recess = dy > 0 ? RAD - Math.sqrt(Math.max(0, RAD * RAD - dy * dy)) : 0;
+    return FRONT * (1 + 0.07 * Math.exp(-(((y - 0.23) / 0.1) ** 2))) - recess;
+  };
+  const onChest = (pts: [number, number][], off: number, mat: THREE.Material, thick = 0.004) => {
+    const geo = g(new THREE.ExtrudeGeometry(new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y))), { depth: thick, bevelEnabled: false }));
+    const p = geo.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < p.count; i++) p.setZ(i, frontZ(p.getY(i)) + off + p.getZ(i) - thick);
+    geo.computeVertexNormals();
+    return part(geo, mat, spine);
+  };
+  const V_TOP = 0.375, V_BOT = 0.12;
+  onChest([[-0.05, V_TOP], [0.05, V_TOP], [0, V_BOT - 0.01]], 0.002, mats.shirt); // the shirt in the V
+  // The tie: a knot under the collar and a blade down to the button.
+  onChest([[-0.02, V_TOP + 0.002], [0.02, V_TOP + 0.002], [0.013, V_TOP - 0.032], [-0.013, V_TOP - 0.032]], 0.008, mats.tie, 0.012);
+  onChest([[-0.012, V_TOP - 0.03], [0.012, V_TOP - 0.03], [0.034, V_BOT + 0.05], [0, V_BOT + 0.02], [-0.034, V_BOT + 0.05]], 0.006, mats.tie);
+  // Notched lapels, wide over the chest, meeting at the button.
   for (const s of [-1, 1]) {
-    part(g(new THREE.BoxGeometry(0.045, 0.44, 0.006)), mats.hivis, spine, s * 0.1, 0.15, FRONT + 0.01);
-    part(g(new THREE.BoxGeometry(0.045, 0.44, 0.006)), mats.hivis, spine, s * 0.1, 0.15, BACK - 0.01);
-    part(g(new THREE.BoxGeometry(0.045, 0.006, 0.25)), mats.hivis, spine, s * 0.1, 0.383, 0);
+    const pts: [number, number][] = [[0.05, V_TOP], [0.078, V_TOP + 0.004], [0.092, 0.33], [0.079, 0.317], [0.113, 0.295], [0.014, V_BOT], [0.002, V_BOT]];
+    onChest(pts.map(([x, y]) => [x * s, y]), 0.007, mats.lapel, 0.006);
   }
-  part(g(new THREE.CylinderGeometry(0.176, 0.176, 0.04, 24, 1, true).scale(1, 1, 0.74)), mats.hivis, spine, 0, 0.02, 0);
-  // The OpenWorld mark: a small badge on the chest and a big one between the straps on the back.
-  part(g(new THREE.PlaneGeometry(0.055, 0.055)), mats.logo, spine, -0.045, 0.27, FRONT + 0.012);
-  part(g(new THREE.PlaneGeometry(0.11, 0.11)), mats.logo, spine, 0, 0.24, BACK - 0.012, 0, Math.PI, 0);
+  for (const y of [V_BOT - 0.012, V_BOT - 0.09]) part(g(new THREE.CylinderGeometry(0.009, 0.009, 0.005, 12).rotateX(Math.PI / 2)), mats.button, spine, 0.003, y, frontZ(y) + 0.006);
+  // Breast pocket with a white pocket square, the OpenWorld pin on the left lapel, flap pockets.
+  onChest([[0.05, 0.255], [0.115, 0.26], [0.115, 0.25], [0.05, 0.245]], 0.004, mats.jacketDark, 0.002);
+  onChest([[0.056, 0.256], [0.068, 0.284], [0.08, 0.266], [0.092, 0.288], [0.106, 0.258]], 0.006, mats.pocket);
+  part(g(new THREE.CircleGeometry(0.012, 18)), mats.logo, spine, 0.088, 0.325, frontZ(0.325) + 0.016);
+  for (const s of [-1, 1]) part(g(new RoundedBoxGeometry(0.095, 0.028, 0.012, 2, 0.004)), mats.jacketDark, spine, s * 0.095, -0.05, FRONT + 0.003);
+  // Shirt collar round the neck, its points folded down over the tie knot.
+  part(g(new THREE.CylinderGeometry(0.058, 0.064, 0.06, 20, 1, true).scale(1, 1, 0.9)), mats.shirt, spine, 0, 0.405, -0.01);
+  for (const s of [-1, 1]) onChest([[0.008 * s, V_TOP + 0.012], [0.05 * s, V_TOP + 0.03], [0.046 * s, V_TOP - 0.03]], 0.014, mats.shirt, 0.003);
+  // The jacket's skirt: it hangs over the seat of the trousers.
+  part(g(new THREE.CylinderGeometry(0.168, 0.176, 0.13, 24, 1, true).scale(1, 1, 0.74)), mats.jacket, hips, 0, -0.09, 0);
 
   // ---- Back: no pack, the heel thrusters do the flying (a hidden mount keeps the old riding API) ----
   const board = joint(spine, 0, 0, 0);
   board.visible = false;
 
-  // ---- Neck + head: a white shell head with a dark visor screen for a face, under a yellow hard hat ----
+  // ---- Neck + head: a glossy white shell head with a dark glass visor for a face ----
   const neck = joint(spine, 0, 0.43, 0.0);
   part(limb(0.034, 0.04, 0.11).translate(0, 0.11, 0), mats.dark, neck);
   for (const y of [0.03, 0.065]) part(limb(0.042, 0.042, 0.01).translate(0, y, 0), mats.shellDark, neck); // segment rings
@@ -151,24 +178,18 @@ export function makeRobot(): Robot {
     happy: part(eyeHappy, mats.eyeGlow, head, s * 0.045, 0.108, 0.117),
   }));
   for (const e of eyes) { e.open.castShadow = e.happy.castShadow = false; e.happy.visible = false; }
-  // Hard hat: dome, ridge and a brim that sticks out further at the front.
-  const hat = joint(head, 0, 0.2, 0.005);
-  part(g(new THREE.SphereGeometry(0.135, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 0.72, 1.06)), mats.hat, hat, 0, 0, 0);
-  part(g(new THREE.TorusGeometry(0.135, 0.013, 6, 24, Math.PI).rotateY(Math.PI / 2).scale(1, 0.72, 1.06)), mats.hat, hat, 0, 0, 0); // ridge over the crown
-  part(g(new THREE.CylinderGeometry(0.152, 0.158, 0.014, 28).scale(1, 1, 1.12)), mats.hat, hat, 0, 0.004, 0.02);
-  part(g(new THREE.PlaneGeometry(0.06, 0.03)), mats.logo, hat, 0, 0.05, 0.14, -0.35, 0, 0);
 
-  // ---- Arms: jacket sleeves to the wrist, white shell shoulder caps and gloves ----
+  // ---- Arms: suit sleeves with a white shirt cuff showing, and white shell hands ----
   type Arm = { sh: THREE.Group; el: THREE.Group; wr: THREE.Group };
   const arm = (s: number): Arm => {
     const sh = joint(spine, s * 0.168, 0.355, -0.005);
-    part(sphere(0.07, 16, 10).scale(1, 0.85, 1), mats.shell, sh, 0, 0.012, 0);
-    part(limb(0.058, 0.053, 0.26), mats.jacket, sh);
+    part(sphere(0.06, 18, 12).scale(1, 0.72, 0.95), mats.jacket, sh, 0, 0.0, 0); // padded shoulder
+    part(limb(0.058, 0.053, 0.26, 16), mats.jacket, sh);
     const el = joint(sh, 0, -0.26, 0);
-    part(sphere(0.052), mats.jacket, el);
-    part(limb(0.052, 0.046, 0.21), mats.jacket, el);
-    part(limb(0.054, 0.052, 0.035), mats.hivis, el, 0, -0.1, 0); // reflective cuff band
-    part(limb(0.048, 0.048, 0.03), mats.jacketDark, el, 0, -0.205, 0); // cuff
+    part(sphere(0.052, 16, 10), mats.jacket, el);
+    part(limb(0.052, 0.047, 0.205, 16), mats.jacket, el);
+    for (let b = 0; b < 3; b++) part(sphere(0.005, 6, 4), mats.button, el, s * 0.012, -0.17 - b * 0.012, -0.044); // sleeve buttons
+    part(limb(0.042, 0.042, 0.03, 14), mats.shirt, el, 0, -0.2, 0); // shirt cuff
     const wr = joint(el, 0, -0.26, 0);
     part(limb(0.034, 0.034, 0.03).translate(0, 0.02, 0), mats.dark, wr);
     part(g(new RoundedBoxGeometry(0.04, 0.075, 0.07, 2, 0.015)), mats.shell, wr, 0, -0.045, 0);
@@ -183,7 +204,7 @@ export function makeRobot(): Robot {
   };
   const armL = arm(1), armR = arm(-1);
 
-  // ---- Legs: full-length tan work trousers, knee pads, chunky boots with heel thrusters ----
+  // ---- Legs: suit trousers with pressed creases, polished oxfords with heel thrusters ----
   type Leg = { th: THREE.Group; kn: THREE.Group; an: THREE.Group; flame: THREE.Group };
   const flameOuterMat = new THREE.MeshBasicMaterial({ color: 0x4fb4ff, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
   const flameInnerMat = new THREE.MeshBasicMaterial({ color: 0xeaf7ff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
@@ -195,19 +216,19 @@ export function makeRobot(): Robot {
   const plumeGeo = g(new THREE.ConeGeometry(0.09, 1, 14, 1, true).rotateX(Math.PI).translate(0, -0.5, 0));
   const leg = (s: number): Leg => {
     const th = joint(hips, s * 0.085, -0.04, 0);
-    part(limb(0.09, 0.08, 0.36, 14), mats.pants, th, 0, 0.02, 0);
-    part(g(new RoundedBoxGeometry(0.03, 0.1, 0.085, 2, 0.01)), mats.pantsDark, th, s * 0.085, -0.16, 0); // cargo pocket
+    part(limb(0.088, 0.078, 0.36, 18), mats.pants, th, 0, 0.02, 0);
+    part(g(new THREE.BoxGeometry(0.006, 0.34, 0.004)), mats.jacketDark, th, 0, -0.15, 0.082); // crease
     const kn = joint(th, 0, -0.34, 0);
-    part(sphere(0.07, 14, 10), mats.pants, kn);
-    part(g(new RoundedBoxGeometry(0.1, 0.11, 0.045, 3, 0.02)), mats.dark, kn, 0, 0, 0.055); // knee pad
-    part(limb(0.074, 0.066, 0.31), mats.pants, kn, 0, -0.01, 0);
+    part(sphere(0.07, 16, 10), mats.pants, kn);
+    part(limb(0.074, 0.07, 0.33, 18), mats.pants, kn, 0, -0.01, 0); // a straight leg breaking over the shoe
+    part(g(new THREE.BoxGeometry(0.006, 0.3, 0.004)), mats.jacketDark, kn, 0, -0.17, 0.073);
     const an = joint(kn, 0, -0.34, 0);
     part(sphere(0.045, 10, 8), mats.boot, an);
-    // Chunky work boot, toe toward +Z: a padded collar, a rubber sole with a yellow welt, a metal heel thruster.
-    part(limb(0.06, 0.062, 0.06), mats.boot, an, 0, 0.03, 0);
-    part(g(new RoundedBoxGeometry(0.125, 0.1, 0.25, 3, 0.04)), mats.boot, an, 0, -0.035, 0.04);
-    part(g(new RoundedBoxGeometry(0.13, 0.03, 0.26, 2, 0.012)), mats.sole, an, 0, -0.078, 0.04);
-    part(g(new THREE.BoxGeometry(0.134, 0.01, 0.22)), mats.hivis, an, 0, -0.06, 0.04);
+    // Oxford, toe toward +Z: a sleek polished upper with a toe cap, a leather sole and the heel thruster.
+    part(limb(0.052, 0.056, 0.05, 16), mats.boot, an, 0, 0.0, 0);
+    part(g(new THREE.CapsuleGeometry(0.056, 0.17, 4, 16).rotateX(Math.PI / 2).scale(1, 0.72, 1)), mats.boot, an, 0, -0.045, 0.045);
+    part(g(new THREE.SphereGeometry(0.05, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2).scale(1.05, 0.7, 1.1)), mats.boot, an, 0, -0.055, 0.12); // toe cap
+    part(g(new RoundedBoxGeometry(0.118, 0.022, 0.29, 2, 0.008)), mats.sole, an, 0, -0.081, 0.045);
     part(g(new THREE.TorusGeometry(0.034, 0.01, 8, 18)), mats.metal, an, 0, -0.092, 0, Math.PI / 2, 0, 0);
     part(g(new THREE.CircleGeometry(0.026, 16)), mats.thruster, an, 0, -0.094, 0, Math.PI / 2, 0, 0);
     const flame = joint(an, 0, -0.088, 0.0);
@@ -227,7 +248,7 @@ export function makeRobot(): Robot {
 
   // Wingsuit membranes: arm wings (shoulder–wrist–knee–hip) and a tail wing between the legs. Their
   // corners follow the joints every frame, so they stretch and fold with the pose.
-  const wingMat = new THREE.MeshStandardMaterial({ color: 0x1f3358, roughness: 0.75, side: THREE.DoubleSide });
+  const wingMat = new THREE.MeshStandardMaterial({ color: 0x1c2740, roughness: 0.75, side: THREE.DoubleSide });
   const wingGeo = g(new THREE.BufferGeometry());
   const WING_TRIS = 7;
   wingGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(WING_TRIS * 9), 3));

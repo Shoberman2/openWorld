@@ -111,7 +111,7 @@ function renderOverview(d: ProjectDeps, v: ProjectView, fresh: boolean) {
   if (fresh) track('project_opened', { repo: name });
 
   let html = d.header(esc(name), esc(r?.description ? r.description.slice(0, 60) : 'Project'),
-    `<button class="pv-icon" data-chat title="Text the lead">${CHAT}</button>${d.canTravel(name) ? `<button class="pv-icon" data-travel title="Go to the building">${PIN}</button>` : ''}`);
+    `<button class="pv-icon" data-chat title="Text the lead">${CHAT}</button>${d.canTravel(name) ? `<button class="pv-icon" data-travel title="Teleport to its building">${PIN}</button>` : ''}`);
   html += `<div class="pv-scroll pj">`;
 
   // Status strip

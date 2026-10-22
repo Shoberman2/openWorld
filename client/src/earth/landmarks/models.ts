@@ -3,6 +3,7 @@
 // that know the real outline from the map get the claimed footprints (`rings`) in that frame.
 import * as THREE from 'three';
 import { area, band, built, chamfer, facadeMat, glowMat, merged, ngon, offsetRing, placed, prism, rect, solidMat, tier, type Built, STYLES } from './kit.ts';
+import { lollipopTree, treeMat } from '../style.ts';
 
 export interface BuildCtx {
   /** Claimed map footprints in the model frame (empty when the map has none here). */
@@ -489,25 +490,49 @@ function mansard(b: Built, ring: number[], holes: number[][], y0: number, y1: nu
   for (const h of holes) mesh(loft([{ ring: h, y: y0 }, { ring: offsetRing(h, inset), y: y1 }], [4, 4], false), mat, b);
 }
 
+/**
+ * The Plaza: the map draws it as dozens of parts, so build the whole block as one French Renaissance
+ * château — a rusticated base, the white brick shaft, a copper mansard with dormers and steep corner
+ * pavilions, and the Fifth Avenue entrance (canopy and flags) facing Grand Army Plaza.
+ */
 const plaza: Builder = (c) => {
   const b = built();
-  const parts = fromRings(b, c, 'whiteStone', 62, rect(70, 60), STONE(0xe9e4da));
-  for (const p of parts) if (p.ring.length <= 400) {
-    mansard(b, p.ring, p.holes, Math.min(62, p.y1), Math.min(62, p.y1) + 12, 3.5, COPPER());
-    // Dormers.
-    const dorm: THREE.BufferGeometry[] = [];
-    for (let i = 0; i < p.ring.length; i += 2) {
-      const j = (i + 2) % p.ring.length;
-      const ax = p.ring[i], az = p.ring[i + 1], bx = p.ring[j], bz = p.ring[j + 1], len = Math.hypot(bx - ax, bz - az);
-      if (len < 8) continue;
-      const s = area(p.ring) > 0 ? 1 : -1, nx = ((bz - az) / len) * s, nz = (-(bx - ax) / len) * s;
-      for (let t = 4; t < len - 3; t += 6) {
-        const x = ax + ((bx - ax) * t) / len - nx * 1.6, z = az + ((bz - az) * t) / len - nz * 1.6;
-        dorm.push(placed(new THREE.BoxGeometry(2, 2.6, 1.6), x, Math.min(62, p.y1) + 4, z, Math.atan2(nx, nz)));
-      }
-    }
-    if (dorm.length) { const dm = merged(dorm, STONE(0xf2efe8)); b.group.add(dm); b.detail.push(dm); }
+  const bb = bbox(c, 84, 62);
+  // Keep it to the hotel's block (the map's parts sometimes reach across the side streets).
+  const x0 = Math.max(bb.x0, -46), x1 = Math.min(bb.x1, 46), z0 = Math.max(bb.z0, -34), z1 = Math.min(bb.z1, 34);
+  const w = x1 - x0, d = z1 - z0, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+  const ring = rect(w, d, cx, cz);
+  tier(b, ring, -1.5, 11, 'beaux', { mat: STONE(0xe6e1d6) });
+  band(b, ring, 10.6, 0.8, 0.5, STONE(0xdcd6ca));
+  tier(b, offsetRing(ring, -0.3), 11, 62, 'whiteStone');
+  band(b, ring, 60.6, 1.4, 0.8, STONE(0xe9e4da));
+  mansard(b, offsetRing(ring, -0.3), [], 62, 72, 3.2, COPPER());
+  // Dormers all round.
+  const dorm: THREE.BufferGeometry[] = [];
+  const sides: [number, number, number, number, number][] = [[x0, z0, x1, z0, 0], [x1, z0, x1, z1, 1], [x1, z1, x0, z1, 2], [x0, z1, x0, z0, 3]];
+  for (const [ax, az, bx, bz, k] of sides) {
+    const len = Math.hypot(bx - ax, bz - az), ux = (bx - ax) / len, uz = (bz - az) / len;
+    const nx = [0, 1, 0, -1][k], nz = [-1, 0, 1, 0][k];
+    for (let t = 10; t < len - 9; t += 4.2) dorm.push(placed(new THREE.BoxGeometry(1.8, 2.6, 1.6), ax + ux * t - nx * 1.6, 65.5, az + uz * t - nz * 1.6, Math.atan2(nx, nz)));
   }
+  const dm = merged(dorm, STONE(0xf2efe8)); b.group.add(dm); b.detail.push(dm);
+  // Corner pavilions: steep hipped copper roofs over the corners, and the flat roof between.
+  for (const [px, pz] of [[x0 + 7, z0 + 7], [x1 - 7, z0 + 7], [x1 - 7, z1 - 7], [x0 + 7, z1 - 7]]) {
+    tier(b, rect(14, 14, px, pz), 62, 66, 'whiteStone');
+    mesh(pyramid(14.4, 2, 66, 80).translate(px, 0, pz), COPPER(), b);
+    mesh(new THREE.ConeGeometry(0.3, 3, 6).translate(px, 81.5, pz), solidMat('gilt', 0xc9a24b, 0.35, 0.9), b, true);
+  }
+  mesh(prism(offsetRing(ring, -3.6), 71.9, 72, [1, 1]), SLATE(), b, true);
+  // The Fifth Avenue entrance: a canopy over the steps and three flags above it.
+  const ex = x1 + 0.2;
+  mesh(new THREE.BoxGeometry(3.2, 0.35, 12).translate(ex + 1.6, 4.2, cz), solidMat('plaza-canopy', 0x2a2b2e, 0.5, 0.4), b, true);
+  const poles: THREE.BufferGeometry[] = [], flags: THREE.BufferGeometry[] = [];
+  for (const dz of [-6, 0, 6]) {
+    poles.push(placed(new THREE.CylinderGeometry(0.07, 0.07, 6, 6), ex + 2.4, 9.5, cz + dz, 0, 0, -0.6));
+    flags.push(new THREE.PlaneGeometry(2.6, 1.6).rotateY(Math.PI / 2).translate(ex + 4.0, 10.6, cz + dz + 0.0));
+  }
+  const pm = merged(poles, STEEL()); b.group.add(pm); b.detail.push(pm);
+  const fl = merged(flags, solidMat('plaza-flag', 0xe8e4dc, 0.9, 0)); b.group.add(fl); b.detail.push(fl);
   return b;
 };
 
@@ -729,7 +754,389 @@ const transamerica: Builder = () => {
   return b;
 };
 
+// ------------------------------------------------------------------ shared pieces
+
+let TREE_GEO: THREE.BufferGeometry | null = null;
+/** Trees with the city's own crown model and wind (x, z, scale), instanced. */
+function trees(b: Built, pts: [number, number, number][], y = 0) {
+  TREE_GEO ??= lollipopTree();
+  const im = new THREE.InstancedMesh(TREE_GEO, treeMat, pts.length);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
+  pts.forEach(([x, z, s], i) => im.setMatrixAt(i, m.compose(new THREE.Vector3(x, y, z), q.setFromAxisAngle(up, i * 2.1), new THREE.Vector3(s, s, s))));
+  im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(pts.length * 3).fill(1), 3);
+  im.castShadow = true; im.receiveShadow = true;
+  im.computeBoundingSphere();
+  b.group.add(im); b.detail.push(im);
+}
+
+const WATER = () => solidMat('lm-water', 0x5f8296, 0.06, 0.35);
+const MARBLE = () => solidMat('lm-marble', 0xeeebe4, 0.4, 0);
+const STEEL = () => solidMat('lm-steel', 0xd6dadf, 0.18, 1);
+
+let GLASS: THREE.MeshStandardMaterial | null = null;
+/** Clear structural glass: mostly reflections, a hint of green at the edges. */
+function clearGlass() {
+  return GLASS ??= new THREE.MeshStandardMaterial({ color: 0xd9e8e6, roughness: 0.03, metalness: 0.1, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide, envMapIntensity: 1.6 });
+}
+
+/** A rectangular basin: granite rim, water surface, a row of jets. */
+function fountain(b: Built, cx: number, cz: number, w: number, d: number, jets = 0) {
+  const rim: THREE.BufferGeometry[] = [];
+  const t = 0.45, h = 0.5;
+  rim.push(new THREE.BoxGeometry(w, h, t).translate(cx, h / 2, cz - d / 2 + t / 2), new THREE.BoxGeometry(w, h, t).translate(cx, h / 2, cz + d / 2 - t / 2));
+  rim.push(new THREE.BoxGeometry(t, h, d).translate(cx - w / 2 + t / 2, h / 2, cz), new THREE.BoxGeometry(t, h, d).translate(cx + w / 2 - t / 2, h / 2, cz));
+  const rm = merged(rim, GRANITE()); b.group.add(rm); b.detail.push(rm);
+  mesh(new THREE.BoxGeometry(w - t * 2, 0.05, d - t * 2).translate(cx, h - 0.12, cz), WATER(), b, true);
+  if (jets) {
+    const js: THREE.BufferGeometry[] = [];
+    for (let k = 0; k < jets; k++) js.push(new THREE.CylinderGeometry(0.03, 0.08, 1.4, 6).translate(cx - w / 2 + 0.9 + ((w - 1.8) * (k + 0.5)) / jets, h + 0.6, cz));
+    const jm = merged(js, solidMat('lm-jet', 0xf4f8fa, 0.2, 0, 0xffffff, 0.15)); b.group.add(jm); b.detail.push(jm);
+  }
+}
+
+/** A front face with an arched opening, extruded from z0 to z1 (opening runs along z). */
+function archSlab(w: number, h: number, ow: number, spring: number, z0: number, z1: number, notchH = 0) {
+  const s = new THREE.Shape();
+  const r = ow / 2;
+  if (notchH > 0) {
+    // Middle slab of a two-way arch: the side passages leave the piers open below notchH.
+    s.moveTo(-w / 2, notchH); s.lineTo(-r, notchH);
+  } else { s.moveTo(-w / 2, 0); s.lineTo(-r, 0); }
+  s.lineTo(-r, spring); s.absarc(0, spring, r, Math.PI, 0, true); s.lineTo(r, notchH > 0 ? notchH : 0);
+  s.lineTo(w / 2, notchH > 0 ? notchH : 0); s.lineTo(w / 2, h); s.lineTo(-w / 2, h); s.closePath();
+  return new THREE.ExtrudeGeometry(s, { depth: z1 - z0, bevelEnabled: false, curveSegments: 16 }).translate(0, 0, z0);
+}
+
+// ------------------------------------------------------------------ Fifth Avenue at 59th
+
+/**
+ * Apple Fifth Avenue: the 32-foot glass cube over the store underground, on the General Motors
+ * Building's plaza — the cylindrical glass lift and the spiral stair's well inside, fountains to the
+ * north and south, honey locusts in granite planters, and the round "skylenses" lighting the store.
+ */
+const appleCube: Builder = () => {
+  const b = built();
+  const S = 9.75, h = S / 2;
+  const glass = clearGlass();
+  // Five panes of glass (four walls and the roof), each wall three panels with silicone joints.
+  mesh(new THREE.BoxGeometry(S, S, S).translate(0, h, 0), glass, b);
+  const seams: THREE.BufferGeometry[] = [];
+  for (const sx of [-1, 1]) for (const k of [-1, 1]) {
+    seams.push(new THREE.BoxGeometry(0.03, S, 0.03).translate(k * S / 6, h, sx * h), new THREE.BoxGeometry(0.03, S, 0.03).translate(sx * h, h, k * S / 6));
+    seams.push(new THREE.BoxGeometry(0.03, 0.03, S).translate(k * S / 6, S, 0));
+  }
+  for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) seams.push(new THREE.BoxGeometry(0.05, S, 0.05).translate(x * h, h, z * h));
+  for (const sx of [-1, 1]) seams.push(new THREE.BoxGeometry(S, 0.05, 0.05).translate(0, S, sx * h), new THREE.BoxGeometry(0.05, 0.05, S).translate(sx * h, S, 0));
+  const sm = merged(seams, solidMat('apple-seam', 0x9aa3a8, 0.4, 0.6)); b.group.add(sm);
+  // Glass fins behind the joints.
+  const fins: THREE.BufferGeometry[] = [];
+  for (const sx of [-1, 1]) for (const k of [-1, 1]) fins.push(new THREE.BoxGeometry(0.03, S - 0.1, 0.45).translate(k * S / 6, h, sx * (h - 0.25)), new THREE.BoxGeometry(0.45, S - 0.1, 0.03).translate(sx * (h - 0.25), h, k * S / 6));
+  const fm = merged(fins, glass); b.group.add(fm); b.detail.push(fm);
+  // The stair well and the glass lift.
+  mesh(new THREE.CircleGeometry(3.3, 40).rotateX(-Math.PI / 2).translate(0, 0.03, 0), solidMat('apple-well', 0x2a2c30, 0.6, 0), b, true);
+  mesh(new THREE.CylinderGeometry(3.4, 3.4, 1.05, 40, 1, true).translate(0, 0.55, 0), glass, b, true);
+  mesh(new THREE.TorusGeometry(3.4, 0.04, 6, 48).rotateX(Math.PI / 2).translate(0, 1.08, 0), STEEL(), b, true);
+  mesh(new THREE.CylinderGeometry(1.25, 1.25, 3.2, 32, 1, true).translate(0, 1.6, 0), glass, b, true);
+  mesh(new THREE.CylinderGeometry(1.3, 1.3, 0.12, 32).translate(0, 3.25, 0), STEEL(), b, true);
+  // The first turns of the spiral stair, curling down into the well.
+  const treads: THREE.BufferGeometry[] = [];
+  for (let k = 0; k < 14; k++) { const a = (k / 14) * Math.PI * 1.5; treads.push(placed(new THREE.BoxGeometry(1.7, 0.04, 0.42), Math.cos(a) * 2.3, -0.18 * k, -Math.sin(a) * 2.3, a)); }
+  const tm = merged(treads, glass); b.group.add(tm); b.detail.push(tm);
+  // Plaza: fountains to the north and south of the cube, trees in granite planters along the edges.
+  for (const sz of [-1, 1]) fountain(b, 5, sz * 15.5, 13, 5.5, 9);
+  const planters: THREE.BufferGeometry[] = [];
+  const tp: [number, number, number][] = [];
+  for (const sz of [-1, 1]) for (let k = 0; k < 4; k++) {
+    const x = -6 + k * 7.5, z = sz * 24.5;
+    planters.push(new THREE.BoxGeometry(4.2, 0.46, 3.2).translate(x, 0.23, z));
+    tp.push([x, z, 1.05 + ((k * 7) % 3) * 0.08]);
+  }
+  const pl = merged(planters, GRANITE()); b.group.add(pl); b.detail.push(pl);
+  trees(b, tp, 0.46);
+  // Skylenses: round skylights, flush with the paving or raised to sit on.
+  const rims: THREE.BufferGeometry[] = [], lenses: THREE.BufferGeometry[] = [];
+  const spots: [number, number, number][] = [
+    [-9, -8, 0], [-9, 0, 0.42], [-9, 8, 0], [-13, -4, 0], [-13, 4, 0],
+    [9, -9, 0], [9, 9, 0], [13, -4, 0.42], [13, 4, 0.42], [17, -9, 0], [17, 0, 0], [17, 9, 0],
+    [21, -4, 0.42], [21, 4, 0], [0, -9.5, 0], [0, 9.5, 0], [25, -9, 0], [25, 9, 0],
+  ];
+  for (const [x, z, hh] of spots) {
+    const r = hh > 0 ? 1.15 : 0.85;
+    rims.push(new THREE.CylinderGeometry(r, r + 0.05, hh + 0.06, 28).translate(x, (hh + 0.06) / 2, z));
+    lenses.push(new THREE.CircleGeometry(r - 0.08, 28).rotateX(-Math.PI / 2).translate(x, hh + 0.065, z));
+  }
+  const rmm = merged(rims, STEEL()); b.group.add(rmm); b.detail.push(rmm);
+  const lm = merged(lenses, solidMat('apple-lens', 0xcfe2ea, 0.05, 0.2, 0xf4fbff, 0.25)); b.group.add(lm); b.detail.push(lm);
+  b.solids.push({ ring: rect(S, S), y0: 0, y1: S });
+  for (const sz of [-1, 1]) b.solids.push({ ring: rect(13, 5.5, 5, sz * 15.5), y0: 0, y1: 0.5 });
+  return b;
+};
+
+/** The General Motors Building: 50 floors of white Georgia marble piers over black windows. */
+const gmBuilding: Builder = (c) => {
+  const b = built();
+  // The map also has the whole block (podium and plaza) at full height: build the slab only.
+  const slab = c.rings.filter((r) => Math.abs(area(r.ring)) < 4500 && r.ring.length <= 400);
+  const parts = slab.length ? slab : [{ ring: rect(46, 62), holes: [] as number[][], y0: 0, y1: 214 }];
+  for (const p of parts) {
+    const top = Math.max(180, Math.min(216, p.y1));
+    tier(b, p.ring, Math.max(-1.5, p.y0), top - 4, 'gmMarble');
+    tier(b, offsetRing(p.ring, -0.6), top - 4, top, 'gmMarble', { mat: DARK() });
+    band(b, p.ring, top - 0.4, 0.6, 0.15, MARBLE());
+  }
+  return b;
+};
+
+/** Rockefeller Center's Channel Gardens: the six pools with their fountainheads, and the planted beds. */
+const channelGardens: Builder = () => {
+  const b = built();
+  // The promenade runs west (−x) from Fifth Avenue down to the Lower Plaza; beds and pools in a line.
+  for (let k = 0; k < 6; k++) {
+    const x = 28 - k * 11;
+    const beds = [new THREE.BoxGeometry(9, 0.6, 2.4).translate(x, 0.3, -4.2), new THREE.BoxGeometry(9, 0.6, 2.4).translate(x, 0.3, 4.2)];
+    const bm = merged(beds, GRANITE()); b.group.add(bm); b.detail.push(bm);
+    // Seasonal planting on the beds.
+    const fl = merged([new THREE.BoxGeometry(8.4, 0.25, 1.9).translate(x, 0.72, -4.2), new THREE.BoxGeometry(8.4, 0.25, 1.9).translate(x, 0.72, 4.2)], solidMat('cg-flowers', [0x6f9a3c, 0xc94a6a, 0xe0b23a][k % 3], 0.9, 0));
+    b.group.add(fl); b.detail.push(fl);
+    fountain(b, x, 0, 8, 2.6, 0);
+    mesh(new THREE.ConeGeometry(0.35, 0.9, 8).translate(x + 3.3, 0.9, 0), COPPER(), b, true);
+  }
+  return b;
+};
+
+// ------------------------------------------------------------------ Washington Square
+
+const washArch: Builder = () => {
+  const b = built();
+  const W = 18.9, H = 23.5, D = 4.6, ow = 9.1, spring = 14.3 - ow / 2;
+  mesh(archSlab(W, H - 3.6, ow, spring, -D / 2, D / 2), MARBLE(), b);
+  // Attic and cornice; the piers' plinths.
+  mesh(new THREE.BoxGeometry(W + 0.8, 0.9, D + 0.8).translate(0, H - 3.6 + 0.45, 0), MARBLE(), b);
+  mesh(new THREE.BoxGeometry(W - 0.4, 2.7, D - 0.2).translate(0, H - 1.35, 0), MARBLE(), b);
+  for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry((W - ow) / 2 + 0.4, 1.2, D + 0.6).translate(sx * (ow / 2 + (W - ow) / 4), 0.6, 0), MARBLE(), b, true);
+  // Washington statues on the north face's piers (dark against the marble), and the spandrel figures.
+  const st: THREE.BufferGeometry[] = [];
+  for (const sx of [-1, 1]) {
+    st.push(new THREE.BoxGeometry(2.0, 0.6, 1.1).translate(sx * 7.0, 1.5, -D / 2 - 0.6));
+    st.push(new THREE.CylinderGeometry(0.5, 0.65, 3.4, 8).translate(sx * 7.0, 3.5, -D / 2 - 0.6));
+    st.push(new THREE.SphereGeometry(0.36, 8, 6).translate(sx * 7.0, 5.5, -D / 2 - 0.6));
+    for (const sz of [-1, 1]) st.push(placed(new THREE.BoxGeometry(4.2, 1.4, 0.3), sx * 6.2, spring + 3.2, sz * (D / 2 + 0.12), 0, 0, sx * -0.5));
+  }
+  const sm = merged(st, STONE(0xd7d2c8)); b.group.add(sm); b.detail.push(sm);
+  for (const sx of [-1, 1]) b.solids.push({ ring: rect((W - ow) / 2, D, sx * (ow / 2 + (W - ow) / 4), 0), y0: 0, y1: H });
+  b.solids.push({ ring: rect(W, D), y0: 14.3, y1: H });
+  return b;
+};
+
+// ------------------------------------------------------------------ Paris
+
+/** Arc de Triomphe: the great arch along the Champs-Élysées axis, the cross arches, attic, reliefs. */
+const arcTriomphe: Builder = () => {
+  const b = built();
+  const W = 44.8, D = 22.2, H = 50, ow = 14.6, spring = 29.2 - ow / 2, side = 18.7;
+  const stone = STONE(0xdcd2bc);
+  // Front and back piers (the main arch cut through), and the middle with the side passages.
+  mesh(archSlab(W, H, ow, spring, -D / 2, -4.2), stone, b);
+  mesh(archSlab(W, H, ow, spring, 4.2, D / 2), stone, b);
+  mesh(archSlab(W, H, ow, spring, -4.2, 4.2, side), stone, b);
+  // Cornices: above the arches and the attic's crown.
+  mesh(new THREE.BoxGeometry(W + 1.6, 1.6, D + 1.6).translate(0, 37.8, 0), STONE(0xd2c7ae), b);
+  mesh(new THREE.BoxGeometry(W + 1.0, 1.2, D + 1.0).translate(0, H - 0.6, 0), STONE(0xd2c7ae), b);
+  mesh(new THREE.BoxGeometry(W + 0.6, 0.8, D + 0.6).translate(0, 21.5, 0), STONE(0xd2c7ae), b, true);
+  // The four great sculpture groups on the piers, the frieze, and the attic's shields.
+  const rel: THREE.BufferGeometry[] = [];
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const x = sx * (ow / 2 + (W / 2 - ow / 2) / 2);
+    rel.push(new THREE.BoxGeometry(9.5, 11.5, 0.9).translate(x, 9.5, sz * (D / 2 + 0.45)));
+    rel.push(new THREE.BoxGeometry(8.5, 4.2, 0.4).translate(x, 24.5, sz * (D / 2 + 0.2)));
+  }
+  for (const sz of [-1, 1]) rel.push(new THREE.BoxGeometry(W, 3.2, 0.35).translate(0, 34.4, sz * (D / 2 + 0.18)));
+  const rm = merged(rel, STONE(0xcfc4ab)); b.group.add(rm); b.detail.push(rm);
+  const shields: THREE.BufferGeometry[] = [];
+  for (const sz of [-1, 1]) for (let k = 0; k < 15; k++) shields.push(new THREE.CylinderGeometry(0.9, 0.9, 0.3, 12).rotateX(Math.PI / 2).translate(-W / 2 + 2 + k * ((W - 4) / 14), 44, sz * (D / 2 + 0.15)));
+  const shm = merged(shields, STONE(0xd8ceb6)); b.group.add(shm); b.detail.push(shm);
+  // Place Charles-de-Gaulle's island is cobbled granite setts, not lawn.
+  mesh(new THREE.CircleGeometry(48, 64).rotateX(-Math.PI / 2).translate(0, 0.06, 0), solidMat('setts', 0x9c968c, 0.95, 0), b);
+  // The Unknown Soldier's flame under the arch.
+  mesh(new THREE.ConeGeometry(0.35, 1.1, 8).translate(0, 0.6, 0), glowMat('arc-flame', 0xff9a3a, 2, 3), b, true);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) b.solids.push({ ring: rect((W - ow) / 2, (D - 8.4) / 2, sx * (ow / 2 + (W - ow) / 4), sz * (4.2 + (D - 8.4) / 4)), y0: 0, y1: H });
+  b.solids.push({ ring: rect(W, D), y0: 29.2, y1: H });
+  return b;
+};
+
+/** The Louvre Pyramid: glass on a diamond steel net, three pyramidions and the triangular pools. */
+const louvrePyramid: Builder = () => {
+  const b = built();
+  const net = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d')!;
+    g.clearRect(0, 0, 128, 128); g.strokeStyle = '#d9dde0'; g.lineWidth = 5;
+    g.beginPath(); g.moveTo(0, 0); g.lineTo(128, 128); g.moveTo(128, 0); g.lineTo(0, 128); g.stroke();
+    g.lineWidth = 3; g.strokeRect(0, 0, 128, 128);
+    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+    return new THREE.MeshStandardMaterial({ map: t, alphaTest: 0.5, transparent: false, side: THREE.DoubleSide, metalness: 0.8, roughness: 0.35 });
+  })();
+  const glass = clearGlass();
+  const big = (w: number, h: number, x: number, z: number) => {
+    mesh(pyramid(w, 0.05, 0, h).translate(x, 0, z), glass, b);
+    const g = pyramid(w, 0.05, 0, h, 4, Math.PI / 4).translate(x, 0, z);
+    // Net tiles ~3 m: rescale the loft's UVs (tiled in 2 m) to the lozenge size.
+    const uv = g.getAttribute('uv'); for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 0.66, uv.getY(i) * 0.66 * 1.45);
+    mesh(g, net, b, w > 10 ? false : true);
+  };
+  big(35.4, 21.6, 0, 0);
+  for (const [x, z] of [[0, -28], [0, 28], [28, 0]]) big(5.3, 3.4, x, z);
+  // Pools around it (seven triangles in the real plaza; four large ones here) with granite rims.
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    const tri = new THREE.Shape([new THREE.Vector2(sx * 20, sz * 20), new THREE.Vector2(sx * 38, sz * 20), new THREE.Vector2(sx * 20, sz * 38)]);
+    const wg = new THREE.ShapeGeometry(tri).rotateX(-Math.PI / 2).translate(0, 0.37, 0);
+    mesh(wg, WATER(), b, true);
+    const rim = new THREE.ExtrudeGeometry(tri, { depth: 0.35, bevelEnabled: false }).rotateX(-Math.PI / 2);
+    mesh(rim, GRANITE(), b, true);
+  }
+  b.solids.push({ ring: rect(30, 30), y0: 0, y1: 8 }, { ring: rect(18, 18), y0: 8, y1: 15 });
+  return b;
+};
+
+/** A pitched roof along x (ridge at the center), from x0 to x1, eaves at ±hw. */
+function gable(x0: number, x1: number, hw: number, y0: number, ridge: number) {
+  const s = new THREE.Shape([new THREE.Vector2(-hw, 0), new THREE.Vector2(hw, 0), new THREE.Vector2(0, ridge - y0)]);
+  return new THREE.ExtrudeGeometry(s, { depth: x1 - x0, bevelEnabled: false }).rotateY(-Math.PI / 2).translate(x1, y0, 0);
+}
+
+/** Notre-Dame de Paris: the west front with its two towers and rose, the nave and its flying buttresses, the spire. */
+const notreDame: Builder = () => {
+  const b = built();
+  const lead = solidMat('nd-lead', 0x737b82, 0.55, 0.35);
+  // Aisles and chapels, then the clerestory over the nave, transept and choir.
+  tier(b, rect(88, 40, -4, 0), 0, 20, 'cathedral');
+  tier(b, rect(88, 14, -4, 0), 20, 33, 'cathedral');
+  tier(b, rect(12, 48, 2, 0), 0, 33, 'cathedral');
+  // The apse: a half-round chevet.
+  const half = (r: number) => { const out: number[] = []; for (let k = 0; k <= 12; k++) { const a = -Math.PI / 2 + (k / 12) * Math.PI; out.push(40 + Math.cos(a) * r, Math.sin(a) * r); } return out; };
+  tier(b, half(20), 0, 20, 'cathedral');
+  tier(b, half(7), 20, 33, 'cathedral');
+  mesh(new THREE.ConeGeometry(7.6, 10, 24, 1, false, 0, Math.PI).translate(40, 38, 0), lead, b);
+  // Lead roofs.
+  mesh(gable(-48, 40, 7.6, 33, 43), lead, b);
+  const tr = gable(-24, 24, 6.6, 33, 43); tr.rotateY(Math.PI / 2).translate(2, 0, 0); mesh(tr, lead, b);
+  for (const sz of [-1, 1]) mesh(new THREE.BoxGeometry(88, 1.2, 13).translate(-4, 20.6, sz * 13.5), lead, b, true);
+  // Flying buttresses down both sides.
+  const fly: THREE.BufferGeometry[] = [];
+  for (let x = -44; x <= 36; x += 7) for (const sz of [-1, 1]) {
+    fly.push(new THREE.BoxGeometry(1.4, 22, 2.4).translate(x, 11, sz * 20.6));
+    fly.push(placed(new THREE.BoxGeometry(1.0, 1.2, 15), x, 26, sz * 13.5, 0, sz * -0.62));
+  }
+  const fm = merged(fly, STONE(0xd6ccb8)); b.group.add(fm);
+  // West front: three portals, the gallery of kings, the rose, the open gallery, then the towers.
+  tier(b, rect(14, 41, -55, 0), 0, 43, 'beaux', { mat: STONE(0xdcd3c2) });
+  const front: THREE.BufferGeometry[] = [];
+  for (const zz of [-13.2, 0, 13.2]) {
+    const s = new THREE.Shape(); s.moveTo(-3.2, 0); s.lineTo(-3.2, 7); s.quadraticCurveTo(-3.2, 11.5, 0, 12.5); s.quadraticCurveTo(3.2, 11.5, 3.2, 7); s.lineTo(3.2, 0); s.closePath();
+    front.push(new THREE.ShapeGeometry(s).rotateY(-Math.PI / 2).translate(-62.05, 0, zz));
+  }
+  const pm = merged(front, solidMat('nd-portal', 0x3a342e, 0.9, 0)); b.group.add(pm); b.detail.push(pm);
+  mesh(new THREE.BoxGeometry(0.6, 2.4, 40).translate(-62.2, 18, 0), STONE(0xcdc2ad), b, true);
+  mesh(new THREE.CircleGeometry(4.8, 40).rotateY(-Math.PI / 2).translate(-62.06, 27, 0), glowMat('nd-rose', 0x6a5cc8, 0.15, 2.2), b);
+  mesh(new THREE.TorusGeometry(4.9, 0.35, 6, 40).rotateY(Math.PI / 2).translate(-62.1, 27, 0), STONE(0xcdc2ad), b, true);
+  for (const sz of [-1, 1]) {
+    tier(b, rect(14, 14, -55, sz * 13.5), 43, 69, 'cathedral');
+    band(b, rect(14, 14, -55, sz * 13.5), 68.4, 0.8, 0.4, STONE(0xcdc2ad), true);
+  }
+  // The spire (rebuilt as Viollet-le-Duc's), lead over oak, at the crossing.
+  mesh(new THREE.CylinderGeometry(2.6, 3.2, 10, 8).translate(2, 48, 0), lead, b);
+  mesh(new THREE.ConeGeometry(2.6, 43, 8).translate(2, 74.5, 0), lead, b);
+  mesh(new THREE.ConeGeometry(0.25, 3, 6).translate(2, 97, 0), solidMat('gilt', 0xc9a24b, 0.35, 0.9), b, true);
+  return b;
+};
+
+// ------------------------------------------------------------------ elsewhere
+
+/** The Colosseum: four storeys of travertine arcades around the arena, on the map's own ellipse. */
+const colosseum: Builder = (c) => {
+  const b = built();
+  const ell: number[] = [];
+  for (let i = 0; i < 64; i++) { const a = (i / 64) * Math.PI * 2; ell.push(Math.cos(a) * 94.5, Math.sin(a) * 78); }
+  const inner: number[] = [];
+  for (let i = 63; i >= 0; i--) { const a = (i / 64) * Math.PI * 2; inner.push(Math.cos(a) * 43, Math.sin(a) * 27); }
+  const parts = c.rings.length ? c.rings.filter((r) => Math.abs(area(r.ring)) > 2000) : [];
+  const use = parts.length ? parts : [{ ring: ell, holes: [inner], y0: 0, y1: 48 }];
+  for (const p of use) {
+    const m = new THREE.Mesh(prism(p.ring, -1, 48, STYLES.travertine.tile, true, p.holes), facadeMat('travertine'));
+    m.castShadow = true; m.receiveShadow = true; b.group.add(m);
+    b.solids.push({ ring: p.ring, y0: 0, y1: 48 });
+    if (p.ring.length <= 400) { band(b, p.ring, 11, 0.8, 0.5, STONE(0xc6b593), true); band(b, p.ring, 23, 0.8, 0.5, STONE(0xc6b593), true); band(b, p.ring, 35, 0.8, 0.5, STONE(0xc6b593), true); }
+  }
+  return b;
+};
+
+/** Burj Khalifa: three wings around a hexagonal core stepping back in a spiral, then the spire. */
+const burj: Builder = () => {
+  const b = built();
+  const glass = facadeMat('blueGlass');
+  const wing = (len: number, w: number, a: number) => {
+    const ca = Math.cos(a), sa = Math.sin(a), out: number[] = [];
+    const pts: [number, number][] = [[0, -w / 2], [len - w / 2, -w / 2]];
+    for (let k = 0; k <= 8; k++) { const t = -Math.PI / 2 + (k / 8) * Math.PI; pts.push([len - w / 2 + Math.cos(t) * w / 2, Math.sin(t) * w / 2]); }
+    pts.push([0, w / 2]);
+    for (const [x, z] of pts) out.push(x * ca - z * sa, x * sa + z * ca);
+    return out;
+  };
+  let y = 0;
+  const steps = 27;
+  for (let t = 0; t < steps; t++) {
+    const y1 = t < 24 ? y + 24 : y + 14;
+    for (let k = 0; k < 3; k++) {
+      // Each wing gives up a bay in turn, so the setbacks wind up the tower.
+      const lost = Math.floor((t + (2 - k)) / 3);
+      const len = Math.max(9, 72 - lost * 7.2);
+      tier(b, wing(len, 27 - Math.min(10, t * 0.35), (k / 3) * Math.PI * 2 + Math.PI / 2), y, y1, 'blueGlass', { mat: glass, solid: t < 6 });
+    }
+    y = y1;
+  }
+  tier(b, ngon(6, 11), y, y + 60, 'blueGlass', { mat: glass });
+  mesh(new THREE.CylinderGeometry(0.8, 5.5, 828 - y - 60, 8).translate(0, (828 + y + 60) / 2, 0), STAINLESS(), b);
+  return b;
+};
+
+/** Sydney Opera House: the podium and two rows of white shells over the halls, the restaurant's pair. */
+const operaHouse: Builder = () => {
+  const b = built();
+  const tiles = solidMat('soh-tiles', 0xf1eee4, 0.32, 0.05);
+  tiles.side = THREE.DoubleSide;
+  const granite = solidMat('soh-podium', 0xc9a98a, 0.85, 0);
+  mesh(prism(rect(118, 183, 0, 4), -1, 9, [4, 4]), granite, b);
+  b.solids.push({ ring: rect(118, 183, 0, 4), y0: -1, y1: 9 });
+  // A shell: a curved triangle from a base line up to a leaning apex.
+  const shell = (cx: number, cz: number, w: number, hgt: number, lean: number, dir: number) => {
+    const N = 14, pos: number[] = [], idx: number[] = [];
+    for (let i = 0; i <= N; i++) for (let j = 0; j <= N; j++) {
+      const u = i / N, v = j / N;
+      const bx = (u - 0.5) * w * (1 - v), by = v * hgt, bz = dir * lean * v * v;
+      const bulge = Math.sin(Math.PI * v) * (1 - Math.pow(2 * u - 1, 2)) * w * 0.18;
+      pos.push(cx + bx, 9 + by, cz + bz - dir * bulge);
+    }
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) { const a = i * (N + 1) + j, c2 = a + N + 1; idx.push(a, c2, a + 1, a + 1, c2, c2 + 1); }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+    const m = new THREE.Mesh(g, tiles); m.castShadow = true; m.receiveShadow = true;
+    b.group.add(m);
+  };
+  // The halls point north (−z) out to the harbour: each row has shells opening both ways.
+  for (const [hx, s] of [[-26, 1], [26, 0.9]] as [number, number][]) {
+    shell(hx, -40, 50 * s, 58 * s, 26 * s, -1);
+    shell(hx, -18, 46 * s, 50 * s, 20 * s, 1);
+    shell(hx, 4, 40 * s, 40 * s, 16 * s, -1);
+    shell(hx, 20, 32 * s, 30 * s, 12 * s, 1);
+    b.solids.push({ ring: rect(40 * s, 70, hx, -10), y0: 9, y1: 9 + 40 * s });
+  }
+  shell(0, 74, 22, 18, 8, -1);
+  shell(0, 84, 18, 14, 6, 1);
+  return b;
+};
+
 export const BUILDERS: Record<string, Builder> = {
+  appleCube, gmBuilding, channelGardens, washArch, arcTriomphe, louvrePyramid, notreDame, colosseum, burj, operaHouse,
   empire, chrysler, owtc, flatiron, rock30, metlife, grandCentral, nypl, stPatricks, woolworth,
   park432, centralParkTower, steinway, vessel, msg, plaza, dakota, liberty, brooklynBridge,
   eiffel, bigBen, goldenGate, transamerica, tokyoTower,

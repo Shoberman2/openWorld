@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import type { Colliders } from '../player.ts';
 import { radialTex } from '../city/streets.ts';
-import { shared } from '../engine.ts';
+import { quality, shared } from '../engine.ts';
 import type { GeoFrame } from './frame.ts';
 import type { Pool } from './pool.ts';
 import type { ChunkOut, FootprintData, MeshData } from './build/types.ts';
@@ -199,8 +199,9 @@ export class Chunks {
   /** Keep building vertices on the CPU (home chunks, until projects have picked their buildings). */
   keepCpu = false;
   onChange: (() => void) | null = null;
-  radius0 = 700;
-  radius1 = 3200;
+  /** Street-detail radius and the lighter far ring (Ultra draws more of the city in detail). */
+  radius0 = quality.ultra ? 820 : 700;
+  radius1 = quality.ultra ? 3900 : 3200;
 
   constructor(public frame: GeoFrame, public e0: number, private pool: Pool, private colliders: Colliders, private country: string) {
     shared3 ??= makeShared();

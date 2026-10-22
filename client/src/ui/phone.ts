@@ -11,16 +11,22 @@ import { pulse } from '../pulse.ts';
 import { agentPicker, pickedAgent } from './agentPick.ts';
 import type { GameCtx } from '../ctx.ts';
 
+/** Alt frees the cursor while held (input.ts); Macs call it Option. */
+const ALT_KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌥ Option' : 'Alt';
+
 /** What the phone needs from the game world (main.ts provides these). */
 export interface PhoneHooks {
   /** Every project building in the current place. */
   sites(): { repo: Repo }[];
   setWaypoint(repoName: string): void;
+  /** Teleport to the street outside a project's front door, facing it. */
   travelTo(repoName: string): void | Promise<void>;
-  /** e.g. "Midtown Manhattan, New York City" — shown in Maps. */
+  /** Teleport there and walk straight in. */
+  enter?(repoName: string): void | Promise<void>;
+  /** e.g. "Midtown Manhattan, New York City" — shown in Travel. */
   placeName?(): string;
-  /** Your apartment: Maps' first row, reachable from anywhere. */
-  home?: { address: string; go(): void | Promise<void>; pin(): void };
+  /** Your apartment: Travel's first row, reachable from anywhere. */
+  home?: { address: string; go(): void | Promise<void>; pin(): void; enter?(): void | Promise<void> };
   /** The project whose building you're in (or last walked into), to preselect it for new tasks. */
   currentRepo?(): string | null;
   /** Opens the game's settings, if there is a settings screen. */
@@ -132,11 +138,12 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
   const changed = () => { for (const fn of listeners) fn(); };
 
   // ---------------------------------------------------------------- DOM
-  // Docked on the left edge: a slim tab when put away, a phone that slides out when opened.
+  // Docked on the left edge: a labelled "Phone" tab when minimized, a phone that slides out when opened.
   const btn = document.createElement('button');
   btn.id = 'phone-tab';
-  btn.title = 'Phone (P) · click or swipe right';
-  btn.innerHTML = `<span class="pt-grip"></span>${ICON.phone}<span class="phone-badge hidden"></span>
+  btn.title = 'Open your phone (P): agents, projects, chat, and teleport to work';
+  btn.setAttribute('aria-label', 'Open phone');
+  btn.innerHTML = `<span class="pt-grip"></span>${ICON.phone}<span class="pt-word">Phone</span><span class="phone-badge hidden"></span>
     <span class="pt-live hidden"><i></i><b>0</b></span>${kbd('phone')}`;
   document.body.appendChild(btn);
   keymap.onChange(() => { btn.querySelector('kbd')!.textContent = keymap.label('phone'); });
@@ -147,7 +154,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
   root.className = 'phone';
   root.setAttribute('aria-hidden', 'true');
   root.innerHTML = `
-    <button class="phone-stow" title="Put the phone away (P)">${ICON.left}</button>
+    <button class="phone-stow" title="Minimize the phone (P or Esc). It stays on the left edge." aria-label="Minimize phone">${ICON.left}<span>Minimize</span></button>
     <div class="phone-frame">
       <i class="pf-btn pf-action"></i><i class="pf-btn pf-vol1"></i><i class="pf-btn pf-vol2"></i><i class="pf-btn pf-power"></i>
       <div class="phone-screen">
@@ -157,7 +164,8 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
         <nav class="phone-tabs"></nav>
         <div class="phone-homebar" title="Home"></div>
       </div>
-    </div>`;
+    </div>
+    <div class="phone-lockhint" aria-hidden="true">Hold <kbd>${ALT_KEY}</kbd> or press ${kbd('phone')} to use your phone</div>`;
   document.body.appendChild(root);
   const viewEl = root.querySelector<HTMLDivElement>('.phone-view')!;
   const timeEl = root.querySelector<HTMLSpanElement>('.ps-time')!;
@@ -229,6 +237,9 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
       // Don't open over the title / loading screens.
       if (document.getElementById('hud')?.classList.contains('hidden')) return;
       e.preventDefault();
+      // Open while you're looking around with the mouse: P hands you the cursor for the phone (it doesn't
+      // put it away). Pressed again with the cursor free, it minimizes.
+      if (isOpen && document.pointerLockElement) { document.exitPointerLock(); return; }
       toggle();
     }
   });
@@ -239,7 +250,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     const live = [...ctx.agents.values()].filter((a) => LIVE.has(a.status)).length;
     liveEl.classList.toggle('hidden', live === 0);
     liveEl.querySelector('b')!.textContent = String(live);
-    btn.title = `Phone (P)${live ? ` · ${live} agent${live === 1 ? '' : 's'} working` : ''}`;
+    btn.title = `Open your phone (P)${live ? ` · ${live} agent${live === 1 ? '' : 's'} working` : ': agents, projects, chat, and teleport to work'}`;
   };
   tick();
   setInterval(tick, 1000);
@@ -353,18 +364,19 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     }
   });
 
-  // ---------------------------------------------------------------- open / close
+  // ---------------------------------------------------------------- open / minimize
   // The phone doesn't pause the game: keys still drive the robot (except while typing in a field), it
   // only frees the mouse so you can tap. Click the world to look around again; the phone stays out.
-  function open(app?: string) {
+  // It stays out until you minimize it (P, Esc or the Minimize handle), and remembers which you chose.
+  function open(app?: string, quiet = false) {
     if (!isOpen) {
       isOpen = true;
       root.classList.add('open');
       root.setAttribute('aria-hidden', 'false');
       btn.classList.add('active');
       document.body.classList.add('phone-docked');
-      if (document.pointerLockElement) document.exitPointerLock();
-      track('phone_opened', { app: app ?? view.app });
+      if (!quiet && document.pointerLockElement) document.exitPointerLock();
+      if (!quiet) { rememberDock('open'); track('phone_opened', { app: app ?? view.app }); }
     }
     const target: View | undefined = !app ? undefined : LEGACY[app] ?? (app in TAB_OF ? ({ app } as View) : undefined);
     if (target && (target.app !== view.app || target.app === 'home')) tab(target);
@@ -378,6 +390,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     btn.classList.remove('active');
     document.body.classList.remove('phone-docked');
     if (root.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
+    rememberDock('min');
   }
   function toggle() { if (isOpen) close(); else open(); }
 
@@ -500,7 +513,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     { id: 'home', name: 'Home', icon: ICON.home },
     { id: 'projects', name: 'Projects', icon: ICON.grid },
     { id: 'chat', name: 'Chat', icon: ICON.messages },
-    { id: 'map', name: 'Map', icon: ICON.map },
+    { id: 'map', name: 'Travel', icon: ICON.pin },
   ];
   function renderTabs() {
     const cur = TAB_OF[view.app];
@@ -541,6 +554,14 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
       <div class="hm-row"><input data-keep="home-task" placeholder="What should get done?" autocomplete="off" /><button class="pbtn" type="submit">Start</button></div>
     </form>`;
 
+    // One tap to any work building (the full list is in Travel).
+    const dests = destinations();
+    if (dests.length || hooks.home) {
+      html += `<h5 class="home-h">Teleport to work</h5><div class="hm-go">
+        ${dests.slice(0, 4).map(({ repo: r, busy }) => `<button class="hm-dest" data-go="${esc(r.name)}" title="Teleport to ${esc(r.name)}'s front door"><i style="background:${esc(r.brandColor || '#7a3dff')}"></i><span>${esc(r.name)}</span>${busy ? `<em>${busy}</em>` : ''}</button>`).join('')}
+        <button class="hm-dest more" data-tab-travel>${ICON.pin}<span>All places</span></button></div>`;
+    }
+
     const needs = waitingOnYou.length + red.length + agentPrs.length;
     html += `<h5 class="home-h">Needs you${needs ? ` · ${needs}` : ''}</h5>`;
     if (!needs) html += `<div class="home-idle"><b>You're all caught up.</b><p>Questions from agents, work to review, red CI and PRs from agents show up here.</p></div>`;
@@ -556,11 +577,12 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     html += `</div>`;
     viewEl.innerHTML = html;
 
-    viewEl.querySelector('[data-settings]')?.addEventListener('click', () => { close(); hooks.openSettings?.(); });
+    viewEl.querySelector('[data-settings]')?.addEventListener('click', () => hooks.openSettings?.());
     viewEl.querySelector('[data-brief]')?.addEventListener('click', () => {
-      openBriefingPanel({ travelTo: (r) => { close(); void hooks.travelTo(r); }, openAgent: (id) => openAgent(id) }, 'phone');
+      openBriefingPanel({ travelTo: (r) => teleport(r), openAgent: (id) => openAgent(id) }, 'phone');
     });
     viewEl.querySelector('[data-tab-projects]')?.addEventListener('click', () => tab({ app: 'projects' }));
+    viewEl.querySelector('[data-tab-travel]')?.addEventListener('click', () => tab({ app: 'map' }));
     viewEl.querySelectorAll<HTMLElement>('[data-project]').forEach((b) => b.addEventListener('click', () => { tab({ app: 'projects' }); go({ app: 'project', repo: b.dataset.project! }); }));
     viewEl.querySelectorAll<HTMLElement>('[data-pr-repo]').forEach((b) => b.addEventListener('click', () => {
       tab({ app: 'projects' });
@@ -568,7 +590,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
       go({ app: 'project', repo: b.dataset.prRepo!, sub: 'pr', n: Number(b.dataset.prN) });
     }));
     const form = viewEl.querySelector<HTMLFormElement>('[data-task]')!;
-    form.append(agentPicker({ onSettings: () => { close(); hooks.openSettings?.(); } }));
+    form.append(agentPicker({ onSettings: () => hooks.openSettings?.() }));
     const sel = form.querySelector('select')!;
     sel.addEventListener('change', () => { taskRepo = sel.value; });
     form.addEventListener('submit', async (e) => {
@@ -609,7 +631,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
         ${needsReview(a) ? `<button class="pbtn sm" data-review="${esc(a.id)}">Review${a.diffStat ? ` · ${esc(a.diffStat.replace(/ files? changed,?/, ' files'))}` : ''}</button>` : ''}
         ${working ? `<button class="pbtn sm danger" data-stop="${esc(a.id)}">Stop</button>` : ''}
         <button class="pbtn sm ghost" data-open="${esc(a.id)}">Log</button>
-        ${here ? `<button class="pbtn sm ghost" data-go="${esc(a.repo)}" title="Walk me there">Go</button>` : ''}
+        ${here ? `<button class="pbtn sm ghost" data-go="${esc(a.repo)}" title="Teleport to its building">Teleport</button>` : ''}
         ${a.prUrl ? `<a class="pbtn sm ghost" href="${esc(a.prUrl)}" target="_blank" rel="noopener">PR ↗</a>` : ''}
       </div>
     </div>`;
@@ -617,7 +639,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
 
   function bindAgentCards() {
     viewEl.querySelectorAll<HTMLElement>('[data-open]').forEach((b) => b.addEventListener('click', () => go({ app: 'agent', id: b.dataset.open! })));
-    viewEl.querySelectorAll<HTMLElement>('[data-go]').forEach((b) => b.addEventListener('click', () => { close(); void hooks.travelTo(b.dataset.go!); }));
+    viewEl.querySelectorAll<HTMLElement>('[data-go]').forEach((b) => b.addEventListener('click', () => teleport(b.dataset.go!)));
     viewEl.querySelectorAll<HTMLButtonElement>('[data-stop]').forEach((b) => b.addEventListener('click', async () => {
       // Stopping throws away work in progress: a second tap makes sure.
       if (!b.dataset.armed) {
@@ -715,7 +737,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     agentCard,
     bindAgentCards,
     hire,
-    travelTo: (repo) => { close(); void hooks.travelTo(repo); },
+    travelTo: (repo) => teleport(repo),
     canTravel: (repo) => hooks.sites().some((s) => s.repo.name === repo),
     leadAvatar: (r, name) => leadAvatar(r, name),
     toast: toastIn,
@@ -928,7 +950,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     const n = liveByRepo().get(repo) ?? 0;
     const here = hooks.sites().some((s) => s.repo.name === repo);
     let html = header(esc(repo), n ? `Lead · ${n} agent${n === 1 ? '' : 's'} working` : 'Project lead',
-      `<button class="pbtn sm ghost" data-project-page title="Open the project">Project</button>${here ? `<button class="pv-icon" data-go-building title="Go to the building">${ICON.map}</button>` : ''}`);
+      `<button class="pbtn sm ghost" data-project-page title="Open the project">Project</button>${here ? `<button class="pv-icon" data-go-building title="Teleport to its building">${ICON.map}</button>` : ''}`);
     html += `<div class="pv-scroll msgs">`;
     if (!list.length) {
       html += `<div class="msg-empty">${leadAvatar(r, repo).replace('lead-av', 'lead-av big')}<b>${esc(repo)} lead</b><p>The master agent for this project. It knows the code, the recent PRs and who's working in the building, and can send agents in. Text it from anywhere.</p></div>`;
@@ -952,7 +974,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     viewEl.innerHTML = html;
     bindCommon();
     bindDispatchCards();
-    viewEl.querySelector('[data-go-building]')?.addEventListener('click', () => { close(); void hooks.travelTo(repo); });
+    viewEl.querySelector('[data-go-building]')?.addEventListener('click', () => teleport(repo));
     viewEl.querySelector('[data-project-page]')!.addEventListener('click', () => { tab({ app: 'projects' }); go({ app: 'project', repo }); });
     const form = viewEl.querySelector('form')!;
     const input = form.querySelector('input')!;
@@ -1058,7 +1080,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
         </div>
         <div class="ad-actions">
           <button class="pbtn ghost" data-project-page>Project ›</button>
-          ${hooks.sites().some((s) => s.repo.name === a.repo) ? `<button class="pbtn ghost" data-go="${esc(a.repo)}">Go there</button>` : ''}
+          ${hooks.sites().some((s) => s.repo.name === a.repo) ? `<button class="pbtn ghost" data-go="${esc(a.repo)}">Teleport there</button>` : ''}
           ${working ? `<button class="pbtn danger" data-stop="${esc(a.id)}">Stop</button>` : ''}
           ${needsReview(a) ? `<button class="pbtn" data-review="${esc(a.id)}">Review changes</button>` : ''}
           ${needsInput(a) ? `<button class="pbtn" data-review="${esc(a.id)}">Answer</button>` : ''}
@@ -1103,33 +1125,83 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     }
   }
 
-  // ---- Map: your apartment and every project building here ----
+  // ---- Travel: teleport to any of your work buildings, or home. The phone stays out. ----
+  let teleporting = false;
+  /** Teleport to a project's front door (or inside), keeping the phone open on the same screen. */
+  async function teleport(repo: string, inside = false) {
+    if (teleporting) return;
+    teleporting = true;
+    renderBusy(repo);
+    try {
+      await (inside && hooks.enter ? hooks.enter(repo) : hooks.travelTo(repo));
+      toastIn(inside ? `You're inside ${repo}` : `Teleported to ${repo}. The door is in front of you.`);
+      track('phone_teleport', { inside });
+    } catch (e) { toastIn(`Couldn't teleport: ${(e as Error).message}`); }
+    teleporting = false;
+    if (isOpen) refresh();
+  }
+  async function teleportHome(inside = false) {
+    const h = hooks.home;
+    if (!h || teleporting) return;
+    teleporting = true;
+    renderBusy('home');
+    try {
+      await (inside && h.enter ? h.enter() : h.go());
+      toastIn(inside ? `You're home` : `Teleported home: ${h.address}`);
+      track('phone_teleport', { inside, home: true });
+    } catch (e) { toastIn(`Couldn't teleport: ${(e as Error).message}`); }
+    teleporting = false;
+    if (isOpen) refresh();
+  }
+  /** Grey out every teleport button and mark the one that's on its way. */
+  function renderBusy(id: string) {
+    viewEl.querySelectorAll<HTMLButtonElement>('[data-go], [data-in], [data-home]').forEach((b) => { b.disabled = true; });
+    const b = viewEl.querySelector<HTMLButtonElement>(id === 'home' ? '[data-home=go]' : `[data-go="${CSS.escape(id)}"]`);
+    if (b) b.textContent = 'Teleporting…';
+  }
+
+  /** Your work destinations: where agents are working first, then the biggest buildings. */
+  function destinations() {
+    const busy = liveByRepo();
+    const waiting = new Map<string, number>();
+    for (const a of inbox()) waiting.set(a.repo, (waiting.get(a.repo) ?? 0) + 1);
+    const rank = { landmark: 0, tower: 1, midrise: 2, small: 3 } as const;
+    return hooks.sites().map((s) => s.repo)
+      .sort((a, b) => (waiting.get(b.name) ?? 0) - (waiting.get(a.name) ?? 0) || (busy.get(b.name) ?? 0) - (busy.get(a.name) ?? 0) || rank[a.tier] - rank[b.tier] || b.score - a.score)
+      .map((r) => ({ repo: r, busy: busy.get(r.name) ?? 0, waiting: waiting.get(r.name) ?? 0 }));
+  }
+
   function renderMaps() {
-    const sites = hooks.sites();
-    const busy = new Map<string, number>();
-    for (const a of ctx.agents.values()) if (LIVE.has(a.status)) busy.set(a.repo, (busy.get(a.repo) ?? 0) + 1);
-    viewEl.innerHTML = `${tabHeader('Map')}<p class="pv-tabsub">${esc(hooks.placeName?.() ?? `${sites.length} buildings`)}</p>
-      <div class="maps-search"><input data-keep="maps" placeholder="Search projects" autocomplete="off" /></div>
+    const dests = destinations();
+    viewEl.innerHTML = `${tabHeader('Travel')}<p class="pv-tabsub">Teleport to your work · ${esc(hooks.placeName?.() ?? `${dests.length} buildings`)}</p>
+      <div class="maps-search"><input data-keep="maps" placeholder="Search your ${dests.length} work buildings" autocomplete="off" /></div>
       <div class="pv-scroll maps-list"></div>`;
     bindCommon();
     const list = viewEl.querySelector<HTMLElement>('.maps-list')!;
     const q = viewEl.querySelector<HTMLInputElement>('input')!;
     const draw = () => {
       const s = q.value.toLowerCase();
-      const home = hooks.home && (!s || `home ${hooks.home.address}`.toLowerCase().includes(s)) ? `<div class="map-row">
-          <span class="mr-pin" style="background:#3ddc97"></span>
-          <div><b>Home</b><small>${esc(hooks.home.address)}</small></div>
-          <button class="pbtn ghost sm" data-home="pin">Pin</button><button class="pbtn sm" data-home="go">Go</button></div>` : '';
-      list.innerHTML = home + sites
-        .filter(({ repo: r }) => !s || `${r.name} ${r.description}`.toLowerCase().includes(s))
-        .map(({ repo: r }) => `<div class="map-row">
-          <span class="mr-pin" style="background:${esc(r.brandColor)}"></span>
-          <div><b>${esc(r.name)}</b><small>${TIER[r.tier]}${busy.get(r.name) ? ` · <span class="good">${busy.get(r.name)} working</span>` : ''}</small></div>
-          <button class="pbtn ghost sm" data-wp="${esc(r.name)}">Pin</button><button class="pbtn sm" data-go="${esc(r.name)}">Go</button></div>`).join('');
-      list.querySelector<HTMLElement>('[data-home=pin]')?.addEventListener('click', () => { hooks.home!.pin(); close(); });
-      list.querySelector<HTMLElement>('[data-home=go]')?.addEventListener('click', () => { close(); void hooks.home!.go(); });
-      list.querySelectorAll<HTMLElement>('[data-wp]').forEach((b) => b.addEventListener('click', () => { hooks.setWaypoint(b.dataset.wp!); close(); }));
-      list.querySelectorAll<HTMLElement>('[data-go]').forEach((b) => b.addEventListener('click', () => { close(); void hooks.travelTo(b.dataset.go!); }));
+      const h = hooks.home;
+      let html = '';
+      if (h && (!s || `home ${h.address}`.toLowerCase().includes(s))) html += `<h5 class="home-h">Home</h5><div class="tv-card">
+          <span class="tv-ic home">${ICON.home}</span>
+          <div class="tv-txt"><b>Home</b><small>${esc(h.address)}</small></div>
+          <div class="tv-acts"><button class="pbtn sm" data-home="go" title="Teleport to your front door">Teleport</button>${h.enter ? `<button class="pbtn ghost sm" data-home="in" title="Teleport and go inside">Go inside</button>` : ''}<button class="pbtn ghost sm tv-wp" data-home="pin" title="Set a waypoint on the map instead">${ICON.flag}</button></div></div>`;
+      const rows = dests.filter(({ repo: r }) => !s || `${r.name} ${r.description}`.toLowerCase().includes(s));
+      if (rows.length) html += `<h5 class="home-h">Your work${!s ? ` · ${rows.length}` : ''}</h5>`;
+      html += rows.map(({ repo: r, busy, waiting }) => `<div class="tv-card">
+          <span class="tv-ic" style="background:${esc(r.brandColor || '#7a3dff')}">${esc(r.name.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '?')}</span>
+          <div class="tv-txt"><b>${esc(r.name)}</b><small>${TIER[r.tier]}${waiting ? ` · <span class="warn">${waiting} need${waiting === 1 ? 's' : ''} you</span>` : ''}${busy ? ` · <span class="good">${busy} agent${busy === 1 ? '' : 's'} working</span>` : ''}</small></div>
+          <div class="tv-acts"><button class="pbtn sm" data-go="${esc(r.name)}" title="Teleport to the front door">Teleport</button>${hooks.enter ? `<button class="pbtn ghost sm" data-in="${esc(r.name)}" title="Teleport and walk in">Go inside</button>` : ''}<button class="pbtn ghost sm tv-wp" data-wp="${esc(r.name)}" title="Set a waypoint on the map instead">${ICON.flag}</button></div></div>`).join('');
+      if (!html) html = `<div class="msg-empty"><b>${dests.length ? 'No matches' : 'No work buildings here'}</b><p>${dests.length ? 'Try another name.' : 'Your projects get buildings once GitHub is connected.'}</p></div>`;
+      list.innerHTML = html;
+      list.querySelector<HTMLElement>('[data-home=pin]')?.addEventListener('click', () => hooks.home!.pin());
+      list.querySelector<HTMLElement>('[data-home=go]')?.addEventListener('click', () => void teleportHome());
+      list.querySelector<HTMLElement>('[data-home=in]')?.addEventListener('click', () => void teleportHome(true));
+      list.querySelectorAll<HTMLElement>('[data-wp]').forEach((b) => b.addEventListener('click', () => hooks.setWaypoint(b.dataset.wp!)));
+      list.querySelectorAll<HTMLElement>('[data-go]').forEach((b) => b.addEventListener('click', () => void teleport(b.dataset.go!)));
+      list.querySelectorAll<HTMLElement>('[data-in]').forEach((b) => b.addEventListener('click', () => void teleport(b.dataset.in!, true)));
+      if (teleporting) viewEl.querySelectorAll<HTMLButtonElement>('[data-go], [data-in], [data-home]').forEach((b) => { b.disabled = true; });
     };
     q.addEventListener('input', draw);
     draw();
@@ -1176,6 +1248,10 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
   installRing(ctx, { onChange: () => { changed(); if (isOpen) refresh(); } });
 
   updateBadge();
+  // The phone starts out (minimized only if you minimized it last time). On a small screen it would cover
+  // the whole game, so there it starts minimized unless you left it open.
+  const dock = loadDock();
+  if (dock === 'open' || (dock === null && window.innerWidth > 720 && window.innerHeight > 560)) open(undefined, true);
   return {
     open, openThread, openProject, openAgent, close, toggle, isOpen: () => isOpen, app: () => (isOpen ? view.app : null),
     threads,
@@ -1195,6 +1271,14 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
 }
 
 // ---------------------------------------------------------------- helpers
+const DOCK = 'openworld.phone';
+function loadDock(): 'open' | 'min' | null {
+  try { const v = localStorage.getItem(DOCK); return v === 'open' || v === 'min' ? v : null; } catch { return null; }
+}
+function rememberDock(v: 'open' | 'min') {
+  try { localStorage.setItem(DOCK, v); } catch { /* private mode: default next time */ }
+}
+
 const TIER = { landmark: 'Skyscraper HQ', tower: 'Tower', midrise: 'Office building', small: 'Storefront' } as const;
 
 /** Escape, linkify URLs, keep line breaks (CSS pre-wrap). */
@@ -1238,6 +1322,8 @@ const ICON = {
   up: svg('<path d="M12 19V5M5 12l7-7 7 7"/>'),
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
   left: svg('<path d="M15 18l-6-6 6-6"/>'),
+  pin: svg('<path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.4"/>'),
+  flag: svg('<path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/>'),
   compose: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
   reply: svg('<path d="M9 17l-5-5 5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>'),
   signal: svg('<rect x="2" y="15" width="3" height="5" rx="1"/><rect x="7.5" y="11" width="3" height="9" rx="1"/><rect x="13" y="7" width="3" height="13" rx="1"/><rect x="18.5" y="3" width="3" height="17" rx="1"/>', true),

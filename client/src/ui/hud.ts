@@ -4,6 +4,7 @@
 // The control list lives in Settings now, not on screen.
 import { bearing, haversine } from '../earth/frame.ts';
 import { prefs, onPrefs } from '../prefs.ts';
+import { keymap } from '../keymap.ts';
 import './hud.css';
 
 export interface HudFrame {
@@ -37,6 +38,8 @@ export interface Hud {
   update(f: HudFrame): void;
   setMode(id: string): void;
   setVisible(on: boolean): void;
+  /** The Teleport button (bottom right) was pressed: open the map in teleport mode. */
+  onTeleport: (() => void) | null;
   /** Latest location lines (kept current even while the card is hidden), for Settings. */
   location: HudLocation;
   el: HTMLElement;
@@ -85,7 +88,7 @@ function fakeWeather(lat: number, lon: number, localTime: string, imperial: bool
   return imperial ? `${label} · ${Math.round(c * 9 / 5 + 32)} °F · wind ${wind} mph from the ${from}` : `${label} · ${Math.round(c)} °C · wind ${Math.round(wind * 1.609)} km/h from the ${from}`;
 }
 
-export function installHud(opts: { modes: { id: string; label: string; icon?: string }[]; onMode?: (id: string) => void }): Hud {
+export function installHud(): Hud {
   const root = document.getElementById('hud') ?? document.body;
   root.classList.add('ow-earth-hud');
   const el = document.createElement('div');
@@ -123,7 +126,10 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
       <div class="ow-nav-arrow">↑</div>
       <div class="ow-nav-text"><b></b><span></span><small><i></i><em></em></small></div>
     </div>
-    <div class="ow-modes">${opts.modes.map((m) => `<div class="ow-mode" data-id="${esc(m.id)}">${m.icon ? `<span class="ow-mode-i">${m.icon}</span>` : ''}<span>${esc(m.label)}</span></div>`).join('')}</div>
+    <button class="ow-tp-btn" type="button" title="Teleport: open the map and click one of your buildings to go straight inside">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-6.2 7-12a7 7 0 0 0-14 0c0 5.8 7 12 7 12z"/><path d="M12 6v6M9.5 9.5 12 12l2.5-2.5"/></svg>
+      <span>Teleport</span><kbd class="ow-tp-key">M</kbd>
+    </button>
     <div class="ow-attrib">${esc(ATTRIBUTION)}</div>`;
   root.appendChild(el);
 
@@ -139,12 +145,19 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
   const location: HudLocation = { coord: '', alt: '', hdg: '', weather: '', place: '', time: '' };
   const look = q('.ow-look'), lookTitle = q('.ow-look b'), lookSub = q('.ow-look span');
   let lookKey = '';
-  if (opts.onMode) el.querySelectorAll<HTMLElement>('.ow-mode').forEach((m) => { m.style.pointerEvents = 'auto'; m.style.cursor = 'pointer'; m.addEventListener('click', () => opts.onMode!(m.dataset.id!)); });
-  const setMode = (id: string) => el.querySelectorAll<HTMLElement>('.ow-mode').forEach((m) => m.classList.toggle('on', m.dataset.id === id));
+  // Teleport (bottom right): opens the map framed on your buildings; click one to go inside.
+  const tpBtn = q<HTMLButtonElement>('.ow-tp-btn'), tpKey = q('.ow-tp-key');
+  const showKey = () => { tpKey.textContent = keymap.label('map'); };
+  showKey();
+  keymap.onChange(showKey);
+  tpBtn.addEventListener('click', (e) => { e.stopPropagation(); tpBtn.blur(); api.onTeleport?.(); });
+  // No mode bar along the bottom any more: vehicles, the map and the camera are on their keys (see Settings).
+  const setMode = (_id: string) => {};
 
   let slow = 0;
   let wxText = '', wxAt = 0;
-  return {
+  const api: Hud = {
+    onTeleport: null,
     el,
     setMode,
     location,
@@ -180,6 +193,7 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
         nav.classList.add('hidden');
       }
 
+      tpBtn.classList.toggle('indoors', f.mode === 'indoors');
       const lk = lookLabels.on && f.mode !== 'indoors' ? f.looking ?? null : null;
       const key = lk ? lk.title + '|' + lk.sub : '';
       if (key !== lookKey) {
@@ -211,4 +225,5 @@ export function installHud(opts: { modes: { id: string; label: string; icon?: st
       time.textContent = location.time;
     },
   };
+  return api;
 }

@@ -160,10 +160,34 @@ export async function buildEarthPlace(place: GeoPlace, repos: Repo[], say: (m: s
   // ---- Life ----
   say('Filling the streets…');
   const top = sites[0];
-  const spawn = top ? top.approach.clone().addScaledVector(top.doorOut, 9) : new THREE.Vector3(0, 0, 0);
-  if (solid(spawn.x, spawn.z) || wet(spawn.x, spawn.z)) spawn.copy(top ? top.approach : new THREE.Vector3());
+  // Start in the open near your top HQ's door, facing it: 9 m out when that's clear, otherwise the nearest
+  // spot with room around it (doors can face an alley or a sidewalk shed hard against the next building).
+  const roomy = (x: number, z: number, r: number) => {
+    if (solid(x, z) || wet(x, z)) return false;
+    for (let k = 0; k < 12; k++) {
+      const a = (k / 12) * Math.PI * 2;
+      if (solid(x + Math.cos(a) * r, z + Math.sin(a) * r)) return false;
+    }
+    return true;
+  };
+  const door = top ? top.approach : new THREE.Vector3();
+  const spawn = top ? door.clone().addScaledVector(top.doorOut, 9) : new THREE.Vector3(0, 0, 0);
+  if (!roomy(spawn.x, spawn.z, 4)) {
+    let best: { x: number; z: number; s: number } | null = null;
+    for (let x = -30; x <= 30; x += 1.5) for (let z = -30; z <= 30; z += 1.5) {
+      const px = door.x + x, pz = door.z + z, d = Math.hypot(x, z);
+      if (d < 4 || d > 30 || !roomy(px, pz, 4)) continue;
+      // Prefer close to the door and out in front of it rather than round the side.
+      const front = top ? (x * top.doorOut.x + z * top.doorOut.z) / d : 1;
+      const s = d - front * 4;
+      if (!best || s < best.s) best = { x: px, z: pz, s };
+    }
+    if (best) spawn.set(best.x, 0, best.z);
+    else if (solid(spawn.x, spawn.z) || wet(spawn.x, spawn.z)) spawn.copy(door);
+  }
   spawn.y = heightAt(spawn.x, spawn.z);
-  const spawnFacing = top ? Math.atan2(-top.doorOut.x, -top.doorOut.z) : 0;
+  const toDoor = new THREE.Vector3(door.x - spawn.x, 0, door.z - spawn.z);
+  const spawnFacing = top ? (toDoor.lengthSq() > 1 ? Math.atan2(toDoor.x, toDoor.z) : Math.atan2(-top.doorOut.x, -top.doorOut.z)) : 0;
   const nyc = Math.abs(home.lat - 40.75) < 0.25 && Math.abs(home.lon + 73.98) < 0.3;
   // Busy streets: lots of cars and caretakers, all instanced; fewer on slow GPUs (?q=low) and in VR.
   const CARS = 320, BOTS = 300;

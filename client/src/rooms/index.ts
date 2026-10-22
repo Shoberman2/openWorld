@@ -8,6 +8,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { FloorViews, type CityViewPlacement } from './cityView.ts';
 import { planarUV, plasterDetail, surfaceMaterial, type SurfaceName } from './surfaces.ts';
 import { quality } from '../engine.ts';
+import { furnishStore, storeType, STORE_LOOK, type Poi, type StoreKit } from './stores.ts';
 import { Buf, Frame, backdropTexture, edgeDist, hex, inRing, insetRing, rng, signedArea, slab, wall, type Opening, type RGB } from './kit.ts';
 
 export type Kind = 'house' | 'apartments' | 'office' | 'shop' | 'mall' | 'church' | 'warehouse' | 'tower';
@@ -19,6 +20,8 @@ export interface BuildingInfo {
   floors?: number;
   kind?: Kind;
   name?: string;
+  /** The point of interest the building is (a named store, café, bank…): it picks the store's layout. */
+  poi?: Poi;
   doorWall: number; // index of the ring edge the player came through
   seed: number;
   country?: string;
@@ -98,11 +101,23 @@ interface Rect { u0: number; u1: number; v0: number; v1: number }
 
 export function buildGenericInterior(info: BuildingInfo): GenericInterior {
   const area = Math.abs(signedArea(info.ring));
-  const kind: Kind = info.kind ?? guessKind({ height: info.height, area, country: info.country, name: info.name });
+  let kind: Kind = info.kind ?? guessKind({ height: info.height, area, country: info.country, name: info.name });
+  // A low, wide building with a store in it (a bank, a supermarket) is that store, not a warehouse.
+  if (kind === 'warehouse' && info.poi && storeType(info.poi)) kind = 'shop';
   const S = SPECS[kind];
   const H = kind === 'church' ? Math.max(7, Math.min(info.height * 0.85, 16)) : kind === 'warehouse' ? Math.max(5, Math.min(info.height, 9)) : S.H;
   let floors = Math.max(1, Math.min(info.floors ?? Math.floor(info.height / H), S.maxFloors));
   if (kind === 'house') floors = Math.max(1, Math.min(floors, info.height >= 5.5 ? 2 : 1));
+  // A named store gets its own layout on the ground floor (and upstairs, in a store of its own).
+  const store = kind === 'church' || kind === 'mall' || kind === 'warehouse' || kind === 'house' ? null
+    : storeType(info.poi ?? (info.name ? { name: info.name, cls: '', sub: '' } : undefined)) ?? (kind === 'shop' ? 'shop' : null);
+  const look = store ? STORE_LOOK[store] : null;
+  const storeOn = (f: number) => !!look && (f === 0 || (look.upper && (kind === 'shop' || store === 'hotel')));
+  // Lifts where real buildings have them: offices, towers, apartment blocks, malls and hotels, or any
+  // building of four floors or more. Shops and houses use the stairs. Only towers, offices and
+  // apartment blocks have a roof terrace to ride up to.
+  const wantLift = (n: number) => n > 1 && (kind === 'office' || kind === 'tower' || kind === 'apartments' || kind === 'mall' || store === 'hotel' || n >= 4);
+  const roofStop = (n: number) => n > 1 && (kind === 'office' || kind === 'tower' || kind === 'apartments');
 
   const outer = insetRing(info.ring, 0.3);
   const n = outer.length / 2;
@@ -146,23 +161,25 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
   const coreAt = (u: number, v: number, len: number, lift: boolean): Rect => ({ u0: u - len / 2 - 1.3, u1: u + len / 2 + 1.3, v0: v - 1.7, v1: v + (lift ? 5.2 : 1.7) });
   if (floors > 1) {
     const cu0 = F.u(0, 0), cv0 = F.v(0, 0);
-    search: for (const lift of [true, false]) for (const len of [Math.min(7, H * 1.9), 4.6, 3.6]) {
+    search: for (const lift of wantLift(floors) ? [true, false] : [false]) for (const len of [Math.min(7, H * 1.9), 4.6, 3.6]) {
       let best = null as Core | null, bs = Infinity;
       for (let u = uMin; u <= uMax; u += 0.75) for (let v = vMin; v <= vMax; v += 0.75) {
         const r = coreAt(u, v, len, lift);
         if (overlap(r, doorZone) || !fits(r, 0.2)) continue;
-        const s = Math.hypot(u - cu0, v - cv0) * (kind === 'house' ? -0.3 : 1);
+        // Offices keep the core central; with a store on the ground floor the stairs and lift go to the
+        // back, away from its sales floor.
+        const s = store ? -Math.hypot(u - du, v - dv) : Math.hypot(u - cu0, v - cv0) * (kind === 'house' ? -0.3 : 1);
         if (s < bs) { bs = s; best = { cu: u, cv: v, len, lane: 1.3 }; }
       }
       if (best) { core = best; hasLift = lift; break search; }
     }
     if (!core) floors = 1;
   }
-  // The lift shaft: behind the stairs, or on its own (one-storey buildings, or no room by the stairs).
+  // The lift shaft: behind the stairs, or on its own (no room by the stairs).
   const LIFT_W = 1.9, LIFT_D = 1.75, SHAFT_D = LIFT_D + 0.46;
   let liftBase = core && hasLift ? { u: core.cu, v0: core.cv + core.lane + 0.05 } : null; // v0 = back of the shaft
   let liftRect: Rect | null = null;
-  if (!liftBase) {
+  if (!liftBase && wantLift(floors)) {
     const cu0 = F.u(0, 0), cv0 = F.v(0, 0);
     // Only the doorway itself has to stay clear here (small homes have no room for the full door zone).
     const doorway: Rect = { u0: du - 1.6, u1: du + 1.6, v0: dv - 2.2, v1: dv + 2.2 };
@@ -172,7 +189,7 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
       for (let u = uMin; u <= uMax; u += step) for (let v = vMin; v <= vMax; v += step) {
         const r: Rect = { u0: u - 1.3, u1: u + 1.3, v0: v, v1: v + SHAFT_D + landing };
         if (overlap(r, doorway) || !fits(r, 0.1) || (core && overlap(r, coreAt(core.cu, core.cv, core.len, false)))) continue;
-        const sc = Math.hypot(u - cu0, v + SHAFT_D / 2 - cv0);
+        const sc = store ? -Math.hypot(u - du, v + SHAFT_D / 2 - dv) : Math.hypot(u - cu0, v + SHAFT_D / 2 - cv0);
         if (sc < bs) { bs = sc; liftBase = { u, v0: v }; liftRect = r; }
       }
       if (liftBase) break;
@@ -192,7 +209,10 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xdfe9f1);
   const lite = quality.low || !!info.lite;
-  const hemi = new THREE.HemisphereLight(0xfff4e6, 0xa49a8c, 1.5);
+  // Sky light from above, and light bounced off the floor from below (it's what lights a real ceiling).
+  const lightMul = look?.light ?? 1;
+  const roomEnvOn = !!info.pmrem;
+  const hemi = new THREE.HemisphereLight(0xfff4e6, 0xbdb3a5, (roomEnvOn ? 0.5 : 1.3) * lightMul);
   scene.add(hemi);
   // The real sun, through the windows (walls and ceilings cast shadows, so light lands in patches).
   const sun = new THREE.DirectionalLight(0xfff0dc, 1.1);
@@ -209,7 +229,9 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
   // Image-based light: a soft studio room until the city view (captured per floor) replaces it.
   const pmrem = info.pmrem ?? null;
   const roomEnv = pmrem ? pmrem.fromScene(new RoomEnvironment(), 0.04) : null;
-  if (roomEnv) { scene.environment = roomEnv.texture; scene.environmentIntensity = 0.45; }
+  // Kept on every floor (the city view is only the backdrop), so rooms are evenly exposed: white walls
+  // and tables sit just under the bloom threshold, which a brighter room would haze over.
+  if (roomEnv) { scene.environment = roomEnv.texture; scene.environmentIntensity = 0.5 * lightMul; }
   const surfs: THREE.Material[] = [];
   const surf = (name: SurfaceName, opts: Parameters<typeof surfaceMaterial>[1] = {}) => { const m = surfaceMaterial(name, { lite, ...opts }); surfs.push(m); return m; };
   const solidMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0, side: THREE.DoubleSide });
@@ -221,15 +243,17 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
   const leafMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, side: THREE.DoubleSide });
   // Ceilings face down only: when the camera rises above one you look into the room (a cutaway).
   const FLOOR_SURF: Record<Kind, SurfaceName> = { house: 'oak', apartments: 'oak', office: 'carpet', tower: 'carpet', shop: 'tile', mall: 'terrazzo', church: 'stone', warehouse: 'epoxy' };
-  const floorMats = new Map<SurfaceName, THREE.Material>();
+  const floorMats = new Map<string, THREE.Material>();
   const floorMat = (f: number): THREE.Material => {
-    const name: SurfaceName = f === 0 && (kind === 'office' || kind === 'tower') ? 'marble' : f === 0 && kind === 'apartments' ? 'terrazzo' : FLOOR_SURF[kind];
-    let m = floorMats.get(name);
-    if (!m) { m = surf(name); floorMats.set(name, m); }
-    return m as THREE.Material;
+    const own = storeOn(f) && look && !(store === 'hotel' && f > 0);
+    const name: SurfaceName = own ? look.floor : store === 'hotel' && f > 0 ? 'carpetWarm' : f === 0 && (kind === 'office' || kind === 'tower') ? 'marble' : f === 0 && kind === 'apartments' ? 'terrazzo' : FLOOR_SURF[kind];
+    const key = own ? `${name}:${look.floorTint}` : name;
+    let m = floorMats.get(key);
+    if (!m) { m = surf(name, own ? { tint: look.floorTint } : {}); floorMats.set(key, m); }
+    return m;
   };
   const ceilMat = kind === 'office' || kind === 'tower' ? surf('acoustic') : surf('plaster', { tint: 0xf4f2ee, ceiling: true });
-  const views = new FloorViews(scene, info.view, (f) => new THREE.Vector3(0, f * H + 1.7, 0), 0.6);
+  const views = new FloorViews(scene, info.view, (f) => new THREE.Vector3(0, f * H + 1.7, 0), roomEnv ? null : 0.3);
   const viewTex = backdropTexture();
   // One-sided, facing in: from outside (the camera can poke out of the door) it's invisible.
   const viewMat = new THREE.MeshBasicMaterial({ map: viewTex, side: THREE.FrontSide });
@@ -270,7 +294,7 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
     const view: number[] = [], viewUv: number[] = [];
     const inter: RoomInteraction[] = [];
     const R = rng(info.seed * 31 + f * 7 + 1);
-    const floorCol = hex(S.floor), wallCol = hex(S.wall);
+    const floorCol = hex(S.floor), wallCol = hex(storeOn(f) && look ? look.wall : S.wall);
 
     // Floor and ceiling (with stair openings).
     const shaftHole = shaftRect ? [rectXZ(shaftRect)] : [];
@@ -600,8 +624,33 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
     };
     const rug = (u: number, v: number, w: number, d: number, fu: number, fv: number) => at(u, v, fu, fv)(0, 0, 0.002, w, 0.012, d, pick(PAL.rug));
 
-    if (kind === 'office' || kind === 'tower') {
-      lightGrid(3.6, y + H - 0.02);
+    // A named store: its own layout (claims its zone; the rest of a big ground floor stays the lobby).
+    const own = storeOn(f) && !!store;
+    let partial = false;
+    if (own) {
+      const walls: StoreKit['walls'] = [];
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const ax = outer[i * 2], az = outer[i * 2 + 1], dx = outer[j * 2] - ax, dz = outer[j * 2 + 1] - az, len = Math.hypot(dx, dz);
+        if (len < 1.2) continue;
+        const nin = inward(i);
+        walls.push({ u: F.u(ax, az), v: F.v(ax, az), tu: F.u(dx, dz) / len, tv: F.v(dx, dz) / len, nu: F.u(nin.x, nin.z), nv: F.v(nin.x, nin.z), len, front: f === 0 && i === dw });
+      }
+      const kit: StoreKit = {
+        R, y, H, f, floors, name: info.poi?.name ?? info.name ?? '', whole: kind === 'shop' || store === 'hotel', area, wallColor: wallCol,
+        solid, gloss, metal, glow, glass, leaves,
+        du, dv, iu: F.u(din.x, din.z), iv: F.v(din.x, din.z),
+        at, yaw: (fu, fv) => F.yaw(fu, fv), cyl, shape, collide, fits, occupied,
+        inside: (u, v, m) => { const x = F.x(u, v), z = F.z(u, v); return inRing(outer, x, z) && edgeDist(outer, x, z) >= m; },
+        walls, plant, chair, shelf, sofa, bed, officeChair,
+      };
+      partial = furnishStore(store, kit).partial;
+    }
+    if (own && (kind === 'shop' || store === 'hotel')) {
+      // The store is the whole floor; in a block-sized building, its stockroom is behind the partition.
+      if (partial && kind === 'shop') storage(placeGrid, fbox, solid, owner, y, R);
+    } else if (kind === 'office' || kind === 'tower') {
+      if (!own) lightGrid(3.6, y + H - 0.02);
       if (f === 0) {
         // Lobby: a stone reception desk facing the door, a lounge, plants.
         const ru = du + (F.u(din.x, din.z)) * 5, rv = dv + (F.v(din.x, din.z)) * 5;
@@ -647,7 +696,7 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
         placeGrid(0.8, 0.8, 9, 8, 0.7, 10, (u, v) => plant(u, v, 1.2));
       }
     } else if (kind === 'apartments' || kind === 'house') {
-      downlights(2.4, y + H);
+      if (!own) downlights(2.4, y + H);
       if (f === 0 && kind === 'apartments') {
         // Lobby: brass mailboxes, a bench, plants, a pendant.
         placeGrid(2.4, 0.4, 6, 6, 0.4, 2, (u, v) => {
@@ -693,37 +742,9 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
         placeGrid(0.8, 0.8, 6, 6, 0.5, 6, (u, v) => plant(u, v, 1.1));
       }
     } else if (kind === 'shop') {
+      // Upstairs in a shop: the stockroom.
       lightGrid(3, y + H - 0.02);
-      if (f === 0) {
-        const ru = du + F.u(din.x, din.z) * 3.2, rv = dv + F.v(din.x, din.z) * 3.2;
-        const fu = -F.u(din.x, din.z), fv = -F.v(din.x, din.z);
-        const p = at(ru + 2.4 * fv, rv - 2.4 * fu, fu, fv);
-        p(0, 0, 0, 1.8, 1.0, 0.7, PAL.walnut); p(0, 0, 1.0, 1.9, 0.04, 0.75, PAL.counter, gloss);
-        p(0.4, 0.1, 1.04, 0.32, 0.24, 0.28, PAL.black, gloss); p(0.4, 0.04, 1.1, 0.26, 0.16, 0.005, hex(0x7fd0ff), glow);
-        collide(ru + 2.4 * fv, rv - 2.4 * fu, 1.9, 0.75, fu, fv, 1.1);
-        // Gondola shelving stocked with goods.
-        placeGrid(3.6, 0.9, 4.2, 2.4, 0.8, 30, (u, v) => {
-          const q = at(u, v, 0, 1);
-          q(0, 0, 0, 3.6, 0.12, 0.9, PAL.black);
-          q(0, 0, 0.12, 3.6, 1.55, 0.06, PAL.steel, metal);
-          for (let sl = 0; sl < 4; sl++) {
-            const ly = 0.2 + sl * 0.42;
-            for (const side of [-1, 1]) {
-              q(0, side * 0.22, ly, 3.6, 0.02, 0.4, PAL.steel, metal);
-              let x = -1.72;
-              while (x < 1.7) { const bw = 0.12 + R() * 0.18; q(x + bw / 2, side * 0.24, ly + 0.02, bw - 0.01, 0.14 + R() * 0.2, 0.26, pick(PAL.signs)); x += bw; }
-            }
-          }
-          collide(u, v, 3.6, 0.9, 0, 1, 1.8);
-        });
-        placeGrid(1.0, 0.8, 8, 8, 0.4, 3, (u, v) => {
-          const q = at(u, v, 0, 1);
-          q(0, 0, 0, 1.0, 2.0, 0.8, PAL.steel, metal); q(0, 0.405, 0.15, 0.85, 1.7, 0.01, hex(0xdff3ff), glow);
-          for (let sl = 0; sl < 4; sl++) for (let c = 0; c < 5; c++) q(-0.34 + c * 0.17, 0.25, 0.2 + sl * 0.42, 0.1, 0.24, 0.1, pick(PAL.signs));
-          collide(u, v, 1.0, 0.8, 0, 1, 2);
-        });
-        placeGrid(0.6, 0.6, 9, 9, 1.5, 2, (u, v) => robot(u, v, 0, 1));
-      } else storage(placeGrid, fbox, solid, owner, y, R);
+      storage(placeGrid, fbox, solid, owner, y, R);
     } else if (kind === 'warehouse') {
       // High-bay lights and yellow safety lines on the epoxy floor.
       for (let u = uMin + 3; u < uMax - 2; u += 6) for (let v = vMin + 3; v < vMax - 2; v += 6) {
@@ -845,7 +866,8 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
     if (out) {
       sunDir.subVectors(out.position, out.target.position).normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), -(info.view?.yaw ?? 0));
       sun.color.copy(out.color);
-      sun.intensity = sunDir.y > 0.02 ? out.intensity * 0.9 : 0;
+      // Light through glass, after the window frames and the room's depth: about half the street's.
+      sun.intensity = sunDir.y > 0.02 ? out.intensity * 0.55 : 0;
     }
     const cy = cur * H + H / 2;
     sun.target.position.set(0, cy, 0);
@@ -868,7 +890,7 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
     // Floors above you are hidden, so a high camera sees down into this one.
     for (const [k, fl] of floorsLoaded) fl.group.visible = k <= f;
     lift?.view(f);
-    if (views.show(f)) hemi.intensity = 0.9;
+    views.show(f);
     aimSun();
     api.floor = f;
     api.title = `${info.name ?? KIND_NAME[kind]}${floors > 1 ? ` · ${f === 0 ? 'ground floor' : `floor ${f + 1}`}` : ''}`;
@@ -906,9 +928,9 @@ export function buildGenericInterior(info: BuildingInfo): GenericInterior {
   let lift: Lift | null = null;
   if (liftBase) {
     const stops: LiftStop[] = Array.from({ length: floors }, (_, f) => ({
-      y: f * H, label: f === 0 ? 'G' : String(f + 1), title: f === 0 ? (floors > 1 ? 'Ground floor · lobby' : 'Ground floor') : `Floor ${f + 1}`,
+      y: f * H, label: f === 0 ? 'G' : String(f + 1), title: f === 0 ? (store && store !== 'hotel' ? `Ground floor · ${info.name ?? 'the store'}` : 'Ground floor · lobby') : store === 'hotel' ? `Floor ${f + 1} · guest rooms` : `Floor ${f + 1}`,
     }));
-    stops.push({ y: floors * H, label: 'R', title: 'Roof · step out on top' });
+    if (roofStop(floors)) stops.push({ y: floors * H, label: 'R', title: 'Roof terrace · step outside on top' });
     const vc = liftBase.v0 + 0.2 + LIFT_D / 2;
     lift = new Lift({
       parent: scene, colliders, x: F.x(liftBase.u, vc), z: F.z(liftBase.u, vc), yaw: F.yaw(0, 1),

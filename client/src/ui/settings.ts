@@ -70,6 +70,13 @@ export function openSettings(tab: Tab = 'controls') {
   return panel;
 }
 
+/** In the game, which tier Auto picked for this computer (the engine stamps it on the page). */
+function autoNote() {
+  const t = document.documentElement.dataset.quality;
+  if (prefs.quality !== 'auto' || !t) return '';
+  return `Auto is using <b>${t === 'ultra' ? 'Ultra' : t === 'low' ? 'Performance' : 'High'}</b> on this computer. `;
+}
+
 // ---------- Controls ----------
 
 function controls(page: HTMLElement) {
@@ -170,8 +177,10 @@ function display(page: HTMLElement) {
       <section class="st-group">
         <h4>Graphics</h4>
         <div class="st-row">
-          <div class="st-act"><b>Quality</b><span>Performance renders at a lower resolution and streams a smaller area: for older laptops and VR. Changing it reloads; you'll be right back.</span></div>
+          <div class="st-act"><b>Quality</b><span>Ultra renders up to 4K with sharper shadows, finer ambient occlusion, extra antialiasing and more of the city in detail, and lowers the resolution by itself if frames run long. Performance renders less and streams a smaller area: for older laptops and VR. ${autoNote()}Changing it reloads; you'll be right back.</span></div>
           <div class="st-seg" role="radiogroup">
+            <button data-q="auto" aria-checked="${prefs.quality === 'auto'}">Auto</button>
+            <button data-q="ultra" aria-checked="${prefs.quality === 'ultra'}">Ultra</button>
             <button data-q="high" aria-checked="${prefs.quality === 'high'}">High</button>
             <button data-q="low" aria-checked="${prefs.quality === 'low'}">Performance</button>
           </div>
@@ -189,7 +198,7 @@ function display(page: HTMLElement) {
   const onClick = (e: MouseEvent) => {
     const t = (e.target as HTMLElement).closest<HTMLElement>('[data-toggle],[data-q]');
     if (!t) return;
-    if (t.dataset.q) { if (t.dataset.q !== prefs.quality) applyQuality(t.dataset.q as 'high' | 'low'); return; }
+    if (t.dataset.q) { if (t.dataset.q !== prefs.quality) applyQuality(t.dataset.q as typeof prefs.quality); return; }
     const id = t.dataset.toggle;
     if (id === 'loc') setPref('showLocation', !prefs.showLocation);
     else if (id === 'look') lookLabels.on = !lookLabels.on;

@@ -114,13 +114,12 @@ export class Buf {
   }
   /**
    * Oriented box: center (x, z), footprint w (along yaw-rotated x) by d, from y0 up h.
-   * `shade` darkens the sides slightly for a soft, toy-like read.
    */
   box(x: number, y0: number, z: number, w: number, h: number, d: number, yaw: number, col: RGB, top?: RGB) {
     const c = Math.cos(yaw), s = Math.sin(yaw);
     const P = (lx: number, ly: number, lz: number) => [x + lx * c + lz * s, y0 + ly, z - lx * s + lz * c];
     const hw = w / 2, hd = d / 2;
-    const side: RGB = [col[0] * 0.9, col[1] * 0.9, col[2] * 0.9];
+    const side = col; // the lights shade the sides; no painted-on darkening
     // +z, -z, +x, -x, top, bottom (all wound outward)
     this.quad(P(-hw, 0, hd), P(hw, 0, hd), P(hw, h, hd), P(-hw, h, hd), col);
     this.quad(P(hw, 0, -hd), P(-hw, 0, -hd), P(-hw, h, -hd), P(hw, h, -hd), side);

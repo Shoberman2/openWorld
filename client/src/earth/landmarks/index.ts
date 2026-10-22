@@ -12,7 +12,7 @@ import { haversine } from '../frame.ts';
 import { LANDMARKS, type Landmark } from './catalog.ts';
 import { nightMats, type Built } from './kit.ts';
 import { BUILDERS, latticeNight } from './models.ts';
-import { buildSigns, signStyleKey } from './signs.ts';
+import { buildSigns, signStyleKey, type StreetSigns } from './signs.ts';
 import { TKTS, buildScreens, screenTime, tktsSteps } from './timessq.ts';
 
 /** What the chunk manager exposes to the layer. */
@@ -45,7 +45,7 @@ export interface LookHit { title: string; sub: string; x: number; z: number }
 export class LandmarkLayer {
   group = new THREE.Group();
   private placed: Placed[] = [];
-  private poleGeo = new THREE.CylinderGeometry(0.055, 0.07, 3.6, 6).translate(0, 1.8, 0);
+  private poleGeo = new THREE.CylinderGeometry(0.06, 0.08, 3.72, 8).translate(0, 1.86, 0);
   private poleMat = new THREE.MeshStandardMaterial({ color: 0x1d3b2a, roughness: 0.6, metalness: 0.4 });
   private styleKey: string;
   private tkts: THREE.Group | null = null;
@@ -56,6 +56,8 @@ export class LandmarkLayer {
   /** Street signs on or off (survives the world re-centering, which makes a new layer). */
   static signsOn = true;
   showSigns = LandmarkLayer.signsOn;
+  /** Each detailed chunk's street signs (blades are built near the player). */
+  private signs = new Map<string, { s: StreetSigns; x0: number; z0: number }>();
 
   constructor(private host: Host, private colliders: Colliders, country: string) {
     this.group.name = 'landmarks';
@@ -91,8 +93,8 @@ export class LandmarkLayer {
       p.dirty = true;
     }
     if (o.lod !== 0) return;
-    const signs = buildSigns(o.edges, o.names, o.size, this.styleKey, this.poleGeo, this.poleMat);
-    if (signs) { signs.visible = this.showSigns; ch.group.add(signs); }
+    const signs = buildSigns(o.edges, o.size, this.styleKey, this.poleGeo, this.poleMat, o.poles, o.footprints);
+    if (signs) { signs.group.visible = this.showSigns; ch.group.add(signs.group); this.signs.set(ch.key, { s: signs, x0: ch.x0, z0: ch.z0 }); }
     const screens = buildScreens(this.host.frame, o.footprints, ch.x0, ch.z0);
     if (screens) ch.group.add(screens);
     // Footprints for look-at.
@@ -112,6 +114,8 @@ export class LandmarkLayer {
   }
 
   remove(chunkKey: string) {
+    // The chunk disposes the blades still in its group; this drops the rest of the bookkeeping.
+    this.signs.delete(chunkKey);
     for (const p of this.placed) if (p.claims.delete(chunkKey)) p.dirty = true;
     for (const k of this.fpOwners.get(chunkKey) ?? []) {
       const l = this.fpGrid.get(k);
@@ -202,6 +206,7 @@ export class LandmarkLayer {
 
     if (time - this.lastCheck < 0.5) return;
     this.lastCheck = time;
+    for (const { s, x0, z0 } of this.signs.values()) s.update(player.x - x0, player.z - z0);
     for (const p of this.placed) {
       const d = Math.hypot(player.x - p.x, player.z - p.z);
       // Only where the map is loaded (otherwise there's no ground, or the old building is still there).
@@ -323,6 +328,8 @@ export class LandmarkLayer {
   }
 
   dispose() {
+    for (const { s } of this.signs.values()) s.dispose();
+    this.signs.clear();
     for (const p of this.placed) {
       if (p.collide) this.colliders.removeOwner(`lm:${p.l.id}`);
       if (p.built) dispose(p.built.group);

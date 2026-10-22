@@ -133,16 +133,33 @@ export function buildScreens(frame: GeoFrame, footprints: FootprintData[], x0: n
       const j = (i + 1) % m;
       const ax = ring[i * 2] + x0, az = ring[i * 2 + 1] + z0, bx = ring[j * 2] + x0, bz = ring[j * 2 + 1] + z0;
       const len = Math.hypot(bx - ax, bz - az);
-      if (len < (isOne ? 4 : 9)) continue;
+      if (len < (isOne ? 4 : 5)) continue;
       // Footprints are clockwise in x/z: outward normal is (-dz, dx).
       const nx = -(bz - az) / len, nz = (bx - ax) / len;
       const mx = (ax + bx) / 2, mz = (az + bz) / 2;
       const s = nearestOnSeg(mx, mz, A, B);
       const tx = s.x - mx, tz = s.z - mz, td = Math.hypot(tx, tz);
-      if (!isOne && (td > 70 || (nx * tx + nz * tz) / (td || 1) < 0.45)) continue;
+      if (!isOne && (td > 70 || (nx * tx + nz * tz) / (td || 1) < 0.45 || (len < 9 && td > 48))) continue;
       const base = f.base;
       if (isOne) {
         quad(ax, az, bx, bz, nx, nz, base + 7, base + Math.min(f.h - 6, 112));
+        continue;
+      }
+      // Facing the bowtie itself the walls are screens edge to edge, stacked from the shop signs up.
+      if (td < 48) {
+        const top = Math.min(f.h - 3, 64);
+        if (top < 10) continue;
+        const cols = Math.max(1, Math.round(len / 13));
+        for (let p = 0; p < cols; p++) {
+          const t0 = p / cols + 0.008, t1 = (p + 1) / cols - 0.008;
+          const sx = ax + (bx - ax) * t0, sz = az + (bz - az) * t0, ex = ax + (bx - ax) * t1, ez = az + (bz - az) * t1;
+          let y = base + 4.6;
+          for (let row = 0; y < base + top - 4 && row < 4; row++) {
+            const hh = Math.min(base + top - y, 8 + ((n * 5 + row * 3) % 4) * 2.5);
+            quad(sx, sz, ex, ez, nx, nz, y, y + hh);
+            y += hh + 0.5;
+          }
+        }
         continue;
       }
       const top = Math.min(f.h - 3, 48);

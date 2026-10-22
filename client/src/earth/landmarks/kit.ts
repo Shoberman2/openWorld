@@ -193,6 +193,46 @@ export const STYLES: Record<string, FacadeStyle> = {
       windows(g, W, H, 1, 1, 0.44, 0.32, '#363e4a', lit, 0.4, '#efe8d8');
     },
   },
+  // The GM Building: continuous white Georgia marble piers, black recessed windows and spandrels.
+  gmMarble: {
+    tile: [1.55, 3.65], px: [64, 128], rough: 0.45, metal: 0.05, glow: 0xfff0d8,
+    paint(g, W, H, lit) {
+      if (!lit) {
+        g.fillStyle = '#1d2026'; g.fillRect(0, 0, W, H);
+        // Marble pier, a little veined, with a shadow on its far side.
+        g.fillStyle = '#eceae4'; g.fillRect(0, 0, W * 0.3, H);
+        g.fillStyle = 'rgba(160,160,160,0.18)'; for (let y = 0; y < H; y += 9) g.fillRect(W * 0.05, y, W * 0.18, 2);
+        g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(W * 0.3, 0, 2, H);
+        // Window: a dark pane with a sliver of sky, black spandrel below.
+        const grd = g.createLinearGradient(0, H * 0.06, 0, H * 0.74);
+        grd.addColorStop(0, '#5d6c80'); grd.addColorStop(0.4, '#2c3440'); grd.addColorStop(1, '#232830');
+        g.fillStyle = grd; g.fillRect(W * 0.36, H * 0.06, W * 0.6, H * 0.68);
+        g.fillStyle = '#3c4048'; g.fillRect(W * 0.36, H * 0.38, W * 0.6, 2);
+      } else {
+        g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+        if (rand(W * 3.1) < 0.5) { g.fillStyle = 'rgba(255,236,200,0.9)'; g.fillRect(W * 0.36, H * 0.06, W * 0.6, H * 0.68); }
+      }
+    },
+  },
+  // Roman travertine arcades (the Colosseum's outer wall): arches between engaged half-columns.
+  travertine: {
+    tile: [6.6, 11.5], px: [128, 224], rough: 0.95, metal: 0, glow: 0xffc27a,
+    paint(g, W, H, lit) {
+      if (!lit) {
+        g.fillStyle = '#cdbb98'; g.fillRect(0, 0, W, H);
+        g.fillStyle = 'rgba(110,90,60,0.22)'; for (let y = 0; y < H; y += 7) g.fillRect(0, y, W, 1);
+        // Weathering streaks.
+        for (let k = 0; k < 6; k++) { g.fillStyle = `rgba(90,75,55,${0.06 + rand(k) * 0.08})`; g.fillRect(rand(k + 3) * W, 0, 3 + rand(k + 9) * 6, H); }
+        // Engaged half-columns and the entablature.
+        g.fillStyle = '#d9c8a6'; g.fillRect(0, 0, W * 0.12, H); g.fillRect(W * 0.88, 0, W * 0.12, H);
+        g.fillStyle = '#bba887'; g.fillRect(0, H * 0.02, W, H * 0.07);
+      } else { g.fillStyle = '#000'; g.fillRect(0, 0, W, H); }
+      const x = W * 0.2, w = W * 0.6, y = H * 0.22, h = H * 0.78;
+      g.fillStyle = lit ? 'rgba(255,190,110,0.75)' : '#4a3f33';
+      g.beginPath(); g.moveTo(x, y + h); g.lineTo(x, y + w / 2); g.arc(x + w / 2, y + w / 2, w / 2, Math.PI, 0); g.lineTo(x + w, y + h); g.closePath(); g.fill();
+      if (!lit) { g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(x, y + w / 2, w * 0.12, h - w / 2); }
+    },
+  },
   // Golden Gate / Tokyo Tower / Eiffel: steel lattice (alpha-tested).
   lattice: {
     tile: [6, 6], px: [128, 128], rough: 0.6, metal: 0.35,

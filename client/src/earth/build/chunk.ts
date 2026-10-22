@@ -4,7 +4,7 @@ import { WORLD } from '../frame.ts';
 import { demFor } from '../dem.ts';
 import { clipLine, clipRing, decodeTile, num, str, type Layers } from '../mvt.ts';
 import { GROUND, regionKey, regionOf, taggedColor } from './palette.ts';
-import { GROUND_KIND, STYLE, STYLES, chooseStyle, encodeSeed, facadeDims, groundFromPoi } from './facades.ts';
+import { GROUND_KIND, STYLE, STYLES, chooseStyle, encodeSeed, facadeDims, groundFromPoi, knownStyle } from './facades.ts';
 import { Buf, alongY, cleanRing, cumLen, densify, disc, hash01, hashStr, inRing, reversed, ribbon, signedArea, strip, triangulate } from './geo.ts';
 import type { ChunkJob, ChunkOut, EdgeData, FootprintData, SignalData } from './types.ts';
 import { buildParks } from './parks.ts';
@@ -222,6 +222,19 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
     const x = p.x * S, zz = p.y * S, k = `${Math.floor(x / 40)},${Math.floor(zz / 40)}`;
     let l = poiGrid.get(k); if (!l) poiGrid.set(k, (l = [])); l.push({ x, z: zz, g });
   }
+  /** The map's points of interest along one wall (inside the building behind it, or just in front). */
+  const poisOn = (ax: number, az: number, tx: number, tz: number, len: number) => {
+    const out: { u: number; g: number }[] = [];
+    const x0 = Math.min(ax, ax + tx * len) - 10, x1 = Math.max(ax, ax + tx * len) + 10, z0 = Math.min(az, az + tz * len) - 10, z1 = Math.max(az, az + tz * len) + 10;
+    for (let i = Math.floor(x0 / 40); i <= Math.floor(x1 / 40); i++) for (let j = Math.floor(z0 / 40); j <= Math.floor(z1 / 40); j++)
+      for (const p of poiGrid.get(`${i},${j}`) ?? []) {
+        const u = (p.x - ax) * tx + (p.z - az) * tz, o = (p.x - ax) * -tz + (p.z - az) * tx;
+        if (u >= 0 && u <= len && o > -10 && o < 3) out.push({ u, g: p.g });
+      }
+    return out;
+  };
+  // How often shops put out an awning: Paris and southern Europe's cafés most, East Asia least.
+  const awnP = rk === 'fr' || rk === 'south' || rk === 'latin' || rk === 'levant' ? 1.35 : rk === 'asia' || rk === 'gulf' ? 0.6 : 1;
   /** The street-level kind the map's points of interest inside this footprint suggest (-1: none). */
   const groundOf = (ring: number[]) => {
     let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
@@ -269,9 +282,11 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       const h = Math.max(hTag, minH + 1.5);
       const lmId = lmZones.any ? lmZones.claim(cx, cz, h) : null;
       if (lmId) { lmClaims.push({ id: lmId, ring, holes: hs, base: gmin, top: gmin + h, minH }); return; }
-      const glass = h >= 70 ? seed < 0.55 : h >= 40 ? seed < 0.18 : h >= 18 ? seed < 0.03 : false;
+      // Ensembles everyone knows (Rockefeller Center, the Place des Vosges) are never glass.
+      const known = knownStyle(latAt(cz), lonAt(cx), h);
+      const glass = known >= 0 ? false : h >= 70 ? seed < 0.55 : h >= 40 ? seed < 0.18 : h >= 18 ? seed < 0.03 : false;
       // Architecture: from the neighborhood, height and footprint (facades.ts), and what's on the ground floor.
-      const style = glass ? STYLE.generic : chooseStyle(rk, job.country, latAt(cz), lonAt(cx), h, area, hash01(key + 101));
+      const style = known >= 0 ? known : glass ? STYLE.generic : chooseStyle(rk, job.country, latAt(cz), lonAt(cx), h, area, hash01(key + 101));
       const sty = STYLES[style];
       const poiG = lod === 0 && minH < 0.5 ? groundOf(ring) : -1;
       const groundK = poiG >= 0 ? poiG : h < 7 ? GROUND_KIND.none : sty.ground0 === 1 ? GROUND_KIND.shops : sty.ground0 === 2 ? (hash01(key + 103) < 0.55 ? GROUND_KIND.lobby : GROUND_KIND.shops) : GROUND_KIND.none;
@@ -279,7 +294,7 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       const tint = glass && hash01(key + 107) < 0.14 ? [0x4f7a6a, 0x7a5c44, 0x8a3c38, 0x3c5a86][Math.floor(hash01(key + 109) * 4)] : null;
       const pal = glass ? reg.glass : style === STYLE.generic ? reg.walls : sty.walls;
       const tagged = colourTag ? taggedColor(colourTag) : null;
-      const wall = tint ?? (!glass && tagged !== null && seed < 0.8 ? tagged : pal[Math.floor(hash01(key + 3) * pal.length)]);
+      const wall = tint ?? (!glass && known < 0 && tagged !== null && seed < 0.8 ? tagged : pal[Math.floor(hash01(key + 3) * pal.length)]);
       const roof = glass ? 0x9aa4ad : reg.roofs[Math.floor(hash01(key + 5) * reg.roofs.length)];
       const flat = (reg.flat ?? 0xc9c6bf) - Math.floor(hash01(key + 7) * 3) * 0x060606;
       const y0 = minH > 0.5 ? gmin + minH : gmin - 1.6;
@@ -371,7 +386,26 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       if (lod === 0 && !glass && h >= 7 && minH < 0.5 && dims.groundH > 0) {
         // Same shop-floor height as the facade shader (both read it from facades.ts).
         ledge(bld, ring, gmin + dims.groundH - 0.02, 0.13, 0.22, trimColor(W, key), sd, h, gmin);
-        shopfronts(bld, ring, streetR, gmin, dims.groundH, key, sd, h);
+        shopfronts(bld, ring, streetR, gmin, dims.groundH, key, sd, h, wallGround, poisOn, awnP, rk === 'us');
+      }
+      // A canopy over the main entrance of hotels and office towers, on the longest street front.
+      if (lod === 0 && minH < 0.5 && h >= 9 && !hs.length) {
+        let best = -1, bestLen = 0, hotel = false;
+        const n = ring.length / 2;
+        for (let q = 0; q < n; q++) {
+          const r = (q + 1) % n;
+          const len = Math.hypot(ring[r * 2] - ring[q * 2], ring[r * 2 + 1] - ring[q * 2 + 1]);
+          if (len < 8 || len <= bestLen) continue;
+          const nx = -(ring[r * 2 + 1] - ring[q * 2 + 1]) / len, nz = (ring[r * 2] - ring[q * 2]) / len;
+          const front = streetR.get((ring[q * 2] + ring[r * 2]) / 2 + nx * 4, (ring[q * 2 + 1] + ring[r * 2 + 1]) / 2 + nz * 4);
+          const k = glass ? (groundK > 0 ? groundK : GROUND_KIND.lobby) : front ? wallGround(front) : GROUND_KIND.none;
+          if (k === GROUND_KIND.hotel || (k === GROUND_KIND.lobby && h >= 30)) { best = q; bestLen = len; hotel = k === GROUND_KIND.hotel; }
+        }
+        if (best >= 0 && (hotel || hash01(key + 121) < 0.6)) {
+          const r = (best + 1) % n, ax = ring[best * 2], az = ring[best * 2 + 1];
+          const tx = (ring[r * 2] - ax) / bestLen, tz = (ring[r * 2 + 1] - az) / bestLen;
+          entranceCanopy(bld, ax, az, tx, tz, -tz, tx, bestLen, gmin, hotel, sd, h);
+        }
       }
       // Street-facing extras: stoops, fire escapes, sidewalk sheds.
       if (lod === 0 && !glass && minH < 0.5 && !hs.length) {
@@ -438,6 +472,35 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
         break;
       }
     }
+  }
+  // Gas stations: a canopy over the pumps, square to the nearest street and set back off it.
+  if (lod === 0) for (const p of layers.points.poi ?? []) {
+    if (str(p.props.class) !== 'fuel') continue;
+    let x = p.x * S, zz = p.y * S;
+    if (x < 10 || zz < 10 || x > size - 10 || zz > size - 10) continue;
+    let best = Infinity, dx = 1, dz = 0, ox = 0, oz = 0;
+    for (const f of layers.lines.transportation ?? []) {
+      if (!DRIVE.has(str(f.props.class))) continue;
+      for (const line of f.lines) for (let q = 2; q < line.length; q += 2) {
+        const ax = line[q - 2] * S, az = line[q - 1] * S, bx = line[q] * S, bz = line[q + 1] * S, L = Math.hypot(bx - ax, bz - az);
+        if (L < 1) continue;
+        const t = Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (zz - az) * (bz - az)) / (L * L)));
+        const cx = ax + (bx - ax) * t, cz = az + (bz - az) * t, d = Math.hypot(x - cx, zz - cz);
+        if (d < best) { best = d; dx = (bx - ax) / L; dz = (bz - az) / L; ox = cx; oz = cz; }
+      }
+    }
+    if (best > 60 || best < 0.5) continue;
+    // The map's point is often the kiosk: the pumps are in front of it, between it and the street.
+    const awayX = (x - ox) / best, awayZ = (zz - oz) / best;
+    for (let k = 0; k < 40 && occ.get(x, zz); k++) { x -= awayX; zz -= awayZ; }
+    if (occ.get(x, zz)) continue;
+    x -= awayX * 5; zz -= awayZ * 5;
+    // Off the roadway and sidewalk: step back until the forecourt's street edge is clear of them.
+    for (let k = 0; k < 8 && streetR.get(x - awayX * 4.5, zz - awayZ * 4.5); k++) { x += awayX * 1.5; zz += awayZ * 1.5; }
+    const corners = [[-8, -4.5], [8, -4.5], [8, 4.5], [-8, 4.5], [0, 0], [0, -4.5], [0, 4.5]];
+    if (corners.some(([a, c]) => occ.get(x + dx * a - dz * c, zz + dz * a + dx * c) || streetR.get(x + dx * a - dz * c, zz + dz * a + dx * c))) continue;    const cell = Math.min(CELLS - 1, Math.max(0, Math.floor((zz / size) * CELLS))) * CELLS + Math.min(CELLS - 1, Math.max(0, Math.floor((x / size) * CELLS)));
+    const key = hashStr(`${Math.round(x)},${Math.round(zz)}`);
+    fuelCanopy(cells[cell], x, zz, dx, dz, hAt(x, zz), encodeSeed(hash01(key), false, STYLE.generic, 0), key);
   }
   if (lod === 0) assignHousenumbers(layers, footprints, S);
 
@@ -547,6 +610,45 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
     }
   }
 
+  // Street names: the map draws them as their own lines, so each street edge takes the name of the
+  // nearest name line running the same way (signs, signals and the HUD read it).
+  if (lod === 0) {
+    const G = 30, segs = new Map<string, number[]>(), names: string[] = [];
+    for (const f of layers.lines.transportation_name ?? []) {
+      const name = str(f.props.name_en) || str(f.props.name);
+      if (!name) continue;
+      const id = names.push(name) - 1;
+      for (const l of f.lines) for (let q = 0; q + 3 < l.length; q += 2) {
+        const ax = l[q] * S, az = l[q + 1] * S, bx = l[q + 2] * S, bz = l[q + 3] * S;
+        for (let gx = Math.floor(Math.min(ax, bx) / G); gx <= Math.floor(Math.max(ax, bx) / G); gx++)
+          for (let gz = Math.floor(Math.min(az, bz) / G); gz <= Math.floor(Math.max(az, bz) / G); gz++) {
+            const k = `${gx},${gz}`; let s = segs.get(k); if (!s) segs.set(k, (s = [])); s.push(ax, az, bx, bz, id);
+          }
+      }
+    }
+    const nameAt = (x: number, z: number, dx: number, dz: number) => {
+      let best = -1, bd = 9;
+      const s = segs.get(`${Math.floor(x / G)},${Math.floor(z / G)}`);
+      for (let q = 0; s && q < s.length; q += 5) {
+        const ex = s[q + 2] - s[q], ez = s[q + 3] - s[q + 1], l2 = ex * ex + ez * ez;
+        if (l2 < 0.01 || Math.abs((ex * dx + ez * dz) / Math.sqrt(l2)) < 0.85) continue; // must run the same way
+        const t = Math.max(0, Math.min(1, ((x - s[q]) * ex + (z - s[q + 1]) * ez) / l2));
+        const d = Math.hypot(x - s[q] - ex * t, z - s[q + 1] - ez * t);
+        if (d < bd) { bd = d; best = s[q + 4]; }
+      }
+      return best < 0 ? null : names[best];
+    };
+    const tmpN = { x: 0, z: 0, y: 0, tx: 0, tz: 0 };
+    for (const e of edges) {
+      if (!e.drive || e.cls === 'service') continue;
+      const cum = cumLen(e.pts), len = cum[cum.length - 1];
+      for (const f of [0.5, 0.25, 0.75]) {
+        alongY(e.pts, e.ys, cum, len * f, tmpN);
+        if ((e.name = nameAt(tmpN.x, tmpN.z, tmpN.tx, tmpN.tz))) break;
+      }
+    }
+  }
+
   // Intersections, signals, markings, lamps.
   const signals: SignalData[] = [];
   const poles: number[] = [];
@@ -568,7 +670,19 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
         if (y) disc(roadBuf, nd.x, nd.z, nd.maxW / 2, y, 14, [-1, 0]);
       }
       const minor = nd.edges.filter((e) => e.drive && !MAJOR.has(e.cls)).length;
-      const isSignal = nd.drive >= 3 && !nd.edges.some((e) => e.bridge || e.cls === 'motorway' || e.cls === 'service') && (nd.major >= 2 || (nd.major >= 1 && minor >= 2 && nd.maxW >= 10));
+      const plain = nd.drive >= 3 && !nd.edges.some((e) => e.bridge || e.cls === 'motorway' || e.cls === 'service');
+      // Busy town crossings of two named streets get lights too (not quiet suburban corners: there must be buildings close by).
+      const crossing = () => {
+        if (nd.drive < 4 || nd.maxW < (us ? 8 : 9.5) || new Set(nd.edges.filter((e) => e.drive && e.name).map((e) => e.name)).size < 2) return false;
+        // Buildings in at least two directions, looking a few distances out (building lines sit anywhere from 5 to 15 m back).
+        let built = 0;
+        for (let q = 0; q < 8; q++) {
+          const cx = Math.cos(q * 0.785), cz = Math.sin(q * 0.785);
+          if ([5, 9, 14].some((d) => occ.get(nd.x + cx * (nd.maxW / 2 + d), nd.z + cz * (nd.maxW / 2 + d)))) built++;
+        }
+        return built >= 2;
+      };
+      const isSignal = plain && (nd.major >= 2 || (nd.major >= 1 && minor >= 2 && nd.maxW >= 10) || crossing());
       if (isSignal) {
         const d = leaving(nd.edges[0], nd.edges[0].a === key);
         sigNodes.push({ key, nd, phase: hash01(hashStr(key)) * 30, ref: Math.atan2(d.z, d.x) });
@@ -641,8 +755,10 @@ export async function buildChunk(job: ChunkJob): Promise<{ out: ChunkOut; transf
       // Street trees on city streets.
       if (['minor', 'tertiary', 'secondary', 'primary'].includes(e.cls) && !e.bridge) {
         const spacing = tropical ? 15 : 11;
+        // Keep the corners clear (the signal and sign poles, the crossings): trees start past them.
+        const clearA = Math.max(6, (nodes.get(e.a)?.maxW ?? 0) / 2 + 5), clearB = Math.max(6, (nodes.get(e.b)?.maxW ?? 0) / 2 + 5);
         let q = 0;
-        for (let sv = 6; sv < len - 6; sv += spacing, q++) {
+        for (let sv = clearA; sv < len - clearB; sv += spacing, q++) {
           if (hash01(hashStr(e.a) + q * 7) < 0.35) continue;
           alongY(e.pts, e.ys, cum, sv, tmp);
           const sd = q % 2 ? 1 : -1, off = e.width / 2 + 1.5;
@@ -1142,45 +1258,141 @@ function ledge(b: Buf, ring: number[], y: number, proj: number, thick: number, c
   }
 }
 
+// Awning canvas (dark green, burgundy, navy, black, tan, red, slate, brown) and blade-sign colors.
 const AWNINGS: RGB[] = [[34, 72, 48], [112, 30, 32], [30, 44, 76], [30, 30, 32], [150, 122, 84], [140, 34, 26], [82, 86, 90], [96, 60, 36]];
+const STRIPES: RGB[] = [[30, 72, 50], [120, 28, 34], [32, 50, 96], [150, 40, 32]];
 const SIGNS: RGB[] = [[196, 44, 34], [232, 184, 46], [34, 96, 168], [236, 236, 230], [34, 142, 92], [206, 96, 34], [120, 40, 120]];
+/** Facade codes for trim faces (see style.ts): plain, lit sign, awning canvas, striped canvas. */
+const TRIM = -3, LIT = -4, CANVAS = -5, STRIPED = -6;
 
-/** Blade signs over the ground-floor shop bays of walls that face a street (awnings are kept but switched off). */
-function shopfronts(b: Buf, ring: number[], streetR: Raster, gmin: number, gH: number, key: number, sd: number, h: number) {
+/** A map point of interest on a wall: how far along it (m) and its street-level kind. */
+interface WallPoi { u: number; g: number }
+
+/**
+ * Street-front shops, one business per 7.5 m of frontage (as the facade shader lays them out): fabric
+ * awnings over the windows (cafés and restaurants most, where the map has one most of all; striped or
+ * plain), and blade signs over the sidewalk where there's no awning.
+ */
+function shopfronts(b: Buf, ring: number[], streetR: Raster, gmin: number, gH: number, key: number, sd: number, h: number,
+  kindOf: (front: number) => number, poisOn: (ax: number, az: number, tx: number, tz: number, len: number) => WallPoi[], awnP: number, gates: boolean) {
   const n = ring.length / 2;
+  const bandBot = gH - 1.15;
   for (let q = 0; q < n; q++) {
     const r = (q + 1) % n;
     const ax = ring[q * 2], az = ring[q * 2 + 1], bx = ring[r * 2], bz = ring[r * 2 + 1];
     const len = Math.hypot(bx - ax, bz - az);
     if (len < 4.5) continue;
     const tx = (bx - ax) / len, tz = (bz - az) / len, nx = -tz, nz = tx;
-    const mx = (ax + bx) / 2 + nx * 4, mz = (az + bz) / 2 + nz * 4;
-    if (!streetR.get(mx, mz)) continue;
+    const front = streetR.get((ax + bx) / 2 + nx * 4, (az + bz) / 2 + nz * 4);
+    if (!front) continue;
+    const wk = kindOf(front);
+    if (wk === GROUND_KIND.none || wk === GROUND_KIND.lobby || wk === GROUND_KIND.bank || wk === GROUND_KIND.hotel) continue;
+    const P = (u: number, out: number, y: number) => [ax + tx * u + nx * out, y, az + tz * u + nz * out];
+    const pois = poisOn(ax, az, tx, tz, len);
+    const covered: [number, number][] = [];
+    const groups = Math.floor(len / 7.5) + (len % 7.5 >= 3.5 ? 1 : 0);
+    for (let g = 0; g < groups; g++) {
+      const g0 = g * 7.5, g1 = Math.min(len, g0 + 7.5);
+      const here = pois.filter((p) => p.u >= g0 - 0.5 && p.u < g1 + 0.5);
+      const eats = here.some((p) => p.g === GROUND_KIND.restaurant);
+      const p0 = eats ? 0.85 : here.length ? 0.45 : wk === GROUND_KIND.restaurant ? 0.5 : wk === GROUND_KIND.bodega ? 0.3 : wk === GROUND_KIND.boutique ? 0.15 : 0.2;
+      if (hash01(key * 13 + q * 191 + g * 37) >= Math.min(0.92, p0 * awnP)) {
+        // No awning: in American cities, often the steel box of a roll-down security gate over the window.
+        if (gates && hash01(key + q * 23 + g * 41) < (wk === GROUND_KIND.bodega ? 0.8 : 0.45))
+          wallBox(b, ax, az, tx, tz, nx, nz, g0 + 0.25, g1 - 0.25, 0.02, 0.3, gmin + bandBot - 0.34, gmin + bandBot - 0.02, [96, 98, 100], sd, h, gmin, true);
+        continue;
+      }
+      // Cafés and restaurants put out deeper awnings, often striped.
+      const cafe = eats || (wk === GROUND_KIND.restaurant && !here.length);
+      const r2 = hash01(key + q * 19 + g * 7);
+      const striped = cafe && r2 < 0.4;
+      const col = striped ? STRIPES[Math.floor(r2 * 10) % 4] : AWNINGS[Math.floor(hash01(key + q * 7 + g * 3) * AWNINGS.length)];
+      const out = cafe ? 1.6 + r2 * 0.7 : 1.05 + r2 * 0.4;
+      const yT = gmin + bandBot + 0.05, val = 0.24;
+      // Slope down and out, but leave headroom on the sidewalk.
+      const yL = Math.max(yT - out * 0.48, gmin + 2.3 + val);
+      if (yL > yT - 0.15) continue;
+      awning(b, P, nx, nz, tx, tz, g0 + 0.3, g1 - 0.3, out, yT, yL, val, col, striped ? STRIPED : CANVAS, hash01(key + g * 5) < 0.5, gmin, sd, h);
+      covered.push([g0, g1]);
+    }
+    // Blade signs sticking out over the sidewalk (lit at night), on shops without an awning.
     const bays = Math.floor(len / 4.2);
     for (let k = 0; k < bays; k++) {
-      const rr = hash01(key * 7 + q * 131 + k * 17);
-      const u0 = 4.2 * k + 0.42, u1 = 4.2 * k + 3.78;
-      const P = (u: number, out: number, y: number) => [ax + tx * u + nx * out, y, az + tz * u + nz * out];
-      if (rr < 0) {
-        // Fabric awning (off: the lit shop windows and their sign band are the look): sloping out and down from just over the shop window, with a valance.
-        const col = AWNINGS[Math.floor(hash01(key + q * 7 + k * 3) * AWNINGS.length)];
-        const yT = gmin + gH - 0.4, yL = yT - 0.55, out = 1.15;
-        const sl = Math.hypot(out, 0.55), nup: [number, number, number] = [nx * 0.55 / sl, out / sl, nz * 0.55 / sl];
-        face4(b, [P(u0, out, yL), P(u1, out, yL), P(u1, 0.02, yT), P(u0, 0.02, yT)], nup, col, u0, u1, gmin, sd, h);
-        const dark: RGB = [col[0] * 0.55, col[1] * 0.55, col[2] * 0.55];
-        face4(b, [P(u0, 0.02, yT), P(u1, 0.02, yT), P(u1, out, yL), P(u0, out, yL)], [-nup[0], -nup[1], -nup[2]], dark, u0, u1, gmin, sd, h);
-        face4(b, [P(u0, out, yL - 0.24), P(u1, out, yL - 0.24), P(u1, out, yL), P(u0, out, yL)], [nx, 0, nz], col, u0, u1, gmin, sd, h);
-        face4(b, [P(u1, out, yL - 0.24), P(u0, out, yL - 0.24), P(u0, out, yL), P(u1, out, yL)], [-nx, 0, -nz], dark, u1, u0, gmin, sd, h);
-      } else if (rr < 0.14) {
-        // Blade sign sticking out over the sidewalk (lit at night).
-        const col = SIGNS[Math.floor(hash01(key + q * 5 + k * 11) * SIGNS.length)];
-        const u = u0 + 0.2, y0 = gmin + gH + 0.35, y1 = y0 + 1.1 + hash01(key + k) * 0.8, o0 = 0.15, o1 = 0.95, th = 0.05;
-        face4(b, [P(u - th, o0, y0), P(u - th, o1, y0), P(u - th, o1, y1), P(u - th, o0, y1)], [-tx, 0, -tz], col, 0, 0.8, gmin, sd, h, -4);
-        face4(b, [P(u + th, o1, y0), P(u + th, o0, y0), P(u + th, o0, y1), P(u + th, o1, y1)], [tx, 0, tz], col, 0, 0.8, gmin, sd, h, -4);
-        const edge: RGB = [40, 40, 42];
-        face4(b, [P(u - th, o1, y0), P(u + th, o1, y0), P(u + th, o1, y1), P(u - th, o1, y1)], [nx, 0, nz], edge, 0, 0.1, gmin, sd, h);
-      }
+      const u0 = 4.2 * k + 0.42;
+      if (hash01(key * 7 + q * 131 + k * 17) >= 0.14 || covered.some(([c0, c1]) => u0 > c0 - 1 && u0 < c1 + 1)) continue;
+      const col = SIGNS[Math.floor(hash01(key + q * 5 + k * 11) * SIGNS.length)];
+      const u = u0 + 0.2, y0 = gmin + gH + 0.35, y1 = y0 + 1.1 + hash01(key + k) * 0.8, o0 = 0.15, o1 = 0.95, th = 0.05;
+      face4(b, [P(u - th, o0, y0), P(u - th, o1, y0), P(u - th, o1, y1), P(u - th, o0, y1)], [-tx, 0, -tz], col, 0, 0.8, gmin, sd, h, LIT);
+      face4(b, [P(u + th, o1, y0), P(u + th, o0, y0), P(u + th, o0, y1), P(u + th, o1, y1)], [tx, 0, tz], col, 0, 0.8, gmin, sd, h, LIT);
+      const edge: RGB = [40, 40, 42];
+      face4(b, [P(u - th, o1, y0), P(u + th, o1, y0), P(u + th, o1, y1), P(u - th, o1, y1)], [nx, 0, nz], edge, 0, 0.1, gmin, sd, h);
     }
+  }
+}
+
+/**
+ * A fabric awning from u0 to u1 along a wall: canvas sloping out and down from yT (at the wall) to yL
+ * (`out` m from it), a valance hanging from the front edge, shaded underneath, and (closed) side cheeks.
+ */
+function awning(b: Buf, P: (u: number, o: number, y: number) => number[], nx: number, nz: number, tx: number, tz: number, u0: number, u1: number, out: number, yT: number, yL: number, val: number, col: RGB, code: number, closed: boolean, gmin: number, sd: number, h: number) {
+  const drop = yT - yL, sl = Math.hypot(out, drop);
+  const up: [number, number, number] = [nx * drop / sl, out / sl, nz * drop / sl];
+  const under: RGB = [col[0] * 0.5, col[1] * 0.5, col[2] * 0.5];
+  face4(b, [P(u0, out, yL), P(u1, out, yL), P(u1, 0.02, yT), P(u0, 0.02, yT)], up, col, u0, u1, gmin, sd, h, code);
+  face4(b, [P(u0, 0.02, yT), P(u1, 0.02, yT), P(u1, out, yL), P(u0, out, yL)], [-up[0], -up[1], -up[2]], under, u0, u1, gmin, sd, h, code);
+  face4(b, [P(u0, out, yL - val), P(u1, out, yL - val), P(u1, out, yL), P(u0, out, yL)], [nx, 0, nz], col, u0, u1, gmin, sd, h, code);
+  face4(b, [P(u1, out, yL - val), P(u0, out, yL - val), P(u0, out, yL), P(u1, out, yL)], [-nx, 0, -nz], under, u1, u0, gmin, sd, h, code);
+  if (closed) {
+    // Triangular cheeks at both ends (a degenerate quad each, both faces).
+    for (const [u, s] of [[u0, -1], [u1, 1]] as const) {
+      const pts = [P(u, 0.02, yT), P(u, out, yL - val), P(u, out, yL), P(u, 0.02, yT)];
+      const flip = [pts[1], pts[0], pts[3], pts[2]];
+      face4(b, s > 0 ? pts : flip, [tx * s, 0, tz * s], col, 0, out, gmin, sd, h, code);
+      face4(b, s > 0 ? flip : pts, [-tx * s, 0, -tz * s], under, 0, out, gmin, sd, h, code);
+    }
+  }
+}
+
+/**
+ * A flat canopy over the entrance in the middle of a wall (where the facade shader puts the lobby
+ * door): a hotel's deep marquee with a brass fascia, or an office lobby's slim steel one; lit
+ * underneath, hung from the wall on tie rods.
+ */
+function entranceCanopy(b: Buf, ax: number, az: number, tx: number, tz: number, nx: number, nz: number, len: number, gmin: number, hotel: boolean, sd: number, h: number) {
+  const uc = len / 2, w = hotel ? 4.4 : Math.min(6, len * 0.4), out = hotel ? 3.1 : 2.0;
+  const y0 = gmin + 3.3, y1 = y0 + (hotel ? 0.45 : 0.2);
+  const u0 = uc - w / 2, u1 = uc + w / 2;
+  const P = (u: number, o: number, y: number) => [ax + tx * u + nx * o, y, az + tz * u + nz * o];
+  wallBox(b, ax, az, tx, tz, nx, nz, u0, u1, 0.02, out, y0, y1, hotel ? [40, 37, 34] : [96, 100, 104], sd, h, gmin);
+  // The soffit: downlights (a lit panel at night).
+  face4(b, [P(u0, 0.02, y0 - 0.005), P(u1, 0.02, y0 - 0.005), P(u1, out, y0 - 0.005), P(u0, out, y0 - 0.005)], [0, -1, 0], hotel ? [150, 128, 92] : [120, 122, 124], u0, u1, gmin, sd, h, LIT);
+  if (hotel) face4(b, [P(u0, out + 0.01, y0 + 0.1), P(u1, out + 0.01, y0 + 0.1), P(u1, out + 0.01, y1 - 0.1), P(u0, out + 0.01, y1 - 0.1)], [nx, 0, nz], [170, 134, 74], u0, u1, gmin, sd, h, TRIM);
+  // Tie rods from the front corners up to the wall (both faces of a thin strip).
+  const rod: RGB = [30, 30, 32];
+  for (const u of [u0 + 0.25, u1 - 0.25]) {
+    const p = [P(u, out - 0.15, y1), P(u, 0.02, y1 + 1.8), P(u, 0.02, y1 + 1.86), P(u, out - 0.15, y1 + 0.06)];
+    face4(b, p, [tx, 0, tz], rod, 0, 0.1, gmin, sd, h, TRIM);
+    face4(b, [p[1], p[0], p[3], p[2]], [-tx, 0, -tz], rod, 0, 0.1, gmin, sd, h, TRIM);
+  }
+}
+
+/** A gas station's canopy over the pumps: a white slab with a fascia in the brand's color on two columns, lit underneath, and the pump islands. */
+function fuelCanopy(b: Buf, x: number, z: number, dx: number, dz: number, gmin: number, sd: number, key: number) {
+  const L = 16, D = 9, y0 = gmin + 4.6, h = 6;
+  const px = -dz, pz = dx;
+  const ax = x - dx * L / 2 - px * D / 2, az = z - dz * L / 2 - pz * D / 2;
+  const brand: RGB = ([[200, 36, 30], [30, 120, 60], [26, 70, 160], [236, 186, 30]] as RGB[])[Math.floor(hash01(key) * 4)];
+  const white: RGB = [234, 234, 230];
+  wallBox(b, ax, az, dx, dz, px, pz, 0, L, 0, D, y0, y0 + 0.35, white, sd, h, gmin);
+  wallBox(b, ax, az, dx, dz, px, pz, -0.04, L + 0.04, -0.04, D + 0.04, y0 + 0.35, y0 + 0.8, brand, sd, h, gmin);
+  wallBox(b, ax, az, dx, dz, px, pz, 0, L, 0, D, y0 + 0.8, y0 + 0.9, white, sd, h, gmin);
+  const P = (u: number, o: number, y: number) => [ax + dx * u + px * o, y, az + dz * u + pz * o];
+  face4(b, [P(0, 0, y0 - 0.005), P(L, 0, y0 - 0.005), P(L, D, y0 - 0.005), P(0, D, y0 - 0.005)], [0, -1, 0], [196, 196, 190], 0, L, gmin, sd, h, LIT);
+  for (const u of [3, L - 3.4]) wallBox(b, ax, az, dx, dz, px, pz, u, u + 0.4, D / 2 - 0.2, D / 2 + 0.2, gmin, y0, [210, 210, 206], sd, h, gmin);
+  // Pump islands under it: a curb, and a pump at each end.
+  for (const u of [1.6, L - 5.4]) {
+    wallBox(b, ax, az, dx, dz, px, pz, u, u + 3.8, D / 2 - 0.6, D / 2 + 0.6, gmin, gmin + 0.18, [176, 174, 166], sd, h, gmin);
+    for (const k of [0.4, 2.6]) wallBox(b, ax, az, dx, dz, px, pz, u + k, u + k + 0.8, D / 2 - 0.3, D / 2 + 0.3, gmin + 0.18, gmin + 1.75, k < 1 ? white : brand, sd, h, gmin);
   }
 }
 

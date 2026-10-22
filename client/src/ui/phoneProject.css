@@ -115,3 +115,50 @@
 .bad { color: #ff5d6c; }
 .pj-ci-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .pj-ci-acts .pbtn { margin-top: 0; }
+
+/* Minimized: a labelled "Phone" tab on the left edge (icon, the word, the key). */
+body #phone-tab { width: 50px; gap: 8px; }
+body #phone-tab:hover { width: 56px; }
+body #phone-tab .pt-word { writing-mode: vertical-rl; transform: rotate(180deg); font: 700 12px/1 Inter, system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; color: #e9edf4; }
+/* Open: the handle on the phone's right edge says what it does. */
+.phone .phone-stow { right: -34px; width: 34px; height: 118px; margin-top: -59px; flex-direction: column; gap: 6px; display: flex; align-items: center; justify-content: center; }
+.phone .phone-stow span { writing-mode: vertical-rl; transform: rotate(180deg); font: 700 11px/1 Inter, system-ui, sans-serif; letter-spacing: .07em; text-transform: uppercase; }
+.phone .phone-stow svg { width: 16px; height: 16px; }
+@media (max-width: 720px), (max-height: 560px) {
+  /* Full-screen phone: the Minimize handle sits on top as a pill. */
+  .phone .phone-stow { right: 50%; top: -2px; margin: 0 -60px 0 0; width: 120px; height: 30px; flex-direction: row; border: 1px solid rgba(255,255,255,.14); border-radius: 0 0 14px 14px; z-index: 20; }
+  .phone .phone-stow span { writing-mode: horizontal-tb; transform: none; }
+}
+
+/* While the mouse is looking around (pointer lock) the phone can't be clicked: say how to get the cursor. */
+.phone .phone-lockhint { display: none; position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 25; white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,.35); align-items: center; gap: 5px; padding: 6px 11px; border-radius: 10px; background: rgba(16,19,26,.86); color: #e9edf4; font: 600 12px/1 Inter, system-ui, sans-serif; pointer-events: none; }
+.phone .phone-lockhint kbd { font: 700 11px/1 Inter, system-ui, sans-serif; padding: 3px 6px; border-radius: 5px; background: #2a303c; border: 1px solid rgba(255,255,255,.16); color: #fff; }
+body.mouse-look .phone.open .phone-lockhint { display: flex; }
+body.mouse-look .phone.open .phone-screen { opacity: .82; transition: opacity .2s; }
+
+/* Home: one-tap teleports to work. */
+.hm-go { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 2px 6px; }
+.hm-dest { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 32px; padding: 0 11px 0 9px; border-radius: 16px; border: 1px solid rgba(255,255,255,.1); background: rgba(28,32,42,.9); color: #eef1f6; font: 600 12.5px Inter, system-ui, sans-serif; cursor: pointer; }
+.hm-dest:hover { background: rgba(44,50,64,.95); }
+.hm-dest:disabled { opacity: .5; cursor: default; }
+.hm-dest i { flex: none; width: 10px; height: 10px; border-radius: 50%; }
+.hm-dest span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+.hm-dest em { font-style: normal; font-size: 11px; color: #3ddc97; }
+.hm-dest.more { color: #4fb2ff; }
+.hm-dest svg { width: 15px; height: 15px; }
+
+/* Travel */
+.tv-card { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 12px; margin: 0 2px 8px; border-radius: 16px; background: rgba(28,32,42,.88); border: 1px solid rgba(255,255,255,.07); }
+.tv-ic { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: #fff; font: 700 12.5px Inter, sans-serif; }
+.tv-ic.home { background: linear-gradient(180deg,#5ae0a8,#1fae73); }
+.tv-ic svg { width: 20px; height: 20px; }
+.tv-txt { flex: 1; min-width: 0; }
+.tv-txt b { display: block; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tv-txt small { color: #8e96a6; font-size: 11.5px; }
+.tv-txt .good { color: #3ddc97; }
+.tv-txt .warn { color: #ffb347; }
+.tv-acts { flex-basis: 100%; display: flex; gap: 6px; }
+.tv-acts .pbtn { flex: 1; }
+.tv-acts .tv-wp { flex: none; width: 38px; padding: 0; display: grid; place-items: center; }
+.tv-acts .tv-wp svg { width: 15px; height: 15px; }
+.tv-acts .pbtn:disabled { opacity: .5; }

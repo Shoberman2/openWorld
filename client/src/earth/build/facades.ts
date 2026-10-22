@@ -135,7 +135,34 @@ export const STYLES: FacadeStyle[] = [
   // Amsterdam canal house: narrow, dark brick, big white-framed windows.
   S({ name: 'canal', floor: [2.9, 3.3], ground: [0, 0], plinth: 0.8, bay: [1.5, 1.8], winW: [0.56, 0.64], winH: [0.6, 0.68], lintel: 0.4, brick: 1, sash: 0.8,
     walls: H('#6a3428', '#7a3c2c', '#5a2e24', '#8a4a36', '#4e2c26', '#6f4a3a'), trim: [236, 232, 222], frame: [240, 238, 232], ground0: 0, cornice: 0.2 }),
+  // Indiana limestone Art Deco (Rockefeller Center): smooth pale stone, slim continuous piers, dark spandrels.
+  S({ name: 'limestone', floor: [3.6, 3.8], ground: [5.6, 6.2], bay: [1.5, 1.7], winW: [0.5, 0.54], winH: [0.6, 0.64], pier: 0.9, baseFloors: 1,
+    walls: H('#d9d2c2', '#d3cbb9', '#ddd7c9', '#cfc7b4'), trim: [228, 222, 208], frame: [58, 60, 62], base: [200, 192, 176], ground0: 2, cornice: 0.08 }),
+  // Place des Vosges: red brick with white stone quoins and window surrounds, steep slate roofs.
+  S({ name: 'vosges', floor: [3.6, 3.9], ground: [4.8, 5.2], bay: [2.8, 3.2], winW: [0.42, 0.46], winH: [0.64, 0.7], lintel: 1, brick: 1, mansard: 1,
+    walls: H('#a4513c', '#9a4a37', '#ad5a43', '#b0604a'), trim: [234, 228, 214], frame: [232, 228, 218], base: [214, 206, 190], ground0: 1, cornice: 0.2 }),
 ];
+
+/**
+ * Buildings the map can't describe but everyone knows: whole ensembles with one architecture
+ * (Rockefeller Center's limestone, the brick pavilions of the Place des Vosges). Circles in lat/lon
+ * with a radius in meters; `ring` keeps only an annulus (a square's frame of buildings).
+ */
+const KNOWN: { lat: number; lon: number; r: number; r0?: number; style: string; maxH?: number }[] = [
+  { lat: 40.75885, lon: -73.97905, r: 150, style: 'limestone' }, // Rockefeller Center, Fifth to Sixth Avenue
+  { lat: 40.763634, lon: -73.972509, r: 15, style: 'limestone', maxH: 30 }, // the GM Building's white marble base
+  { lat: 48.85561, lon: 2.36549, r: 118, r0: 58, style: 'vosges', maxH: 30 }, // Place des Vosges
+];
+
+/** A known ensemble's style for a building at (lat, lon), or -1. */
+export function knownStyle(lat: number, lon: number, h: number): number {
+  for (const k of KNOWN) {
+    if (k.maxH && h > k.maxH) continue;
+    const dy = (lat - k.lat) * 111_320, dx = (lon - k.lon) * 111_320 * Math.cos((k.lat * Math.PI) / 180), d = Math.hypot(dx, dy);
+    if (d <= k.r && d >= (k.r0 ?? 0)) return STYLE[k.style];
+  }
+  return -1;
+}
 
 export const STYLE = Object.fromEntries(STYLES.map((s, i) => [s.name, i])) as Record<string, number>;
 
