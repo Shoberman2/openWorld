@@ -14,7 +14,7 @@ export const api = {
   repo: (name: string) => fetch(`/api/repos/${encodeURIComponent(name)}`).then((r) => json<RepoDetail>(r)),
   logoUrl: (name: string) => `/api/repos/${encodeURIComponent(name)}/logo`,
   agents: () => fetch('/api/agents').then((r) => json<AgentInfo[]>(r)),
-  /** provider: which coding agent (claude | codex | gemini); the server falls back to the user's default. */
+  /** provider: which coding agent (claude | codex | gemini | grok | opencode); the server falls back to the user's default. */
   startAgent: (repo: string, task: string, provider?: string | null) =>
     fetch('/api/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repo, task, provider: provider || undefined }) }).then((r) => json<AgentInfo>(r)),
   agentLog: (id: string) => fetch(`/api/agents/${id}/log`).then((r) => json<{ events: { event: AgentEvent; ts: number }[] }>(r)),

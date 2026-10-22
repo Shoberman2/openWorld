@@ -1,4 +1,4 @@
-// What every coding-agent CLI (Claude Code, Codex, Gemini) has to provide so a run can happen at a desk.
+// What every coding-agent CLI (Claude Code, Codex, Gemini, Grok, OpenCode) has to provide so a run can happen at a desk.
 import type { AgentEvent, AgentProviderId } from '../../shared/types.ts';
 import { run } from '../config.ts';
 
@@ -10,7 +10,7 @@ export interface Parsed {
   sessionId?: string;
 }
 
-export type KeySlot = 'anthropic' | 'openai' | 'gemini';
+export type KeySlot = 'anthropic' | 'openai' | 'gemini' | 'xai';
 
 export interface AgentRunner {
   id: AgentProviderId;
@@ -20,13 +20,18 @@ export interface AgentRunner {
   installCmd: string;
   keyUrl: string;
   keyPrefix: string;
-  keySlot: KeySlot;
+  /** null for an agent with no vendor key of its own (OpenCode borrows the others'). */
+  keySlot: KeySlot | null;
   /** Env var(s) the CLI reads its key from; the stored key is passed to the child process only. */
   keyEnv: string[];
+  /** For agents without a key slot: whether a model is available to it some other way. */
+  hasModel?(keyOf: (slot: KeySlot) => string | null): boolean;
+  /** Extra env for the child process (built fresh for every run, never sent to the browser). */
+  env?(keyOf: (slot: KeySlot) => string | null): Record<string, string>;
   /** Installed, new enough, and signed in through the CLI's own login. */
   detect(): Promise<{ installed: boolean; version: string | null; signedIn: boolean; hint?: string }>;
-  /** argv for a fresh run (sessionId null) or a resumed one; the prompt is written to stdin when `stdin` is set. */
-  command(prompt: string, sessionId: string | null): { args: string[]; stdin: string | null };
+  /** argv for a fresh run (sessionId null) or a resumed one in `dir`; the prompt is written to stdin when `stdin` is set. */
+  command(prompt: string, sessionId: string | null, dir: string): { args: string[]; stdin: string | null };
   /** Per-run parser (keeps state such as pending tool calls and the last message). */
   parser(dir: string): (msg: any) => Parsed;
 }

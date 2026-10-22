@@ -21,7 +21,7 @@ const API_MODELS: Record<string, string> = {
 
 /**
  * One reply for HQ, a project lead or a desk, from whichever chat the user set up in Settings → Agents & keys:
- * their Anthropic, OpenAI or Gemini key, a signed-in Claude Code, or any OpenAI-compatible server (OpenRouter, Ollama…). OPENWORLD_MODEL still overrides the model.
+ * their Anthropic, OpenAI, Gemini or xAI key, a signed-in Claude Code, Codex or Grok, or any OpenAI-compatible server (OpenRouter, Ollama…). OPENWORLD_MODEL still overrides the model.
  */
 export async function streamClaude(opts: StreamOpts): Promise<string> {
   const chat = await chatProvider();
@@ -31,6 +31,8 @@ export async function streamClaude(opts: StreamOpts): Promise<string> {
   if (chat?.provider === 'codex-cli') return streamCodex({ ...opts, model });
   if (chat?.provider === 'openai') return streamOpenAi({ ...opts, model });
   if (chat?.provider === 'gemini') return streamGemini({ ...opts, model });
+  if (chat?.provider === 'xai') return streamXai({ ...opts, model });
+  if (chat?.provider === 'grok-cli') return streamGrokCli({ ...opts, model });
   if (chat?.provider === 'compat') return streamCompat({ ...opts, model });
   const text = opts.fallback || '(No AI set up yet. Add a key in Settings → Agents & keys to bring the office to life.)';
   // emit in small chunks so the UI still "types"
@@ -156,6 +158,55 @@ async function streamOpenAi(opts: StreamOpts & { model: string }): Promise<strin
   });
   if (!res.ok || !res.body) throw new Error(`OpenAI API ${res.status}: ${(await res.text()).slice(0, 200)}`);
   return readSse(res, opts, (ev) => ev.choices?.[0]?.delta?.content ?? '');
+}
+
+async function streamXai(opts: StreamOpts & { model: string }): Promise<string> {
+  const res = await fetch('https://api.x.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${keyFor('xai').key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: opts.model,
+      stream: true,
+      max_tokens: 1500,
+      messages: [{ role: 'system', content: opts.system }, { role: 'user', content: opts.prompt }],
+    }),
+    signal: opts.signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`xAI API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return readSse(res, opts, (ev) => ev.choices?.[0]?.delta?.content ?? '');
+}
+
+/** One reply through `grok -p` (the user's SuperGrok / X Premium login): no tools, streamed text. */
+function streamGrokCli(opts: StreamOpts & { model: string }): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-p', `${opts.system}\n\nReply in character. Do not run commands or edit files.\n\n${opts.prompt}`,
+      '--output-format', 'streaming-json',
+      '--tools', 'todo_write', '--max-turns', '1', '--no-subagents', '--no-plan', '--disable-web-search', '--no-auto-update',
+      ...(opts.model ? ['--model', opts.model] : []),
+    ];
+    const child = spawnProc('grok', args, { cwd: PATHS.home, stdio: ['ignore', 'pipe', 'pipe'], env: { GROK_MEMORY: '0' } });
+    let full = '';
+    let stderr = '';
+    opts.signal?.addEventListener('abort', () => child.kill('SIGTERM'));
+    child.stderr!.on('data', (d) => (stderr += d));
+    createInterface({ input: child.stdout! }).on('line', (line) => {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === 'text' && typeof msg.data === 'string') {
+          full += msg.data;
+          opts.onDelta?.(msg.data);
+        } else if (msg.type === 'error') stderr += String(msg.message ?? '');
+      } catch {
+        /* not JSON */
+      }
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (!full) return reject(new Error(stderr.trim().slice(0, 300) || `grok exited with ${code}`));
+      resolve(full);
+    });
+  });
 }
 
 async function streamCompat(opts: StreamOpts & { model: string }): Promise<string> {

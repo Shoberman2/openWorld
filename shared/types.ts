@@ -45,7 +45,7 @@ export interface Repo {
 
 export interface Me {
   connected: boolean;
-  /** True when at least one coding agent (Claude Code, Codex, Gemini) is ready to take tasks. */
+  /** True when at least one coding agent (Claude Code, Codex, Gemini, Grok, OpenCode) is ready to take tasks. */
   agentsReady?: boolean;
   login: string | null;
   name: string | null;
@@ -115,7 +115,7 @@ export interface AgentInfo {
   scheduleId?: string | null;
   /** Claude Code session, so answers and change requests resume the same conversation. */
   sessionId?: string | null;
-  /** Which coding agent runs this (claude | codex | gemini). Older runs have none and were Claude. */
+  /** Which coding agent runs this (claude | codex | gemini | grok | opencode). Older runs have none and were Claude. */
   provider?: AgentProviderId;
 }
 
@@ -422,7 +422,7 @@ export interface ControlResult {
 // POST   /api/providers/chat {provider, model} -> ProvidersState (who voices HQ, the leads and the desks)
 // POST /api/agents accepts an optional {provider}.
 
-export type AgentProviderId = 'claude' | 'codex' | 'gemini';
+export type AgentProviderId = 'claude' | 'codex' | 'gemini' | 'grok' | 'opencode';
 
 export interface ProviderStatus {
   id: AgentProviderId;
@@ -441,7 +441,7 @@ export interface ProviderStatus {
   hint: string | null;
   installCmd: string;
   keyUrl: string; // where to create a key
-  keyPrefix: string; // "sk-ant-", "sk-", "AIza"
+  keyPrefix: string; // "sk-ant-", "sk-", "AIza", "xai-"; "" when it borrows the other keys (OpenCode)
 }
 
 export interface ProvidersState {
@@ -454,7 +454,7 @@ export interface ProvidersState {
   canEdit: boolean;
 }
 
-export type ChatProviderId = 'anthropic' | 'claude-cli' | 'codex-cli' | 'openai' | 'gemini' | 'compat';
+export type ChatProviderId = 'anthropic' | 'claude-cli' | 'codex-cli' | 'openai' | 'gemini' | 'xai' | 'grok-cli' | 'compat';
 
 export interface CompatStatus {
   preset: string | null; // "openrouter", "ollama"… or null for a custom URL

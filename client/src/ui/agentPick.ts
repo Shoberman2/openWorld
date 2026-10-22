@@ -1,4 +1,4 @@
-// Which coding agent takes the next task (Claude Code, Codex, Gemini). One choice shared by every
+// Which coding agent takes the next task (Claude Code, Codex, Gemini, Grok, OpenCode). One choice shared by every
 // "give a task" box, remembered in this browser; the server falls back to the user's default when it's unset.
 import type { ProvidersState, ProviderStatus } from '../../../shared/types.ts';
 import { providers } from '../api.ts';
@@ -10,7 +10,7 @@ let state: ProvidersState | null = null;
 let loading: Promise<ProvidersState | null> | null = null;
 const listeners = new Set<() => void>();
 
-const SHORT: Record<string, string> = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' };
+const SHORT: Record<string, string> = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', grok: 'Grok', opencode: 'OpenCode' };
 export const agentShort = (id?: string | null) => SHORT[id ?? 'claude'] ?? id ?? 'Claude';
 
 export function providersState() { return state; }

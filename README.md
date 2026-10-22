@@ -1,13 +1,13 @@
 # OpenWorld HQ
 
-Your GitHub, as a living open world. Start anywhere on Earth, walk the real streets, or fly over the city: the whole planet streams in around you from OpenStreetMap, with real terrain, landmarks, traffic, weather and people. Every repository you own becomes a building. Walk in and the people at the desks explain your recent changes; hire an AI coding agent and watch it work at a desk in the Agent Lab, using **Claude, ChatGPT (Codex), Gemini, or almost any other model**.
+Your GitHub, as a living open world. Start anywhere on Earth, walk the real streets, or fly over the city: the whole planet streams in around you from OpenStreetMap, with real terrain, landmarks, traffic, weather and people. Every repository you own becomes a building. Walk in and the people at the desks explain your recent changes; hire an AI coding agent and watch it work at a desk in the Agent Lab, using **Claude, ChatGPT (Codex), Gemini, Grok, or almost any other model**.
 
 You play a robot with a white shell head and a visor face, in a navy suit and rocket shoes.
 
 Free and open source under the [MIT License](LICENSE). Everything runs on your own computer, with your own GitHub account and your own AI keys or logins.
 
 - [Quick start](#quick-start)
-- [Connect your AI](#connect-your-ai): Claude, ChatGPT, Gemini, local models, OpenRouter and more
+- [Connect your AI](#connect-your-ai): Claude, ChatGPT, Gemini, Grok, local models, OpenRouter and more
 - [Connect GitHub](#connect-github)
 - [What's in the world](#whats-in-the-world)
 - [Controls](#controls)
@@ -48,8 +48,10 @@ Open **Settings** (the gear, or **K**) → **Agents & keys**. There are two kind
 | **ChatGPT** (Plus/Pro/Team) | Install Codex, run `codex login` and choose **Sign in with ChatGPT**, then pick **ChatGPT login (Codex)** as the voice of the office | Codex, same login. No API key needed |
 | **OpenAI** (API key) | Paste your OpenAI key (`sk-…`) | Codex with the same key |
 | **Gemini** | Paste your Gemini key (`AIza…`) | Gemini CLI: run `gemini` once, or the same key |
-| **Any other model** | **Any other model** card: OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, or a custom URL | Use one of the three CLIs above |
-| **A model on your computer** | **Any other model** → Ollama or LM Studio. Free, private, no key | Use one of the three CLIs above |
+| **Grok** (SuperGrok / X Premium+) | Install Grok Build, run `grok login`, then pick **Grok login** as the voice of the office | Grok Build, same login. No API key needed |
+| **Grok** (xAI API key) | Paste your xAI key (`xai-…`) | Grok Build with the same key |
+| **Any other model** | **Any other model** card: OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, or a custom URL | OpenCode, same model |
+| **A model on your computer** | **Any other model** → Ollama or LM Studio. Free, private, no key | OpenCode, same model |
 
 Install the coding CLIs you want (each is optional):
 
@@ -57,6 +59,8 @@ Install the coding CLIs you want (each is optional):
 npm i -g @anthropic-ai/claude-code   # Claude Code
 npm i -g @openai/codex               # Codex (ChatGPT / OpenAI)
 npm i -g @google/gemini-cli          # Gemini CLI
+curl -fsSL https://x.ai/cli/install.sh | bash   # Grok Build (xAI)
+npm i -g opencode-ai                 # OpenCode (any model: uses Any other model or your keys)
 ```
 
 Settings shows which ones it found, whether they're signed in, and lets you pick the default for new tasks. Every "give a task" box also lets you choose per task.
@@ -193,7 +197,7 @@ Everything is optional. Copy [.env.example](.env.example) to `.env`; the `npm` s
 | Variable | What it does |
 | --- | --- |
 | `GITHUB_TOKEN` | GitHub access (or use `gh auth login`) |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` / `CODEX_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY` | AI keys (or paste them in Settings) |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` / `CODEX_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `XAI_API_KEY` | AI keys (or paste them in Settings) |
 | `OPENWORLD_LLM_BASE_URL`, `OPENWORLD_LLM_API_KEY`, `OPENWORLD_LLM_MODEL` | Any OpenAI-compatible server for conversations |
 | `OPENWORLD_MODEL` | Force the chat model by name |
 | `PORT` / `HTTPS_PORT` | Server ports (default 4317 / 4318) |

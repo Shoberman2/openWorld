@@ -8,15 +8,18 @@ import type { AgentRunner, KeySlot } from './common.ts';
 import { claude } from './claude.ts';
 import { codex } from './codex.ts';
 import { gemini } from './gemini.ts';
+import { grok } from './grok.ts';
+import { opencode } from './opencode.ts';
 import { compatConfig, compatModels, compatStatus, normalizeBaseUrl, testCompat } from './compat.ts';
 
-export const RUNNERS: AgentRunner[] = [claude, codex, gemini];
+export const RUNNERS: AgentRunner[] = [claude, codex, gemini, grok, opencode];
 export const runner = (id: AgentProviderId | string | null | undefined) => RUNNERS.find((r) => r.id === id) ?? null;
 
 const ENV_KEYS: Record<KeySlot, string[]> = {
   anthropic: ['ANTHROPIC_API_KEY'],
   openai: ['OPENAI_API_KEY', 'CODEX_API_KEY'],
   gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+  xai: ['XAI_API_KEY'],
 };
 
 /** The key for a vendor: env wins over the stored one. */
@@ -27,9 +30,10 @@ export function keyFor(slot: KeySlot): { key: string | null; fromEnv: boolean } 
 
 /** Env for an agent's child process: the user's key under every name that CLI reads, nothing else added. */
 export function runnerEnv(r: AgentRunner): Record<string, string> {
-  const { key } = keyFor(r.keySlot);
-  return key ? Object.fromEntries(r.keyEnv.map((n) => [n, key])) : {};
+  const { key } = r.keySlot ? keyFor(r.keySlot) : { key: null };
+  return { ...(key ? Object.fromEntries(r.keyEnv.map((n) => [n, key])) : {}), ...(r.env?.(keyOf) ?? {}) };
 }
+const keyOf = (slot: KeySlot) => keyFor(slot).key;
 
 // detect() shells out to `--version`; cache it briefly so status polls stay cheap.
 let detected: { at: number; out: Map<AgentProviderId, Awaited<ReturnType<AgentRunner['detect']>>> } | null = null;
@@ -44,10 +48,12 @@ export async function providerStatuses(force = false): Promise<ProviderStatus[]>
   const found = await detectAll(force);
   return RUNNERS.map((r) => {
     const d = found.get(r.id)!;
-    const { key, fromEnv } = keyFor(r.keySlot);
-    const ready = d.installed && (d.signedIn || !!key);
+    const { key, fromEnv } = r.keySlot ? keyFor(r.keySlot) : { key: null, fromEnv: false };
+    const ready = d.installed && (d.signedIn || !!key || !!r.hasModel?.(keyOf));
     const hint = ready ? null
-      : d.hint ?? (!d.installed ? `Install ${r.label}: ${r.installCmd}` : `Sign in with \`${r.bin}\` once, or add your ${r.vendor} key`);
+      : d.hint ?? (!d.installed ? `Install ${r.label}: ${r.installCmd}`
+        : r.keySlot ? `Sign in with \`${r.bin}\` once, or add your ${r.vendor} key`
+        : `Connect a model under Any other model below, add any key above, or run \`${r.bin} auth login\` once`);
     return {
       id: r.id, label: r.label, vendor: r.vendor, installed: d.installed, version: d.version, signedIn: d.signedIn,
       key: { set: !!key, last4: key ? key.slice(-4) : null, fromEnv }, ready, hint,
@@ -80,6 +86,8 @@ export const FALLBACK_MODEL: Record<ChatProviderId, string> = {
   'codex-cli': '',
   openai: 'gpt-5.6-terra',
   gemini: 'gemini-3.6-flash',
+  xai: 'grok-4.6',
+  'grok-cli': '',
   compat: '',
 };
 let compatListed: string[] = [];
@@ -103,6 +111,12 @@ async function fetchModels(slot: KeySlot, key: string): Promise<{ ok: boolean; s
       .filter((id: string) => /^(gpt-|o\d)/.test(id) && !/(audio|realtime|transcribe|tts|image|embedding|search|instruct|codex|\d{4}-\d{2}-\d{2})/.test(id));
     return { ok: res.ok, status: res.status, models: newestFirst(ids) };
   }
+  if (slot === 'xai') {
+    const res = await fetch('https://api.x.ai/v1/models', { headers: { authorization: `Bearer ${key}` }, signal: ctrl });
+    const body: any = res.ok ? await res.json() : null;
+    const ids = (body?.data ?? []).map((m: any) => String(m.id)).filter((id: string) => id.startsWith('grok-') && !/(image|imagine|vision|video|embed|tts|voice)/.test(id));
+    return { ok: res.ok, status: res.status, models: newestFirst(ids) };
+  }
   const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key }, signal: ctrl });
   const body: any = res.ok ? await res.json() : null;
   const ids = (body?.models ?? [])
@@ -114,7 +128,7 @@ async function fetchModels(slot: KeySlot, key: string): Promise<{ ok: boolean; s
 
 function modelsFor(p: ChatProviderId): string[] {
   if (p === 'claude-cli') return CLI_MODELS;
-  if (p === 'codex-cli') return [];
+  if (p === 'codex-cli' || p === 'grok-cli') return [];
   if (p === 'compat') return compatListed;
   if (p === 'anthropic') return listed.get('anthropic')?.length ? [...new Set([...ANTHROPIC_MODELS, ...listed.get('anthropic')!])] : ANTHROPIC_MODELS;
   return listed.get(p) ?? [];
@@ -125,6 +139,7 @@ function defaultModel(p: ChatProviderId): string {
   const list = modelsFor(p);
   if (p === 'openai') return list.find((m) => /^gpt-\d/.test(m) && !/(mini|nano|pro|cyber)/.test(m)) ?? list[0] ?? FALLBACK_MODEL.openai;
   if (p === 'gemini') return list.find((m) => /flash/.test(m) && !/lite/.test(m)) ?? list[0] ?? FALLBACK_MODEL.gemini;
+  if (p === 'xai') return list.find((m) => /^grok-\d/.test(m) && !/(mini|code)/.test(m)) ?? list[0] ?? FALLBACK_MODEL.xai;
   if (p === 'compat') return compatConfig()?.model || list[0] || '';
   return FALLBACK_MODEL[p];
 }
@@ -138,6 +153,9 @@ async function chatOptions(): Promise<ChatProviderId[]> {
   if (st.find((p) => p.id === 'codex')?.installed && st.find((p) => p.id === 'codex')?.signedIn) opts.push('codex-cli');
   if (keyFor('openai').key) opts.push('openai');
   if (keyFor('gemini').key) opts.push('gemini');
+  // Signed in to Grok Build with a SuperGrok / X Premium account: same idea, no API key.
+  if (st.find((p) => p.id === 'grok')?.installed && st.find((p) => p.id === 'grok')?.signedIn) opts.push('grok-cli');
+  if (keyFor('xai').key) opts.push('xai');
   if (compatConfig()?.model) opts.push('compat');
   return opts;
 }
@@ -171,7 +189,6 @@ const isLocal = (req: Request) => {
   const a = req.socket.remoteAddress;
   return !a || a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
 };
-const SLOT: Record<AgentProviderId, KeySlot> = { claude: 'anthropic', codex: 'openai', gemini: 'gemini' };
 
 function checkFormat(r: AgentRunner, key: string) {
   if (!key) return 'Paste a key first';
@@ -196,6 +213,7 @@ export function registerProviders(app: Express, h: (fn: (req: Request, res: any)
   app.post('/api/providers/:id/key', h(async (req) => {
     localOnly(req);
     const r = known(String(req.params.id));
+    if (!r.keySlot) throw Object.assign(new Error(`${r.label} uses the model and keys you set up for the others`), { status: 400 });
     const key = String(req.body?.key ?? '').trim();
     const bad = checkFormat(r, key);
     if (bad) throw Object.assign(new Error(bad), { status: 400 });
@@ -209,7 +227,7 @@ export function registerProviders(app: Express, h: (fn: (req: Request, res: any)
     if (check && !check.ok && check.status >= 400 && check.status < 500 && check.status !== 429) throw Object.assign(new Error(`${r.vendor} rejected that key`), { status: 400 });
     if (check?.ok) listed.set(r.keySlot, check.models);
     const cfg = readConfig();
-    writeConfig({ keys: { ...cfg.keys, [SLOT[r.id]]: key } });
+    writeConfig({ keys: { ...cfg.keys, [r.keySlot]: key } });
     detected = null;
     logEvent('provider_key_saved', { provider: r.id, verified: !!check?.ok });
     return providersState(req);
@@ -218,8 +236,9 @@ export function registerProviders(app: Express, h: (fn: (req: Request, res: any)
   app.delete('/api/providers/:id/key', h(async (req) => {
     localOnly(req);
     const r = known(String(req.params.id));
+    if (!r.keySlot) return providersState(req);
     const keys = { ...readConfig().keys };
-    delete keys[SLOT[r.id]];
+    delete keys[r.keySlot];
     writeConfig({ keys });
     listed.delete(r.keySlot);
     logEvent('provider_key_removed', { provider: r.id });
@@ -285,7 +304,7 @@ export function registerProviders(app: Express, h: (fn: (req: Request, res: any)
   }));
 
   // Refresh model lists for stored keys in the background so the chat picker is filled after a restart.
-  for (const slot of ['anthropic', 'openai', 'gemini'] as KeySlot[]) {
+  for (const slot of ['anthropic', 'openai', 'gemini', 'xai'] as KeySlot[]) {
     const { key } = keyFor(slot);
     if (key) fetchModels(slot, key).then((m) => m.ok && listed.set(slot, m.models), () => {});
   }

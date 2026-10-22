@@ -31,7 +31,7 @@ const icon = (k: keyof typeof ICON) => `<svg class="ico" viewBox="0 0 24 24" fil
 
 const STEPS = [
   ['Your work becomes a place', 'Every repo is a real building. CI, pull requests and issues show up on it live.'],
-  ['Every agent lives here', 'Claude, Codex and Gemini take tasks at the desks, on your own keys. Work from Copilot and other agents shows up in the building it changed.'],
+  ['Every agent lives here', 'Claude, Codex, Gemini, Grok or any model through OpenCode take tasks at the desks, on your own keys. Work from Copilot and other agents shows up in the building it changed.'],
   ['Step in and steer', 'Hand off a task, answer a question, review the diff and ship, from the lobby or your phone.'],
 ];
 
@@ -74,7 +74,7 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
         <b>Set up in two steps</b>
         <ol>
           <li id="lp-setup-gh"><span class="lp-tick"></span><span><b>Connect GitHub</b><small>Run <code>gh auth login</code>, or paste a token above.</small></span></li>
-          <li id="lp-setup-agent"><span class="lp-tick"></span><span><b>Add an agent</b><small>Claude Code, Codex or Gemini, with your own login or API key.</small></span><button type="button" id="lp-setup-open">Add agent</button></li>
+          <li id="lp-setup-agent"><span class="lp-tick"></span><span><b>Add an agent</b><small>Claude Code, Codex, Gemini, Grok or OpenCode, with your own login or API key.</small></span><button type="button" id="lp-setup-open">Add agent</button></li>
         </ol>
       </div>
     </div>

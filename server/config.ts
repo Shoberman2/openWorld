@@ -26,9 +26,9 @@ export const MODEL = process.env.OPENWORLD_MODEL || 'sonnet';
 export interface Config {
   token?: string;
   /** The user's own API keys, by vendor. Only ever read on the server. */
-  keys?: { anthropic?: string; openai?: string; gemini?: string };
-  defaultProvider?: 'claude' | 'codex' | 'gemini';
-  chat?: { provider?: 'anthropic' | 'claude-cli' | 'codex-cli' | 'openai' | 'gemini' | 'compat'; model?: string };
+  keys?: { anthropic?: string; openai?: string; gemini?: string; xai?: string };
+  defaultProvider?: 'claude' | 'codex' | 'gemini' | 'grok' | 'opencode';
+  chat?: { provider?: 'anthropic' | 'claude-cli' | 'codex-cli' | 'openai' | 'gemini' | 'xai' | 'grok-cli' | 'compat'; model?: string };
   /** Any OpenAI-compatible chat endpoint (OpenRouter, Ollama, LM Studio, Groq…). The key is optional for local servers. */
   compat?: { preset?: string; baseUrl: string; key?: string; model: string };
 }

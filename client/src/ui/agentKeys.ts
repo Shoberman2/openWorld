@@ -7,7 +7,7 @@ import { esc } from '../interact.ts';
 import { refreshProviders } from './agentPick.ts';
 
 const CHAT_LABEL: Record<string, string> = {
-  anthropic: 'Claude (Anthropic key)', 'claude-cli': 'Claude Code login', 'codex-cli': 'ChatGPT login (Codex)', openai: 'ChatGPT (OpenAI key)', gemini: 'Gemini key', compat: 'Other model',
+  anthropic: 'Claude (Anthropic key)', 'claude-cli': 'Claude Code login', 'codex-cli': 'ChatGPT login (Codex)', openai: 'ChatGPT (OpenAI key)', gemini: 'Gemini key', xai: 'Grok (xAI key)', 'grok-cli': 'Grok login', compat: 'Other model',
 };
 
 /** OpenAI-compatible servers people actually use. Local ones need no key. */
@@ -54,15 +54,19 @@ export function agentsTab(page: HTMLElement) {
         ${status(p)}
       </div>
       ${!p.installed ? `<p class="ak-hint">${p.version ? esc(p.hint ?? '') : 'Not on this computer yet. Install it in a terminal:'}</p><code class="ak-cmd">${esc(p.installCmd)}</code>` : !p.ready ? `<p class="ak-hint">${esc(p.hint ?? '')}</p>` : ''}
-      ${p.key.fromEnv
+      ${!p.keyPrefix
+        ? `<p class="ak-hint">Runs on ${st!.compat ? `<b>${esc(st!.compat.model)}</b> from Any other model` : 'any model'}: it uses the model you connect under <b>Any other model</b> (OpenRouter, Ollama, DeepSeek…), or any key saved above. Or run <code>opencode auth login</code> once.</p>
+          <p class="ak-get"><a href="${esc(p.keyUrl)}" target="_blank" rel="noopener">Models OpenCode supports ↗</a></p>`
+        : p.key.fromEnv
         ? `<p class="ak-hint">Using the key from your environment (••••${esc(p.key.last4 ?? '')}).</p>`
         : `<form class="ak-key" data-key="${p.id}">
             <input type="password" autocomplete="off" spellcheck="false" placeholder="${p.key.set ? `Key saved ••••${esc(p.key.last4 ?? '')} · paste to replace` : `Paste your ${esc(p.vendor)} key (${esc(p.keyPrefix)}…)`}" ${edit ? '' : 'disabled'} />
             <button class="st-btn" type="submit" ${edit && busy !== p.id ? '' : 'disabled'}>${busy === p.id ? 'Checking…' : 'Save'}</button>
             ${p.key.set && edit ? `<button class="st-btn ghost" type="button" data-remove="${p.id}">Remove</button>` : ''}
           </form>
-          <p class="ak-get"><a href="${esc(p.keyUrl)}" target="_blank" rel="noopener">Get an API key from ${esc(p.vendor)} ↗</a>${p.installed && !p.signedIn ? ` · or sign in by running <code>${esc(p.id === 'codex' ? 'codex login' : p.id)}</code> once` : ''}</p>
-          ${p.id === 'codex' && !p.signedIn ? `<p class="ak-hint">Have ChatGPT Plus, Pro or Team? Run <code>codex login</code> and choose <b>Sign in with ChatGPT</b>: no API key needed, for coding agents or for the office’s conversations.</p>` : ''}`}
+          <p class="ak-get"><a href="${esc(p.keyUrl)}" target="_blank" rel="noopener">Get an API key from ${esc(p.vendor)} ↗</a>${p.installed && !p.signedIn ? ` · or sign in by running <code>${esc(p.id === 'codex' ? 'codex login' : p.id === 'grok' ? 'grok login' : p.id)}</code> once` : ''}</p>
+          ${p.id === 'codex' && !p.signedIn ? `<p class="ak-hint">Have ChatGPT Plus, Pro or Team? Run <code>codex login</code> and choose <b>Sign in with ChatGPT</b>: no API key needed, for coding agents or for the office’s conversations.</p>` : ''}
+          ${p.id === 'grok' && p.installed && !p.signedIn ? `<p class="ak-hint">Have SuperGrok or X Premium+? Run <code>grok login</code> once: no API key needed, for coding agents or for the office’s conversations.</p>` : ''}`}
       ${note ? `<p class="ak-note ${note.ok ? 'ok' : 'bad'}">${esc(note.text)}</p>` : ''}
       ${p.ready ? `<div class="ak-def">${isDefault ? '<span class="ak-chip ok">Default for new tasks</span>' : `<button class="st-btn" data-default="${p.id}" ${edit ? '' : 'disabled'}>Make default</button>`}</div>` : ''}
     </div>`;
@@ -107,7 +111,7 @@ export function agentsTab(page: HTMLElement) {
       ${pr.note ? `<p class="ak-hint">${esc(pr.note).replace(/`([^`]+)`/g, '<code>$1</code>')}</p>` : ''}
       ${pr.keyUrl ? `<p class="ak-get"><a href="${esc(pr.keyUrl)}" target="_blank" rel="noopener">Get a ${esc(pr.label)} key ↗</a></p>` : ''}`}
       ${note ? `<p class="ak-note ${note.ok ? 'ok' : 'bad'}">${esc(note.text)}</p>` : ''}
-      <p class="ak-hint">Used for conversations (HQ, the leads, the desks). Coding agents still run in Claude Code, Codex or Gemini CLI.</p>
+      <p class="ak-hint">Used for conversations (HQ, the leads, the desks). For coding tasks with this model too, install OpenCode above.</p>
     </div>`;
   };
 

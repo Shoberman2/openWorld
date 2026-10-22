@@ -230,12 +230,13 @@ function summaryOf(text: string) {
 function launch(a: LiveAgent, prompt: string) {
   const r = runner(a.info.provider ?? 'claude')!;
   const resuming = !!a.info.sessionId;
-  const cmd = r.command(prompt, a.info.sessionId ?? null);
+  const cmd = r.command(prompt, a.info.sessionId ?? null, a.dir);
   const child = spawnProc(r.bin, cmd.args, {
     cwd: a.dir,
     stdio: [cmd.stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     detached: true,
-    env: runnerEnv(r),
+    // PWD too: some CLIs (OpenCode) take their project from it, and the inherited one is the server's own folder.
+    env: { ...runnerEnv(r), PWD: a.dir },
   });
   a.proc = child;
   update(a, { status: 'running', endedAt: null, question: null, lastAction: resuming ? 'Picking the work back up' : 'Reading the task' });
