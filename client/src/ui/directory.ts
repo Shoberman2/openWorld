@@ -45,7 +45,7 @@ export function openDirectory(sites: Site[], agentsByRepo: Map<string, number>, 
           ${n ? `<span class="tag agent">${n} agent${n > 1 ? 's' : ''} working</span>` : ''}
           <span class="tag">${TIER_LABEL[r.tier]}</span>
         </div>
-        <small>${esc(r.description || r.language || '')} · ${r.commits} commits · ${r.prs} PRs</small>
+        <small>${esc(r.description || r.language || '')} · ${r.showcase ? `public project · ${esc(r.fullName)}` : `${r.commits} commits · ${r.prs} PRs`}</small>
         <div style="display:flex;gap:6px;margin-top:8px">
           <button class="btn" data-a="wp">Set waypoint</button>
           <button class="btn primary" data-a="go">Fast travel</button>

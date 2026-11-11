@@ -10,6 +10,10 @@ export interface MapMarker {
   teleport?: () => void;
   /** Shown under the name in the teleport list ("Skyscraper HQ", the address). */
   sub?: string;
+  /** It moves (a teammate): the minimap redraws when it does, and draws it with their initial. */
+  live?: boolean;
+  /** 'team' markers are listed as teammates on the map screen, not as your projects. */
+  group?: 'team';
 }
 
 export class EarthMinimap {
@@ -44,7 +48,7 @@ export class EarthMinimap {
   draw(lat: number, lon: number, headingDeg: number, markers: MapMarker[], waypoint: { lat: number; lon: number; name: string } | null) {
     if (!this.visible) return;
     // Skip redraws when nothing visibly moved (most frames while standing still).
-    const key = `${lat.toFixed(6)},${lon.toFixed(6)},${headingDeg.toFixed(1)},${this.zoom.toFixed(2)},${waypoint?.lat ?? ''},${markers.length}`;
+    const key = `${lat.toFixed(6)},${lon.toFixed(6)},${headingDeg.toFixed(1)},${this.zoom.toFixed(2)},${waypoint?.lat ?? ''},${markers.length}${markers.some((m) => m.live) ? markers.map((m) => (m.live ? `,${m.lat.toFixed(5)},${m.lon.toFixed(5)}` : '')).join('') : ''}`;
     const g = this.canvas.getContext('2d')!;
     const W = this.canvas.width, H = this.canvas.height, d = this.dpr;
     const cx = W / 2, cy = H / 2;
@@ -78,6 +82,22 @@ export class EarthMinimap {
       g.lineWidth = 1.5 * d;
       g.strokeStyle = '#fff';
       g.stroke();
+    }
+    // Teammates: bigger dots with their initial, pinned to the rim when they're off the map.
+    for (const m of markers) {
+      if (!m.live || !m.teleport) continue;
+      const p = clampToRim(toScreen(m.lat, m.lon), 11 * d);
+      g.beginPath();
+      g.arc(p.x, p.y, 8 * d, 0, Math.PI * 2);
+      g.fillStyle = m.color;
+      g.fill();
+      g.lineWidth = 2 * d;
+      g.strokeStyle = '#fff';
+      g.stroke();
+      g.fillStyle = '#fff';
+      g.font = `700 ${9 * d}px Inter, sans-serif`;
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText([...(m.label ?? '?')][0]?.toUpperCase() ?? '?', p.x, p.y + 0.5 * d);
     }
 
     // Waypoint: dashed red route line and a pin (pinned to the rim when off-map).

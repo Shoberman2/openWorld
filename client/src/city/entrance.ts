@@ -112,7 +112,21 @@ class Batch {
     }
     this.parts.clear();
   }
+  /** The same merge, but handed back as geometry (one per material) instead of meshes. */
+  take(): Static[] {
+    const out: Static[] = [];
+    for (const [mat, list] of this.parts) {
+      const g = mergeGeometries(list, false);
+      list.forEach((x) => x.dispose());
+      if (!g) continue;
+      if (mat === MAT?.marble || mat === MAT?.lobbyWall) planarUV(g);
+      out.push({ mat, geo: g });
+    }
+    this.parts.clear();
+    return out;
+  }
 }
+interface Static { mat: THREE.Material; geo: THREE.BufferGeometry }
 
 // ---------- textures ----------
 
@@ -179,19 +193,102 @@ interface Entry {
   open: number;
   spin: number;
   attached: boolean;
+  /** Meshes that cast shadows up close (found on first use), and whether they do right now. */
+  casters: THREE.Mesh[] | null;
+  casting: boolean;
+  /** The parts that never move (walls, paving, planters…), in the entrance's own space: drawn by the shared batch. */
+  statics: Static[];
+  /** Stands in for those parts in the group, so anything that restyles the group's meshes (a stale project's dust) shows here. */
+  probe: THREE.Mesh;
+  dusty: boolean;
 }
 const entries: Entry[] = [];
+const PROBE_GEO = new THREE.BufferGeometry();
+
+// ---------- one set of draws for the fixed parts of every entrance ----------
+// Each entrance used to draw its walls, paving and planters itself: about sixteen draws apiece, and a
+// street of project HQs was hundreds. They are merged here into one mesh per material for the whole
+// city (and a second, faded set for projects gone stale), rebuilt when entrances come and go.
+const sharedHolders = new Map<THREE.Object3D, THREE.Group>();
+let sharedDirty = -1;
+const dustMats = new Map<THREE.Material, THREE.Material>();
+/** The faded look signals.ts gives a stale project's meshes, for the shared batch. */
+function dustOf(m: THREE.Material) {
+  let d = dustMats.get(m);
+  if (!d) {
+    const c = m.clone() as THREE.MeshStandardMaterial;
+    if (c.color) { const l = c.color.getHSL({ h: 0, s: 0, l: 0 }); c.color.setHSL(l.h, l.s * 0.25, l.l * 0.55); }
+    if (c.emissiveIntensity != null) c.emissiveIntensity *= 0.2;
+    dustMats.set(m, (d = c));
+  }
+  return d;
+}
+function rebuildShared() {
+  for (const h of sharedHolders.values()) {
+    h.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+    h.removeFromParent();
+  }
+  sharedHolders.clear();
+  const byHost = new Map<THREE.Object3D, Map<THREE.Material, THREE.BufferGeometry[]>>();
+  const inv = new THREE.Matrix4(), m4 = new THREE.Matrix4();
+  for (const e of entries) {
+    const host = e.group.parent?.parent ?? e.group.parent;
+    if (!host) continue;
+    host.updateWorldMatrix(true, false);
+    e.group.updateWorldMatrix(true, false);
+    m4.multiplyMatrices(inv.copy(host.matrixWorld).invert(), e.group.matrixWorld);
+    let mats = byHost.get(host);
+    if (!mats) byHost.set(host, (mats = new Map()));
+    for (const st of e.statics) {
+      const mat = e.dusty ? dustOf(st.mat) : st.mat;
+      const l = mats.get(mat) ?? [];
+      l.push(st.geo.clone().applyMatrix4(m4));
+      mats.set(mat, l);
+    }
+  }
+  for (const [host, mats] of byHost) {
+    const holder = new THREE.Group();
+    holder.name = 'entrances-shared';
+    for (const [mat, list] of mats) {
+      const g = mergeGeometries(list, false);
+      list.forEach((x) => x.dispose());
+      if (!g) continue;
+      const m = new THREE.Mesh(g, mat);
+      const base = [...dustMats].find(([, d]) => d === mat)?.[0] ?? mat;
+      const see = base === MAT?.glass;
+      m.castShadow = !see && base !== MAT?.downlight && base !== MAT?.ceilingLight;
+      m.receiveShadow = !see;
+      if (see) m.renderOrder = 2;
+      holder.add(m);
+    }
+    host.add(holder);
+    sharedHolders.set(host, holder);
+  }
+}
 
 /** Doors slide open when you're close, the revolving door turns; far entrances are hidden. */
 export function updateEntrances(dt: number, player: THREE.Vector3) {
   const night = shared.uNight.value;
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
-    if (!e.group.parent) { if (e.attached) entries.splice(i, 1); continue; }
-    e.attached = true;
-    const d = Math.hypot(player.x - e.at.x, player.z - e.at.z);
-    e.group.visible = d < 420;
+    if (!e.group.parent) {
+      if (e.attached) { entries.splice(i, 1); e.statics.forEach((st) => st.geo.dispose()); sharedDirty = 0.25; }
+      continue;
+    }
+    if (!e.attached) { e.attached = true; sharedDirty = 0.25; }
+    const dusty = e.probe.material !== MAT!.stone;
+    if (dusty !== e.dusty) { e.dusty = dusty; sharedDirty = Math.max(sharedDirty, 0.05); }
+    // An entrance is a few dozen small meshes: past ~180 m (or from well above) it is a few pixels
+    // under its tower, and a city of them was most of the frame's draw calls. Shadows closer still.
+    const d = Math.hypot(player.x - e.at.x, player.y - e.at.y, player.z - e.at.z);
+    e.group.visible = d < 180;
     if (!e.group.visible) continue;
+    const cast = d < 75;
+    if (cast !== e.casting) {
+      if (!e.casters) { e.casters = []; e.group.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh && m.castShadow) e.casters!.push(m); }); }
+      for (const m of e.casters) m.castShadow = cast;
+      e.casting = cast;
+    }
     e.halo.opacity = night * 0.85;
     const want = d < 5 && Math.abs(player.y - e.at.y) < 4 ? 1 : 0;
     e.open += (want - e.open) * Math.min(1, dt * (want ? 3.2 : 1.6));
@@ -201,6 +298,8 @@ export function updateEntrances(dt: number, player: THREE.Vector3) {
       e.wings.rotation.y += e.spin * dt;
     }
   }
+  // Entrances arrive in a burst as the city loads: rebuild the shared batch once they've settled.
+  if (sharedDirty >= 0 && (sharedDirty -= dt) < 0) { sharedDirty = -1; rebuildShared(); }
 }
 
 // ---------- the entrance ----------
@@ -410,9 +509,11 @@ export function buildEntrance(o: EntranceOpts): THREE.Group {
     }
   }
 
-  b.build(group);
+  const probe = new THREE.Mesh(PROBE_GEO, M.stone);
+  probe.visible = false;
+  group.add(probe);
   const at = new THREE.Vector3(o.door.x + o.out.x * P, o.door.y, o.door.z + o.out.z * P);
-  entries.push({ group, at, leaves, halo, wings, open: 0, spin: 0, attached: false });
+  entries.push({ group, at, leaves, halo, wings, open: 0, spin: 0, attached: false, casters: null, casting: true, statics: b.take(), probe, dusty: false });
   return group;
 }
 

@@ -11,6 +11,7 @@ import { RoadNet, signalState } from './net.ts';
 import { MATS, buildingMaterial, coniferTree, farMask, groundMaterial, ironMaterial, lampGeometries, lampPoolTexture, lollipopTree, palmTree, fanPalmTree, PROP_COLLIDE, propGeometries, propMat, shoreMaterial, treeMat, waterMaterial } from './style.ts';
 import { ParkLayer, setParkViewer } from './parks.ts';
 import { LandmarkLayer } from './landmarks/index.ts';
+import { lights } from '../post/lights.ts';
 
 export const Z = 14;
 /** Raised sidewalks stand this far above the road (matches the chunk builder). */
@@ -41,6 +42,8 @@ export interface Chunk {
   fpGrid?: Map<string, FootprintData[]>;
   /** Benches in world space [x, y, z, rotY, …], for robots taking a break. */
   benches: number[];
+  /** Street-lamp heads in world space [x, y, z, …] (the night's lights). */
+  lampHeads: Float32Array;
 }
 
 export interface BuildingHit {
@@ -127,6 +130,19 @@ function benchesOf(props: Float32Array, x0: number, z0: number) {
   for (let i = 0; i < props.length; i += 5) if (props[i + 4] === 0) out.push(props[i] + x0, props[i + 1], props[i + 2] + z0, props[i + 3]);
   return out;
 }
+
+/** Where each lamp's light comes from: the head, out over the street on its arm. */
+function lampHeadsOf(lamps: Float32Array, x0: number, z0: number) {
+  const out = new Float32Array((lamps.length / 4) * 3);
+  for (let i = 0, k = 0; i < lamps.length; i += 4) {
+    const r = lamps[i + 3];
+    out[k++] = lamps[i] + Math.sin(r) * 2.1 + x0; out[k++] = lamps[i + 1] + 6.9; out[k++] = lamps[i + 2] + Math.cos(r) * 2.1 + z0;
+  }
+  return out;
+}
+
+/** Lamps light the street out to here (beyond it they are a glowing head and nothing more). */
+const LAMP_LIGHT_RANGE = 340;
 
 /** Street furniture is drawn within this distance. */
 const PROP_NEAR = 220;
@@ -368,12 +384,51 @@ export class Chunks {
     }
     for (const [key, ch] of this.chunks) if (!next.has(key)) this.remove(ch);
     this.pump(p);
+    this.gatherLamps(p);
     this.splitScatters(p);
     this.landmarks.update(p, time);
     this.tick(time);
   }
 
   get pending() { return this.loading.size; }
+
+  private lampsAt = new THREE.Vector3(1e9, 0, 0);
+  private lampsDirty = true;
+  private lampNight = -1;
+  private lampBuf = new Float32Array(400 * 8);
+  /**
+   * The street lamps near the viewer become real lights after dark (post/lights.ts). Re-picked every
+   * 12 m of movement, when chunks arrive, or as dusk brings them up: the nearest few hundred.
+   */
+  private gatherLamps(p: THREE.Vector3) {
+    const night = shared.uNight.value;
+    const on = lights.enabled && night > 0.02;
+    if (!on) { if (lights.staticCount) lights.setStatic(this.lampBuf, 0); this.lampNight = -1; return; }
+    if (!this.lampsDirty && Math.abs(night - this.lampNight) < 0.02 && this.lampsAt.distanceToSquared(p) < 144) return;
+    this.lampsAt.copy(p); this.lampsDirty = false; this.lampNight = night;
+    const R = LAMP_LIGHT_RANGE + Math.min(600, Math.max(0, p.y) * 0.8), R2 = R * R;
+    const found: number[] = [];
+    for (const ch of this.chunks.values()) {
+      if (ch.lod !== 0 || this.distRect(p.x, p.z, ch) > R) continue;
+      const L = ch.lampHeads;
+      for (let i = 0; i < L.length; i += 3) {
+        const dx = L[i] - p.x, dz = L[i + 2] - p.z, d2 = dx * dx + dz * dz;
+        if (d2 < R2) found.push(d2, L[i], L[i + 1], L[i + 2]);
+      }
+    }
+    const n = found.length / 4, max = this.lampBuf.length / 8;
+    let order: number[] | null = null;
+    if (n > max) { order = Array.from({ length: n }, (_, i) => i).sort((a, b) => found[a * 4] - found[b * 4]); }
+    const take = Math.min(n, max), B = this.lampBuf, k = 3.6 * night;
+    for (let j = 0; j < take; j++) {
+      const i = (order ? order[j] : j) * 4;
+      // Sodium-warm LED, fading out toward the edge of the lit area so lamps don't pop as you move.
+      const f = k * (1 - THREE.MathUtils.smoothstep(Math.sqrt(found[i]), R * 0.75, R));
+      B[j * 8] = found[i + 1]; B[j * 8 + 1] = found[i + 2]; B[j * 8 + 2] = found[i + 3]; B[j * 8 + 3] = 26;
+      B[j * 8 + 4] = 1.0 * f; B[j * 8 + 5] = 0.74 * f; B[j * 8 + 6] = 0.46 * f;
+    }
+    lights.setStatic(B, take);
+  }
 
   private splitAt = new THREE.Vector3(1e9, 0, 0);
   private scattersDirty = true;
@@ -544,6 +599,7 @@ export class Chunks {
       signals: o.signals.map((sg) => ({ phase: sg.phase })),
       bulbs, bulbInfo, scatters, parks,
       benches: benchesOf(o.props, rect.x0, rect.z0),
+      lampHeads: lampHeadsOf(o.lamps, rect.x0, rect.z0),
       decks: o.edges.filter((e) => e.bridge).map((e) => ({ pts: e.pts.map((val, i) => val + (i % 2 ? rect.z0 : rect.x0)), ys: e.ys, w: e.width })),
       stats: o.stats,
     };
@@ -608,6 +664,7 @@ export class Chunks {
     }
     this.maskDirty = true;
     this.scattersDirty = true;
+    this.lampsDirty = true;
     this.onChange?.();
   }
 
@@ -632,6 +689,7 @@ export class Chunks {
     }
     if (!replacing) this.chunks.delete(ch.key);
     this.maskDirty = true;
+    this.lampsDirty = true;
   }
 
   /** The building whose wall is nearest to (x, z), within maxDist meters (detailed chunks only). */
@@ -703,6 +761,8 @@ export class Chunks {
     sh.headMat.emissiveIntensity = n * 3;
     sh.poolMat.opacity = n * 0.3;
     sh.litMat.color.copy(LAMP).multiplyScalar(n * 3);
+    // With real lights running, the painted pools of light under each lamp stand down.
+    sh.poolMat.visible = sh.litMat.visible = !lights.enabled;
     const tick = Math.floor(time * 4);
     if (tick !== this.lastBulb) {
       this.lastBulb = tick;

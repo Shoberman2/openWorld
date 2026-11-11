@@ -1,6 +1,7 @@
 // Real-looking interior surfaces, painted procedurally once and cached: an albedo, a normal map (from
 // a painted height field) and a roughness map per surface. Polished stone and wood get a clear coat,
 // so they pick up the room's lights and the city outside the windows.
+import { reflectOut } from '../post/reflect.ts';
 import * as THREE from 'three';
 
 export type SurfaceName =
@@ -308,6 +309,9 @@ const POLISHED: Partial<Record<SurfaceName, { clearcoat: number; clearcoatRoughn
   epoxy: { clearcoat: 0.8, clearcoatRoughness: 0.1 },
 };
 
+/** Polished enough to show a reflection of the room. */
+const MIRRORED = new Set<SurfaceName>(['marble', 'terrazzo', 'epoxy', 'tile']);
+
 /**
  * A material for a surface. UVs are expected in meters (see planarUV); the texture repeat converts
  * them to tiles. `tint` multiplies the albedo (vertex colors also multiply it when `vertexColors`).
@@ -327,7 +331,15 @@ export function surfaceMaterial(name: SurfaceName, opts: { tint?: THREE.ColorRep
   const extra = { normalMap: tex(s.normalMap), normalScale: new THREE.Vector2(n, n) };
   // Ceilings are lit mostly by light bounced off the floor and walls: fake that bounce a little.
   const bounce = name === 'acoustic' || opts.ceiling ? { emissive: new THREE.Color(0x3a3833), emissiveIntensity: 1 } : {};
-  if (pol) return new THREE.MeshPhysicalMaterial({ ...base, ...extra, ...pol });
+  if (pol) {
+    const m = new THREE.MeshPhysicalMaterial({ ...base, ...extra, ...pol });
+    // Polished stone and resin floors mirror the room (screen-space reflections, post/reflect.ts).
+    if (MIRRORED.has(name)) {
+      m.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>', `#include <opaque_fragment>\n${reflectOut('0.5')}`); };
+      m.customProgramCacheKey = () => 'surface-mirrored';
+    }
+    return m;
+  }
   return new THREE.MeshStandardMaterial({ ...base, ...extra, ...bounce });
 }
 

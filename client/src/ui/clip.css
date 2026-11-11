@@ -1,0 +1,49 @@
+/* Record clip: the sheet, the recording chip, the door hint and the history replay's on-screen text. */
+.ow-clip { position: fixed; left: 16px; top: 16px; z-index: 46; width: 340px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow: auto; padding: 16px; border-radius: 18px;
+  background: var(--glass-strong); border: 1px solid var(--line); color: var(--text); backdrop-filter: blur(14px); font: 14px/1.45 Inter, system-ui, sans-serif; }
+.ow-clip.hidden, .ow-clip-rec.hidden, .ow-clip-hint.hidden { display: none; }
+.ow-clip-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.ow-clip-head h4 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
+.ow-clip-x { width: 32px; height: 32px; border: 0; border-radius: 50%; background: rgba(255,255,255,.08); color: var(--text); cursor: pointer; font-size: 13px; }
+.ow-clip-x:hover { background: rgba(255,255,255,.16); }
+.ow-clip-label { display: block; margin: 12px 0 6px; color: var(--muted); font-size: 13px; font-weight: 600; }
+.ow-clip-select { width: 100%; height: 42px; border: 0; border-radius: 12px; background: rgba(255,255,255,.08); color: var(--text); padding: 0 12px; font: 600 15px Inter, system-ui, sans-serif; outline: none; }
+.ow-clip-select:focus-visible, .ow-clip-seg button:focus-visible, .ow-clip-btn:focus-visible, .ow-clip-x:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.ow-clip-seg { display: flex; padding: 3px; border-radius: 12px; background: rgba(255,255,255,.08); }
+.ow-clip-seg button { flex: 1; min-height: 36px; padding: 6px 8px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font: 600 14px Inter, system-ui, sans-serif; cursor: pointer; transition: background .15s, color .15s; }
+.ow-clip-seg button[aria-checked="true"] { background: var(--text); color: #0b0f17; }
+.ow-clip-note { margin: 8px 0 0; color: var(--muted); font-size: 13.5px; }
+.ow-clip-note code { font-family: var(--mono); font-size: 12.5px; color: var(--text); word-break: break-all; }
+.ow-clip-private { margin-top: 14px; padding: 12px; border-radius: 14px; background: rgba(255,204,51,.1); }
+.ow-clip-private p { margin: 0 0 8px; }
+.ow-clip-private p:first-child { font-weight: 600; color: var(--text); }
+.ow-clip-acts { display: flex; gap: 8px; margin-top: 16px; }
+.ow-clip-btn { flex: 1; min-height: 44px; padding: 0 18px; border: 0; border-radius: 999px; background: var(--text); color: #0b0f17; font: 600 15px Inter, system-ui, sans-serif; cursor: pointer; transition: transform .15s; }
+.ow-clip-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.ow-clip-btn:disabled { opacity: .45; cursor: default; }
+.ow-clip-btn.ghost { background: transparent; color: var(--text); box-shadow: inset 0 0 0 1px rgba(255,255,255,.28); }
+.ow-clip-video { display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: 12px; background: #000; }
+.ow-clip-video.tall { width: 62%; margin: 0 auto; aspect-ratio: 9 / 16; }
+body.clip-sheet .ow-photo, body.clip-sheet .ow-photo-grid { display: none; }
+
+/* While a film plays, only the picture and the film's own text are on screen. */
+body.cinema-mode > *:not(#game):not(.ow-cine) { visibility: hidden !important; }
+.ow-clip-rec { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); z-index: 47; padding: 8px 16px; border-radius: 999px; background: var(--glass-strong); border: 1px solid var(--line); color: var(--text); font: 600 13px Inter, system-ui, sans-serif; white-space: nowrap; }
+.ow-clip-rec.live::before { content: ''; display: inline-block; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: var(--bad); }
+
+.ow-clip-hint { position: fixed; left: 50%; bottom: calc(14% - 44px); transform: translateX(-50%); z-index: 5; padding: 6px 12px; border-radius: 10px; background: var(--glass); border: 1px solid var(--line); color: var(--text); font: 600 13px Inter, system-ui, sans-serif; white-space: nowrap; pointer-events: none; }
+.ow-clip-hint kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; margin-right: 8px; border-radius: 6px; background: rgba(255,255,255,.9); color: #111; font: 700 12px var(--mono); }
+body.photo-mode .ow-clip-hint, body.cinema-mode .ow-clip-hint { visibility: hidden; }
+@media (max-width: 720px) { .ow-clip-hint { display: none; } }
+
+.ow-replay { position: fixed; left: 28px; top: 64px; z-index: 44; max-width: min(560px, calc(100vw - 56px)); color: #fff; pointer-events: none; text-shadow: 0 1px 12px rgba(0,0,0,.55); font-family: Inter, system-ui, sans-serif; }
+.ow-replay-date { font: 600 40px/1.1 var(--mono); letter-spacing: -.02em; text-transform: uppercase; }
+.ow-replay-count { margin-top: 6px; font-size: 17px; font-weight: 500; color: rgba(255,255,255,.9); }
+.ow-replay-cap { margin-top: 14px; min-height: 28px; font-size: 22px; font-weight: 600; transition: opacity .2s; }
+.ow-replay-note { margin-top: 10px; font-size: 14px; color: rgba(255,255,255,.82); }
+@media (prefers-reduced-motion: reduce) { .ow-clip-btn, .ow-clip-seg button, .ow-replay-cap { transition: none; } }
+.pj-film { display: flex; gap: 8px; margin: 0 2px 10px; }
+.pj-film .pbtn { flex: 1; min-height: 40px; }
+/* The phone docks on the left: the sheet stands beside it. */
+body.phone-docked:not(.photo-mode) .ow-clip { left: 400px; }
+@media (max-width: 820px) { body.phone-docked:not(.photo-mode) .ow-clip { left: 16px; } }

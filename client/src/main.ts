@@ -28,6 +28,7 @@ import { bindPanelInput, closePanel, panelOpen, toast } from './ui/panel.ts';
 import { buildInterior, type Interior } from './interior.ts';
 import { installPhone } from './ui/phone.ts';
 import { PhotoMode } from './ui/photo.ts';
+import { installClipStudio } from './clip.ts';
 import type { VehicleId } from './vehicles/index.ts';
 import { buildGenericInterior, guessKind, type GenericInterior } from './rooms/index.ts';
 import { updateEntrances } from './city/entrance.ts';
@@ -41,6 +42,8 @@ import { installCityPulse } from './city/signals.ts';
 import { openReview } from './ui/review.ts';
 import { installSettings, toggleSettings } from './ui/settings.ts';
 import { keymap } from './keymap.ts';
+import { installTeam } from './team/index.ts';
+import { loadShowcase, visitWord } from './showcase.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -73,12 +76,19 @@ async function start(where: CityId | GeoPlace) {
 
   say('Reading your GitHub…');
   // Without GitHub the city still loads, just with no repo buildings (they move in once you connect).
-  const [repos, agents] = await Promise.all([api.repos().catch(() => [] as Repo[]), api.agents().catch(() => [] as AgentInfo[]), loadCharacters(say)]);
+  const [repos, agents, , showcase] = await Promise.all([api.repos().catch(() => [] as Repo[]), api.agents().catch(() => [] as AgentInfo[]), loadCharacters(say), loadShowcase()]);
+  // Famous public projects to visit: on their own without GitHub, or next to yours when switched on in
+  // Settings. `repos` stays your own (the phone, HQ and agents only know those); only the city gets both.
+  // The classic cities place by score alone, so there the showcase only fills an otherwise empty city.
+  const guests = showcase.repos.filter((g) => !repos.some((r) => r.name.toLowerCase() === g.name.toLowerCase()));
+  const worldRepos = guests.length && (real || !repos.length) ? [...repos, ...guests] : repos;
   const engine = new Engine($('game') as HTMLCanvasElement);
   const input = new Input($('game') as HTMLCanvasElement);
   bindPanelInput((on) => input.setEnabled(on));
 
-  const place: Place & { earth?: EarthApi } = real ? await buildEarthPlace(where, repos, say) : await buildPresetPlace(where, repos, say);
+  const place: Place & { earth?: EarthApi } = real ? await buildEarthPlace(where, worldRepos, say) : await buildPresetPlace(where, worldRepos, say);
+  const guestSites = place.sites.filter((s) => s.repo.showcase);
+  if (guestSites.length) track('showcase_shown', { count: guestSites.length, connected: showcase.connected });
   const earth = place.earth ?? null;
   let streetSigns = true;
   const cityScene = new THREE.Scene();
@@ -139,7 +149,7 @@ async function start(where: CityId | GeoPlace) {
     for (const s of place.sites) {
       interactions.add({
         id: `door:${s.repo.name}`, position: s.approach, radius: s.repo.tier === 'landmark' ? 6 : 4.5,
-        label: `Enter ${s.repo.name}`, sub: tierWord(s.repo),
+        label: `${s.repo.showcase ? 'Visit' : 'Enter'} ${s.repo.name}`, sub: s.repo.showcase ? visitWord(s.repo) : tierWord(s.repo),
         action: () => enterBuilding(s.repo),
       });
     }
@@ -152,9 +162,9 @@ async function start(where: CityId | GeoPlace) {
     for (const s of place.sites) {
       const n = busy.get(s.repo.name) ?? 0;
       labels.set(`b:${s.repo.name}`, new THREE.Vector3(s.top.x, s.top.y + 10, s.top.z),
-        `${esc(s.repo.name)}${n ? `<small style="color:var(--good)">⚙ ${n} agent${n > 1 ? 's' : ''} working</small>` : ''}`,
+        `${esc(s.repo.name)}${s.repo.showcase ? '<small>Public project</small>' : ''}${n ? `<small style="color:var(--good)">⚙ ${n} agent${n > 1 ? 's' : ''} working</small>` : ''}`,
         { maxDist: LABEL_DIST[s.repo.tier], minDist: 30, cls: n ? 'agent' : '' });
-      labels.set(`d:${s.repo.name}`, s.door.clone().add(new THREE.Vector3(0, 7.2, 0)).addScaledVector(s.doorOut, 1), `${esc(s.repo.name)}<small>${tierWord(s.repo)}</small>`, { maxDist: 40 });
+      labels.set(`d:${s.repo.name}`, s.door.clone().add(new THREE.Vector3(0, 7.2, 0)).addScaledVector(s.doorOut, 1), `${esc(s.repo.name)}<small>${s.repo.showcase ? esc(visitWord(s.repo)) : tierWord(s.repo)}</small>`, { maxDist: 40 });
     }
   }
   addCityInteractions();
@@ -193,6 +203,7 @@ async function start(where: CityId | GeoPlace) {
     if (generic) await exitGeneric('door', 0);
     busy = true;
     lastDoor = siteByRepo.get(repo.name) ?? null;
+    if (repo.showcase) track('showcase_entered', { repo: repo.name });
     if (player.vehicle !== 'foot') player.setVehicle('foot');
     await fade(true);
     try {
@@ -434,9 +445,44 @@ async function start(where: CityId | GeoPlace) {
     toast(`Waypoint set: <b>Home</b> · ${esc(HOME.address)}`);
   };
 
+  // ---- Teammates: people on your team as robots in the world, on the map and in the phone's Team app ----
+  const HQ_ROOMS = ['Lobby', 'Work floor', 'Agent Lab', 'Boardroom'];
+  // HQ floors are FH apart (see interior.ts).
+  const hqFloor = (r: Repo, y: number) => Math.max(0, Math.min(3, Math.round(y / ((r.tier === 'landmark' ? 5 : 4.2) + 2.6))));
+  const team = installTeam({
+    earth, labels, player, robot, camera: () => engine.camera,
+    lite: () => quality.low || engine.renderer.xr.isPresenting,
+    // Teammates are drawn outdoors, or inside the project HQ you're in; other interiors are private rooms.
+    scene: () => (busy ? null : interior ? interior.scene : generic ? null : cityScene),
+    repos: () => place.sites.map((s) => s.repo),
+    where: () => {
+      const a = interior ? lastDoor?.door ?? null : generic ? generic.hit.point : null;
+      const at = a ?? player.position;
+      return {
+        inside: interior ? { kind: 'hq', repo: interior.repo, room: HQ_ROOMS[hqFloor(interior.repo, player.position.y)] } : generic ? { kind: 'room', title: generic.it.title } : null,
+        anchor: a,
+        place: earth && (a || !interior) ? [earth.area(at.x, at.z).place, earth.area(at.x, at.z).sub].filter(Boolean).join(', ') : `${interior ? '' : `${place.locationName(at.x, at.z)}, `}${place.title}`,
+      };
+    },
+    teleport: async (t) => {
+      // They're in a project HQ you have too: walk in and take the lift to their floor.
+      const s = t.repo ? siteByRepo.get(t.repo) : null;
+      if (s) { if (interior?.repo.name !== s.repo.name) await teleportInside(s); interior?.debugFloor?.(hqFloor(s.repo, t.y)); return; }
+      await dropAt(t.lat, t.lon, t.name);
+      // dropAt lands on the nearest street; step over to where they actually stand (their roof, their side of the road).
+      if (earth && t.agl < 30) {
+        const L = earth.frame.toLocal(t.lat, t.lon), y = t.alt - earth.e0;
+        if (Math.hypot(L.x - player.position.x, L.z - player.position.z) > 3 || Math.abs(y - player.position.y) > 2) { player.position.set(L.x, y + 0.4, L.z); player.mode = 'air'; player.vel.set(0, 0, 0); }
+      }
+    },
+    setWaypoint: (lat, lon, name) => { waypoint = { lat, lon, name }; toast(`Waypoint set: <b>${esc(name)}</b>`); },
+    wave: () => { if (player.mode === 'walk') robot.play('wave'); },
+  });
+
   // ---- Phone (P): text or email HQ, the office agent that runs every other agent ----
   const phone = installPhone(ctx, {
-    sites: () => place.sites,
+    // The phone is for your own work: showcase buildings are reached from the map and the directory.
+    sites: () => (guestSites.length ? place.sites.filter((s) => !s.repo.showcase) : place.sites),
     setWaypoint: (name) => { const s = siteByRepo.get(name); if (s) setWaypoint(s); },
     travelTo: async (name) => { const s = siteByRepo.get(name); if (s) await travelTo(s); },
     enter: async (name) => { const s = siteByRepo.get(name); if (!s) return; await travelTo(s); await enterBuilding(s.repo); },
@@ -444,6 +490,7 @@ async function start(where: CityId | GeoPlace) {
     home: { address: HOME.address, go: goHome, pin: waypointHome, enter: earth ? async () => { await goHome(); await enterHome(); } : undefined },
     currentRepo: () => interior?.repo.name ?? lastDoor?.repo.name ?? null,
     openSettings: () => toggleSettings(),
+    team: team.phone,
   });
   const briefingHooks: BriefingHooks = {
     travelTo: (repo) => { const s = siteByRepo.get(repo); if (s) void travelTo(s); },
@@ -457,6 +504,7 @@ async function start(where: CityId | GeoPlace) {
   const markers = (): MapMarker[] => [
     ...(earth ? [{ lat: HOME.lat, lon: HOME.lon, color: '#3ddc97', label: 'Home', sub: HOME.address, big: true, teleport: () => { void goHome().then(() => enterHome()); } }] : []),
     ...(earth && earth.atHome ? place.sites.map((s) => ({ ...earth.frame.toGeo(s.center.x, s.center.z), color: s.repo.brandColor || '#ffcc33', label: s.repo.name, sub: tierWord(s.repo), big: s.repo.tier === 'landmark' || s.repo.tier === 'tower', teleport: () => { void teleportInside(s); } })) : []),
+    ...team.markers(),
   ];
   const openMap = (teleport = false) => {
     if (!earth || !tileMap || busy || worldMapOpen()) return;
@@ -517,6 +565,14 @@ async function start(where: CityId | GeoPlace) {
       const g = earth ? earth.frame.toGeo(player.position.x, player.position.z) : undefined;
       return { place: interior ? `${interior.repo.name} HQ` : `${place.locationName(player.position.x, player.position.z)}, ${place.title}`, ...g };
     },
+    clip: () => studio.open(), paused: () => studio.showing,
+  });
+  // ---- Record clip / Replay history: a film camera around one of your buildings (clip.ts) ----
+  const studio = installClipStudio({
+    engine, input, scene: cityScene, dayNight, sites: () => place.sites, sitesHere, player: () => player.position, film: cityPulse.film, travelTo,
+    world: { solidTop: (x, z) => Math.max(place.world.groundY(x, z), place.colliders.topBelow(x, z, 1e5)), ray: (a, b) => place.colliders.rayFraction(a, b) },
+    indoors: () => !!interior || !!generic || busy,
+    atDoor: () => { const id = interactions.current?.id ?? ''; return id.startsWith('door:') && id !== 'door:generic' ? id.slice(5) : null; },
   });
   input.onPress('KeyF', () => { if (!panelOpen() && !busy && !photo.active) photo.toggle(player.yaw, player.pitch); });
 
@@ -567,7 +623,9 @@ async function start(where: CityId | GeoPlace) {
   // ---- HUD ----
   $('loading').classList.add('hidden');
   $('hud').classList.remove('hidden');
-  toast(!repos.length
+  toast(guestSites.length && !repos.length
+    ? `Welcome to <b>${esc(place.title)}</b>. Until you connect GitHub, the city is home to ${guestSites.length} famous open-source projects, like <b>${esc(guestSites[0].repo.name)}</b>${guestSites[1] ? ` and <b>${esc(guestSites[1].repo.name)}</b>` : ''}. Walk into any of them. Your own repos move in when you connect GitHub in Settings (<b>${keymap.label('settings')}</b>).${earth ? ` Hold <b>${keymap.label('jump')}</b> in the air to fly, <b>${keymap.label('map')}</b> for the map.` : ''}`
+    : !repos.length
     ? `Welcome to <b>${esc(place.title)}</b>. Connect GitHub in Settings (<b>${keymap.label('settings')}</b>) and your repos move in as buildings. ${earth ? `Hold <b>${keymap.label('jump')}</b> in the air to fly, <b>${keymap.label('map')}</b> for the map of the world.` : ''}`
     : earth
     ? `Welcome to <b>${esc(place.title)}</b>. Your ${repos.length} projects moved in; the tallest tower is <b>${esc(place.sites[0]?.repo.name ?? '')}</b>. Hold <b>${keymap.label('jump')}</b> in the air to fly, <b>${keymap.label('map')}</b> for the map of the world, <b>${keymap.label('settings')}</b> for settings.`
@@ -578,7 +636,7 @@ async function start(where: CityId | GeoPlace) {
   let wxTimer = 0;
   const headingDeg = () => ((Math.atan2(Math.sin(player.yaw), -Math.cos(player.yaw)) * 180) / Math.PI + 360) % 360;
 
-  (window as unknown as { __ow: unknown }).__ow = { THREE, player, robot, dayNight, place, earth, ctx, enterBuilding, exitBuilding, engine, phone, dropAt, photo, ride, get generic() { return generic; }, get interior() { return interior; }, enterGeneric, exitGeneric, get waypoint() { return waypoint; }, setWaypointAt: (lat: number, lon: number, name: string) => { waypoint = { lat, lon, name }; }, autopilot, goHome, pulse: cityPulse.debug, openReview };
+  (window as unknown as { __ow: unknown }).__ow = { THREE, player, robot, dayNight, place, earth, ctx, enterBuilding, exitBuilding, engine, phone, dropAt, photo, ride, get generic() { return generic; }, get interior() { return interior; }, enterGeneric, exitGeneric, get waypoint() { return waypoint; }, setWaypointAt: (lat: number, lon: number, name: string) => { waypoint = { lat, lon, name }; }, autopilot, goHome, pulse: cityPulse.debug, openReview, studio, team };
 
   // ---- VR (Meta Quest, WebXR): Enter VR button, controllers, wrist phone ----
   const xr = installXR({
@@ -605,7 +663,7 @@ async function start(where: CityId | GeoPlace) {
     const dt = Math.min(timer.getDelta(), 0.05);
     time += dt;
     xr.beforePlayer(dt);
-    if (photo.active) { photo.update(dt); robot.update(dt); } else player.update(dt);
+    if (studio.busy) { studio.update(dt); robot.update(dt); } else if (photo.active) { photo.update(dt); robot.update(dt); } else player.update(dt);
     xr.afterPlayer(dt);
     if (interior) {
       interior.update(dt);
@@ -625,10 +683,12 @@ async function start(where: CityId | GeoPlace) {
     }
     home?.update(dt, player.position, !interior && !generic && !busy ? { interactions, labels, enter: enterHome } : null);
     setNpcFocus(player.position);
+    team.update(dt);
     interactions.update(player.position, player.facing, !panelOpen() && !busy);
     labels.update(engine.camera);
     ambience.update(dt, interior ? Infinity : air.nearest(player.position), dayNight.night);
     if (!holdRender || (window as unknown as { __owRender?: boolean }).__owRender) engine.render();
+    studio.afterRender();
 
     if (earth && hud && earthMini) {
       // Indoors the player stands in the interior's own space; report where the building really is.
@@ -771,10 +831,27 @@ async function start(where: CityId | GeoPlace) {
   }
   const resume = takeResume();
   if (resume) await resumeSession(resume).catch((e) => console.warn('Resume failed', e));
+  // A link straight into a project: ?repo=<name> walks you into its building, &room=boardroom to the head
+  // of the board table with the board convened (what the /boardroom Claude command opens).
+  const link = new URLSearchParams(location.search), linkRepo = link.get('repo')?.toLowerCase();
+  if (linkRepo && !resume) {
+    const r = repos.find((x) => x.name.toLowerCase() === linkRepo || x.fullName.toLowerCase() === linkRepo);
+    if (!r) toast(`No building for <b>${esc(linkRepo)}</b>. It has to be one of your own GitHub repos.`, 8000);
+    else {
+      const s = siteByRepo.get(r.name);
+      await (s ? teleportInside(s) : enterBuilding(r)).catch((e) => console.warn('Link failed', e));
+      if (link.get('room') === 'boardroom') (interior as { toBoardroom?(open?: boolean): void } | null)?.toBoardroom?.(true);
+      // &ask=… puts a question in front of the board, ready to send.
+      const ask = link.get('ask')?.slice(0, 1000);
+      if (ask) setTimeout(() => { const q = document.querySelector<HTMLTextAreaElement>('textarea.q'); if (q) { q.value = ask; q.dispatchEvent(new Event('input', { bubbles: true })); q.focus(); } }, 80);
+      track('link_opened', { repo: r.name, room: link.get('room') ?? 'lobby' });
+    }
+  }
   // Once a day, when something happened while you were away: a gentle nudge toward the briefing.
   setTimeout(() => void maybePromptBriefing(briefingHooks), resume ? 2500 : 9000);
 }
 
 function tierWord(r: Repo) {
+  if (r.showcase) return 'Public project';
   return { landmark: 'Skyscraper HQ', tower: 'Tower', midrise: 'Office building', small: 'Storefront studio' }[r.tier];
 }

@@ -90,7 +90,10 @@ export function chooseEarthSites(
   // Supertalls (300 m+) are the skyline everyone knows; they stay themselves too.
   const usable = fps.filter((f) => f.area >= 60 && !f.landmark && f.h < 300 && Math.hypot(f.cx, f.cz) < radius * 0.9);
   const dist0 = (f: HostFp, x = 0, z = 0) => Math.hypot(f.cx - x, f.cz - z);
-  const sorted = [...repos].sort((a, b) => b.score - a.score);
+  // Your own repos pick first, exactly as if they were alone; showcase projects (other people's famous
+  // repos) only take buildings that are left afterwards.
+  const byScore = (list: Repo[]) => [...list].sort((a, b) => b.score - a.score);
+  const sorted = [...byScore(repos.filter((r) => !r.showcase)), ...byScore(repos.filter((r) => r.showcase))];
   const sites: EarthSite[] = [];
   const taken = new Set<HostFp>();
   const spaced = (d: Door) => sites.every((s) => s.door.distanceTo(d.door) > 14);
@@ -106,22 +109,31 @@ export function chooseEarthSites(
     return false;
   };
   const tallPool = usable.filter((f) => dist0(f) < radius * 0.7).sort((a, b) => (b.h - dist0(b) * 0.3) - (a.h - dist0(a) * 0.3));
-  const big = sorted.filter((r) => r.tier === 'landmark' || r.tier === 'tower');
-  const rest = sorted.filter((r) => r.tier === 'midrise' || r.tier === 'small');
-  const leftovers: Repo[] = [];
-  for (const repo of big) {
-    const minH = repo.tier === 'landmark' ? 45 : 25;
-    if (claim(repo, tallPool.filter((f) => f.h >= minH).slice(0, 80))) continue;
-    // The tall ones nearby are spoken for: the nearest decent real building instead.
-    if (!claim(repo, usable.filter((f) => f.h >= 15).sort((a, b) => dist0(a) - dist0(b)).slice(0, 400))) leftovers.push(repo);
+  const leftovers: Repo[] = [], guestLeftovers: Repo[] = [];
+  let hub: HostFp | null = null;
+  for (const guests of [false, true]) {
+    const pass = sorted.filter((r) => !!r.showcase === guests);
+    if (!pass.length) continue;
+    const left = guests ? guestLeftovers : leftovers;
+    const big = pass.filter((r) => r.tier === 'landmark' || r.tier === 'tower');
+    const rest = pass.filter((r) => r.tier === 'midrise' || r.tier === 'small');
+    for (const repo of big) {
+      const minH = repo.tier === 'landmark' ? 45 : 25;
+      if (claim(repo, tallPool.filter((f) => f.h >= minH).slice(0, 80))) continue;
+      // The tall ones nearby are spoken for: the nearest decent real building instead.
+      if (!claim(repo, usable.filter((f) => f.h >= 15).sort((a, b) => dist0(a) - dist0(b)).slice(0, 400))) left.push(repo);
+    }
+    hub ??= sites[0]?.fp ?? null;
+    const hx = hub?.cx ?? 0, hz = hub?.cz ?? 0;
+    for (const repo of rest) {
+      const [lo, hi] = repo.tier === 'midrise' ? [12, 70] : [3, 22];
+      const pool = usable.filter((f) => f.h >= lo && f.h <= hi && (repo.tier === 'small' ? f.area < 1500 : f.area > 150)).sort((a, b) => dist0(a, hx, hz) - dist0(b, hx, hz));
+      if (!claim(repo, pool.slice(0, 160))) left.push(repo);
+    }
   }
-  const hub = sites[0]?.fp ?? null;
-  const hx = hub?.cx ?? 0, hz = hub?.cz ?? 0;
-  for (const repo of rest) {
-    const [lo, hi] = repo.tier === 'midrise' ? [12, 70] : [3, 22];
-    const pool = usable.filter((f) => f.h >= lo && f.h <= hi && (repo.tier === 'small' ? f.area < 1500 : f.area > 150)).sort((a, b) => dist0(a, hx, hz) - dist0(b, hx, hz));
-    if (!claim(repo, pool.slice(0, 160))) leftovers.push(repo);
-  }
+  // Showcase projects without a building only count (and make the caller look farther out) when they
+  // are all there is: next to your own repos they must not change where yours end up.
+  if (!sorted.some((r) => !r.showcase)) leftovers.push(...guestLeftovers);
 
   const rank = new Map(sorted.map((r, i) => [r.name, i]));
   sites.sort((a, b) => rank.get(a.repo.name)! - rank.get(b.repo.name)!);

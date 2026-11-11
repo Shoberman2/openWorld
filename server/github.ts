@@ -2,6 +2,7 @@ import { existsSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import type { CiState, IssueDetail, Me, PrDetail, PulseCommit, PulseIssue, PulsePr, Repo, Tier, Worker } from '../shared/types.ts';
 import { PATHS, readConfig, run, hasClaude, logEvent } from './config.ts';
+import { SHOWCASE_REFUSAL, showcaseEntry } from './showcaseCatalog.ts';
 
 // ---------- token ----------
 
@@ -9,6 +10,8 @@ let tokenCache: { token: string; source: Me['tokenSource'] } | null = null;
 
 export async function getToken(): Promise<{ token: string; source: Me['tokenSource'] } | null> {
   if (tokenCache) return tokenCache;
+  // Tests: act as if GitHub was never connected, even on a machine where gh is logged in.
+  if (process.env.OPENWORLD_NO_GITHUB === '1') return null;
   try {
     const t = (await run('gh', ['auth', 'token'], { timeoutMs: 10_000 })).trim();
     if (t) return (tokenCache = { token: t, source: 'gh' });
@@ -204,7 +207,10 @@ async function allRepos(): Promise<Repo[]> {
 }
 
 export async function findRepo(name: string): Promise<Repo> {
-  const repo = (await listRepos()).find((r) => r.name.toLowerCase() === name.toLowerCase());
+  // Showcase buildings are other people's projects: nothing that goes through here may act on them.
+  const visiting = () => new GitHubError(SHOWCASE_REFUSAL, 403);
+  const repo = (await listRepos().catch((e) => { throw showcaseEntry(name) ? visiting() : e; })).find((r) => r.name.toLowerCase() === name.toLowerCase());
+  if (!repo && showcaseEntry(name)) throw visiting();
   if (!repo) throw new GitHubError(`Unknown repo ${name}`, 404);
   return repo;
 }
@@ -690,3 +696,6 @@ export async function rerunFailedCi(repo: Repo) {
   const { dry } = await ghWrite('POST', `/repos/${repo.owner}/${repo.name}/actions/runs/${r.id}/rerun-failed-jobs`, null, {});
   return { dry, message: `Re-running “${r.name}” on ${branch}`, url: r.html_url as string };
 }
+
+// The raw helpers, for modules that read other corners of the API (server/history.ts).
+export { gh as ghFetch, ghJson, gql };

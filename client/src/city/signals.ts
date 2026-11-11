@@ -1,8 +1,11 @@
 // The work, drawn on the buildings: a roof beacon for CI (green passing, red pulsing failing, amber
 // running), a warm band of lit windows for every agent at work inside, faded signs on projects nobody
 // has touched in a month, fireworks for a new release and streaks of light down the street for new
-// commits. Everything is instanced or pooled so a city of HQs stays a handful of draw calls.
+// commits. Open pull requests put a construction crane on the roof (two instanced meshes for the whole
+// city), its jib slewing slowly with a load on the hook. Everything is instanced or pooled so a city of
+// HQs stays a handful of draw calls.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { AgentInfo, RepoPulse } from '../../../shared/types.ts';
 import type { Site } from '../place.ts';
 import { esc } from '../interact.ts';
@@ -60,6 +63,76 @@ function windowTexture() {
   t.wrapS = THREE.RepeatWrapping;
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
+}
+
+/** A tower crane, 20 m to the slewing ring, in two pieces: the mast that stands still and the top that turns. */
+function craneGeometry() {
+  const YELLOW = new THREE.Color('#f2b307'), DARK = new THREE.Color('#2b2e34'), CONCRETE = new THREE.Color('#a3a39c'), GLASS = new THREE.Color('#5f7f96'), LOAD = new THREE.Color('#d9dee4'), STRAP = new THREE.Color('#e8642c');
+  const up = new THREE.Vector3(0, 1, 0), q = new THREE.Quaternion(), m = new THREE.Matrix4(), d = new THREE.Vector3();
+  const paint = (g: THREE.BufferGeometry, c: THREE.Color) => {
+    const n = g.attributes.position.count, col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) col.set([c.r, c.g, c.b], i * 3);
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return g;
+  };
+  const make = () => {
+    const list: THREE.BufferGeometry[] = [];
+    const box = (w: number, h: number, dp: number, x: number, y: number, z: number, c: THREE.Color) => { list.push(paint(new THREE.BoxGeometry(w, h, dp).translate(x, y, z), c)); };
+    /** A square bar from a to b. */
+    const bar = (ax: number, ay: number, az: number, bx: number, by: number, bz: number, t: number, c: THREE.Color) => {
+      d.set(bx - ax, by - ay, bz - az);
+      const len = d.length();
+      q.setFromUnitVectors(up, d.normalize());
+      m.makeRotationFromQuaternion(q).setPosition((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2);
+      list.push(paint(new THREE.BoxGeometry(t, len, t).applyMatrix4(m), c));
+    };
+    return { box, bar, done: () => { const g = mergeGeometries(list)!; list.forEach((x) => x.dispose()); return g; } };
+  };
+
+  // The mast: a lattice column on a concrete footing.
+  const a = make(), W = 0.7;
+  a.box(3.4, 0.5, 3.4, 0, 0.25, 0, CONCRETE);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) a.bar(sx * W, 0.5, sz * W, sx * W, 19.4, sz * W, 0.16, YELLOW);
+  for (let y = 0.5, k = 0; y < 19.3; y += 2.1, k++) {
+    const y1 = Math.min(19.4, y + 2.1);
+    for (const [x0, z0, x1, z1] of [[-W, -W, W, -W], [W, -W, W, W], [W, W, -W, W], [-W, W, -W, -W]]) {
+      a.bar(x0, y1, z0, x1, y1, z1, 0.09, YELLOW);
+      if (k % 2) a.bar(x0, y, z0, x1, y1, z1, 0.08, YELLOW); else a.bar(x1, y, z1, x0, y1, z0, 0.08, YELLOW);
+    }
+  }
+  a.box(1.9, 0.6, 1.9, 0, 19.7, 0, DARK);
+
+  // The top (origin on the slewing ring, jib along +z): cab, tower head, jib, counter-jib, tie bars, trolley, hook and load.
+  const b = make(), J = 24, C = -8.5, AY = 5.2;
+  b.box(1.5, 0.35, 1.5, 0, 0.18, 0, DARK);
+  b.box(1.25, 1.5, 1.4, 1.05, 1.0, 0.5, YELLOW);
+  b.box(1.27, 0.7, 1.0, 1.05, 1.25, 0.85, GLASS);
+  for (const sx of [-1, 1]) { b.bar(sx * 0.55, 0.35, 0.5, 0, AY, 0, 0.14, YELLOW); b.bar(sx * 0.55, 0.35, -0.5, 0, AY, 0, 0.14, YELLOW); }
+  // Jib: a triangular truss, two bottom chords and one on top.
+  for (const sx of [-1, 1]) b.bar(sx * 0.55, 0.45, 0.4, sx * 0.55, 0.45, J, 0.13, YELLOW);
+  b.bar(0, 1.55, 0.4, 0, 1.25, J, 0.13, YELLOW);
+  for (let z = 0.4, k = 0; z < J - 0.1; z += 1.9, k++) {
+    const z1 = Math.min(J, z + 1.9), yt = (zz: number) => 1.55 - (0.3 * (zz - 0.4)) / (J - 0.4);
+    for (const sx of [-1, 1]) { b.bar(sx * 0.55, 0.45, z, 0, yt(z + 0.95), z + 0.95, 0.07, YELLOW); b.bar(0, yt(z + 0.95), z + 0.95, sx * 0.55, 0.45, z1, 0.07, YELLOW); }
+    b.bar(-0.55, 0.45, z1, 0.55, 0.45, z1, 0.07, YELLOW);
+  }
+  // Counter-jib with its deck and the concrete counterweights.
+  for (const sx of [-1, 1]) b.bar(sx * 0.6, 0.45, -0.4, sx * 0.6, 0.45, C, 0.13, YELLOW);
+  b.box(1.2, 0.06, -C - 0.6, 0, 0.5, (C - 0.4) / 2, DARK);
+  for (let k = 0; k < 3; k++) b.box(1.5, 1.7, 0.62, 0, -0.15, C + 0.5 + k * 0.72, CONCRETE);
+  b.box(1.0, 0.9, 1.3, 0, 1.0, -3.4, DARK);
+  // Tie bars from the tower head.
+  b.bar(0, AY, 0, 0, 1.4, J * 0.62, 0.07, DARK);
+  b.bar(0, AY, 0, 0, 0.6, C + 0.6, 0.07, DARK);
+  // Trolley, hoist rope, hook block and the load: a strapped bundle of steel.
+  const T = J * 0.62, drop = -8.5;
+  b.box(1.3, 0.25, 0.9, 0, 0.2, T, DARK);
+  for (const sx of [-1, 1]) b.bar(sx * 0.12, 0.1, T, sx * 0.12, drop + 1.5, T, 0.035, DARK);
+  b.box(0.4, 0.5, 0.25, 0, drop + 1.3, T, YELLOW);
+  for (const sz of [-1, 1]) for (const sx of [-1, 1]) b.bar(0, drop + 1.05, T, sx * 0.55, drop, T + sz * 1.3, 0.03, DARK);
+  b.box(1.3, 0.75, 3.4, 0, drop - 0.38, T, LOAD);
+  for (const sz of [-1, 1]) b.box(1.34, 0.79, 0.14, 0, drop - 0.38, T + sz * 1.1, STRAP);
+  return { mast: a.done(), top: b.done() };
 }
 
 interface SiteFx {
@@ -192,6 +265,64 @@ export function installCityPulse(o: CityPulseOptions) {
       const v = new THREE.Vector3().randomDirection().multiplyScalar((big ? 20 : 13) * (0.75 + Math.random() * 0.25));
       sparkList.push({ p: at.clone(), v, c: colors[k % colors.length], life: 0, max: 1.6 + Math.random() * 0.9 });
     }
+  }
+
+  // ---- cranes: open pull requests are work under way, so the roof gets a tower crane ----
+  // One instance of the mast and one of the turning top per HQ; sized to the building, none under 12 m.
+  const CRANE_MIN_H = 12;
+  const craneGeo = craneGeometry();
+  const craneMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.25 });
+  const craneMasts = new THREE.InstancedMesh(craneGeo.mast, craneMat, N), craneTops = new THREE.InstancedMesh(craneGeo.top, craneMat, N);
+  craneMasts.frustumCulled = craneTops.frustumCulled = false;
+  const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+  const cranes = fx.map((f) => {
+    const s = f.site, h = s.top.y - f.base, ring = s.footprint ?? [];
+    craneMasts.setMatrixAt(f.i, zero); craneTops.setMatrixAt(f.i, zero);
+    // Mast height from the building's: 8 m on a four-storey block, 34 m on a skyscraper.
+    const scale = THREE.MathUtils.clamp(h * 0.22, 8, 34) / 20;
+    // Stand it off the middle of the roof (the CI beacon's spot), on the side away from the street, still on the roof.
+    let x = s.top.x, z = s.top.z, placed = !ring.length;
+    let rad = Infinity;
+    for (let k = 0; k < ring.length; k += 2) rad = Math.min(rad, Math.hypot(ring[k] - s.center.x, ring[k + 1] - s.center.z));
+    for (const frac of [0.5, 0.35, 0.2]) {
+      if (placed) break;
+      for (const turn of [0, 0.9, -0.9, 1.8, -1.8, Math.PI]) {
+        const a = Math.atan2(-s.doorOut.x, -s.doorOut.z) + turn, r = Math.max(2.4 * scale + 1, rad * frac);
+        const cx = s.center.x + Math.sin(a) * r, cz = s.center.z + Math.cos(a) * r, e = 1.8 * scale;
+        if (![[0, 0], [e, e], [-e, e], [e, -e], [-e, -e]].every(([ox, oz]) => inRing(ring, cx + ox, cz + oz))) continue;
+        x = cx; z = cz; placed = true;
+        break;
+      }
+    }
+    if (!placed || !ring.length) { x += 2.2 * scale + 0.6; z += 1.2 * scale; }
+    return { ok: h >= CRANE_MIN_H, x, z, y: s.top.y, scale, want: false, grow: 0, phase: (f.i * 2.399) % (Math.PI * 2) };
+  });
+  craneMasts.count = craneTops.count = fx.length;
+  group.add(craneMasts, craneTops);
+  const craneQ = new THREE.Quaternion(), craneS = new THREE.Vector3(), craneP = new THREE.Vector3(), Y_AXIS = new THREE.Vector3(0, 1, 0);
+  function updateCranes(dt: number) {
+    let mastMoved = false, topMoved = false;
+    for (const f of fx) {
+      const c = cranes[f.i];
+      const to = c.want ? 1 : 0;
+      if (c.grow === to && !to) continue;
+      if (c.grow !== to) {
+        // It is put up (and taken down) over a second or so, not popped in.
+        c.grow = to > c.grow ? Math.min(1, c.grow + dt * 0.9) : Math.max(0, c.grow - dt * 1.4);
+        const k = c.grow * c.grow * (3 - 2 * c.grow);
+        m4.compose(craneP.set(c.x, c.y, c.z), craneQ.identity(), craneS.set(c.scale, c.scale * k, c.scale));
+        craneMasts.setMatrixAt(f.i, c.grow ? m4 : zero);
+        mastMoved = true;
+      }
+      const k = c.grow * c.grow * (3 - 2 * c.grow), top = THREE.MathUtils.smoothstep(c.grow, 0.6, 1);
+      // The jib swings slowly one way, eases to a stop and comes back.
+      craneQ.setFromAxisAngle(Y_AXIS, c.phase + Math.sin(clock * 0.07 + c.phase * 1.7) * 1.5);
+      m4.compose(craneP.set(c.x, c.y + 20 * c.scale * k, c.z), craneQ, craneS.setScalar(c.scale * top));
+      craneTops.setMatrixAt(f.i, c.grow ? m4 : zero);
+      topMoved = true;
+    }
+    if (mastMoved) craneMasts.instanceMatrix.needsUpdate = true;
+    if (topMoved) craneTops.instanceMatrix.needsUpdate = true;
   }
 
   // ---- commit streaks: light running out of the door and down the street ----
@@ -331,6 +462,7 @@ export function installCityPulse(o: CityPulseOptions) {
     ciOf.set(f.site.repo.name, ci);
     setBands(f, Math.max(p?.activeAgents ?? 0, liveCount(f.site.repo.name)));
     setStale(f, !!p?.stale);
+    cranes[f.i].want = cranes[f.i].ok && (p?.openPrs.length ?? 0) > 0;
   }
   pulse.onChange((next, prev) => {
     const f = byRepo.get(next.repo);
@@ -404,6 +536,7 @@ export function installCityPulse(o: CityPulseOptions) {
       }
       if (lamps.instanceColor) lamps.instanceColor.needsUpdate = true;
       haloGeo.attributes.color.needsUpdate = true;
+      updateCranes(dt);
 
       // Agents come and go between pulses: keep the lit floors honest.
       feedT -= dt;
@@ -473,8 +606,15 @@ export function installCityPulse(o: CityPulseOptions) {
       streakMesh.count = m;
       if (m) { streakMesh.instanceMatrix.needsUpdate = true; streakMesh.instanceColor!.needsUpdate = true; }
     },
+    /** For the history replay (client/src/history.ts): the tower's parts, the release fireworks and loose sparks. */
+    film: {
+      parts: (repo: string): Part[] => { const f = byRepo.get(repo); return f ? f.parts ?? partsOf(f) : []; },
+      firework: (repo: string, big = true) => { const f = byRepo.get(repo); if (f) firework(f, big); },
+      spark: (p: THREE.Vector3, v: THREE.Vector3, c: THREE.Color, max = 0.8) => { if (sparkList.length < SPARKS) sparkList.push({ p: p.clone(), v: v.clone(), c, life: 0, max }); },
+    },
     /** Testing hooks (window.__ow.pulse). */
     debug: {
+      crane: (repo: string) => { const f = byRepo.get(repo); return f && { ...cranes[f.i] }; },
       inject: (repo: string, patch: Partial<RepoPulse>) => pulse.inject(repo, patch),
       release: (repo: string) => { const f = byRepo.get(repo); if (f) firework(f, true); },
       commits: (repo: string, n = 3) => { const f = byRepo.get(repo); if (f) commitStreaks(f, n); },

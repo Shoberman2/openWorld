@@ -89,3 +89,10 @@ body:has(#hud.hidden) .agent-call { display: none; }
 .phone .agent-card.needs_input { border-color: rgba(255, 204, 51, .45); }
 .phone .hw-review { cursor: pointer; border-radius: 10px; }
 .phone .hw-review:hover { background: rgba(255, 255, 255, .06); }
+
+/* ---- visiting a showcase building (a famous public project): no hand-off, just why ---- */
+.visiting-strip { background: rgba(255, 255, 255, .05); border-color: rgba(255, 255, 255, .16); }
+.visiting-strip .as-label { color: var(--muted); }
+.visiting-strip .vs-text { flex: 1 1 220px; min-width: 0; font-size: 13px; }
+.visiting-note { display: grid; gap: 10px; justify-items: start; }
+.visiting-note p { margin: 0; line-height: 1.5; }

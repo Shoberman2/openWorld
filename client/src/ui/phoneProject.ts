@@ -8,6 +8,7 @@ import { esc } from '../interact.ts';
 import { pulse } from '../pulse.ts';
 import { TEMPLATES, addTemplate, cadenceLabel, renderSchedulesApp, runSchedule, schedulesFor, toggleSchedule } from './schedules.ts';
 import { agentPicker, pickedAgent } from './agentPick.ts';
+import { clipEntry } from '../clip.ts';
 import './phoneProject.css';
 
 export type ProjectSub = 'pr' | 'issue' | 'new-issue' | 'add-schedule';
@@ -171,6 +172,8 @@ function renderOverview(d: ProjectDeps, v: ProjectView, fresh: boolean) {
     html += p.recentCommits.slice(0, 4).map((c) => `<div><code>${esc(c.sha.slice(0, 7))}</code><span>${esc(c.message)}</span><small>${esc(c.author)} · ${ago(c.date)}</small></div>`).join('');
     html += `</div>`;
   }
+  // A film of the building: a clip to share, or its history replayed (clip.ts).
+  if (d.canTravel(name)) html += `<h5 class="home-h">Film</h5><div class="pj-film"><button class="pbtn sm" data-clip>Record clip</button><button class="pbtn sm ghost" data-history>Replay history</button></div>`;
   if (r) html += `<a class="pbtn ghost pj-gh" href="${esc(r.url)}" target="_blank" rel="noopener">Open on GitHub ↗</a>`;
   html += `</div>`;
 
@@ -180,6 +183,8 @@ function renderOverview(d: ProjectDeps, v: ProjectView, fresh: boolean) {
   const $ = <T extends HTMLElement = HTMLElement>(s: string) => d.el.querySelector<T>(s);
   $('[data-chat]')?.addEventListener('click', () => d.go({ app: 'thread', id: name }));
   $('[data-travel]')?.addEventListener('click', () => d.travelTo(name));
+  $('[data-clip]')?.addEventListener('click', () => clipEntry.studio?.open(name));
+  $('[data-history]')?.addEventListener('click', () => clipEntry.studio?.replay(name));
   d.el.querySelectorAll<HTMLAnchorElement>('.pj-nums a').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
     d.el.querySelector(a.getAttribute('href')!)?.scrollIntoView({ behavior: 'smooth', block: 'start' });

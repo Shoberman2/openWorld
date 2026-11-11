@@ -24,6 +24,7 @@ import { pulse } from './pulse.ts';
 import { drawIssueBoard, drawShelfSign, makeCarryBox, makeCrate, openPrShelf } from './rooms/work.ts';
 import { BOARD, openBoardroomPanel } from './ui/boardroomPanel.ts';
 import { keymap } from './keymap.ts';
+import { openVisitingPanel } from './showcase.ts';
 
 export interface Interior extends Scene3D {
   world: PlayerWorld;
@@ -33,6 +34,8 @@ export interface Interior extends Scene3D {
   detail: RepoDetail;
   /** Testing: jump straight to floor f (0 lobby .. 3 boardroom), standing by the lifts. */
   debugFloor?(f: number): void;
+  /** Stand at the head of the boardroom table (and, with `open`, convene the board straight away). */
+  toBoardroom?(open?: boolean): void;
   /** Testing: put n made-up running agents in the Agent Lab (they get up and talk like real ones). */
   debugBusy?(n: number): void;
 }
@@ -139,6 +142,8 @@ function aimBone(bone: THREE.Object3D | undefined, child: THREE.Object3D | undef
 export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPlacement): Promise<Interior> {
   const detail: RepoDetail = await api.repo(repo.name).catch(() => ({ repo, readme: '', workers: [], decisions: [], agents: [] }));
   track('building_entered', { repo: repo.name, tier: repo.tier });
+  // A showcase project's numbers are only read from GitHub when someone walks in: use them from here on.
+  if (repo.showcase && detail.repo?.showcase) Object.assign(repo, detail.repo);
 
   const W = ({ landmark: 48, tower: 44, midrise: 40, small: 34 } as const)[repo.tier] ?? 40;
   const H = repo.tier === 'landmark' ? 5 : 4.2;
@@ -655,7 +660,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
   b.box(mat.metal, 0.05, 0.16, 0.05, [0.9, 1.15, recZ + 0.28]);
   solid(-2.45, recZ - 0.5, 2.45, recZ + 0.55, 2);
   const receptionist = spawnNpc('reception', 'reception', makeNpc(0x2b3a55, 0xffcc33), 0, recZ + 1.05, Math.PI);
-  addLabel('lbl-reception', new THREE.Vector3(0, 2.15, recZ + 1.05), `Reception <small>${esc(repo.name)}</small>`, { maxDist: 16 });
+  addLabel('lbl-reception', new THREE.Vector3(0, 2.15, recZ + 1.05), `Reception <small>${esc(repo.name)}${repo.showcase ? ' · public project, you are visiting' : ''}</small>`, { maxDist: 16 });
 
   // Logo wall
   {
@@ -876,8 +881,9 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
     root.add(m);
     b.box(mat.black, 0.76, 0.58, 0.05, [kiosk.x, 1.35, kiosk.z + 0.09]);
     addLabel('lbl-kiosk', new THREE.Vector3(kiosk.x, 1.95, kiosk.z), 'Hire an agent', { cls: 'agent', maxDist: 12 });
-    addInteract('kiosk', new THREE.Vector3(kiosk.x, 0, kiosk.z - 0.4), 2, 'Hire an agent', `Claude Code works on ${repo.name}`, () =>
-      openHireAgentPanel(ctx, repo, detail, (a) => upsertAgent(a)));
+    addInteract('kiosk', new THREE.Vector3(kiosk.x, 0, kiosk.z - 0.4), 2, repo.showcase ? 'Agent Lab' : 'Hire an agent', repo.showcase ? 'Not available in a public project' : `Claude Code works on ${repo.name}`, () =>
+      // A showcase building is someone else's project: no agents here, just the reason why.
+      repo.showcase ? openVisitingPanel(repo, 'The Agent Lab', 'kiosk') : openHireAgentPanel(ctx, repo, detail, (a) => upsertAgent(a)));
   }
   // Live feed wall screen
   const feedC = canvas(1600, 620).c;
@@ -958,7 +964,7 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
     addLabel(`lbl-b-${m.id}`, new THREE.Vector3(x, 2.12, z), `${m.name} <small>${m.role}</small>`, { maxDist: 13 });
   }
   const headSpot = new THREE.Vector3(brdCx, 0, brdCz - 4.4);
-  addInteract('boardroom', headSpot, 2.2, 'Convene the board', `${detail.decisions.length} past decisions`, () => convene());
+  addInteract('boardroom', headSpot, 2.2, repo.showcase ? 'The boardroom' : 'Convene the board', repo.showcase ? 'Not available in a public project' : `${detail.decisions.length} past decisions`, () => (repo.showcase ? void openVisitingPanel(repo, 'The boardroom', 'boardroom') : convene()));
   endFloor();
 
   // ---------- the lift: lobby, work floor, lab, boardroom, roof ----------
@@ -1600,6 +1606,13 @@ export async function buildInterior(ctx: GameCtx, repo: Repo, view?: CityViewPla
       showFloor(f);
       ctx.player.position.set(0, fy(f), LIFT_FRONT - 2.5);
       ctx.player.vel.set(0, 0, 0);
+    },
+    toBoardroom(open = false) {
+      showFloor(BOARD_F);
+      ctx.player.placeAt(headSpot.x, headSpot.z, 0);
+      ctx.player.position.y = fy(BOARD_F);
+      ctx.player.vel.set(0, 0, 0);
+      if (open && !repo.showcase) convene();
     },
     debugBusy(n: number) {
       const tasks = ['Fix the flaky login test', 'Add dark mode to settings', 'Speed up the search index', 'Write docs for the API', 'Upgrade the build to Vite 6', 'Clean up unused CSS'];

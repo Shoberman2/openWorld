@@ -193,10 +193,14 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
   // ---- tabs ----
   const renderSheet = () => {
     if (tab === 'places') {
-      const mk = opts.markers().filter((m) => m.label);
+      // Teammates get their own list; `mk` holds projects first, then teammates, so the buttons' indexes line up.
+      const all = opts.markers().filter((m) => m.label);
+      const mk = [...all.filter((m) => m.group !== 'team'), ...all.filter((m) => m.group === 'team')];
+      const nProjects = all.filter((m) => m.group !== 'team').length;
+      const mates = mk.slice(nProjects).filter((m) => m.teleport);
       const places = opts.places ?? FAMOUS_PLACES;
       const h = opts.here();
-      sheet.innerHTML = `${mk.length ? `<h5>Your projects</h5>${mk.map((m, i) => `<div class="ow-wm-row"><span class="dot" style="background:${esc(m.color)}"></span><div><b>${esc(m.label!)}</b><small>${formatDistance(haversine(h, m), !!opts.imperial)} away</small></div>${m.teleport ? `<button data-t="${i}" title="Teleport straight inside">Teleport inside</button>` : ''}<button data-m="${i}">Show</button></div>`).join('')}` : ''}
+      sheet.innerHTML = `${mates.length ? `<h5>Teammates</h5>${mates.map((m) => `<div class="ow-wm-row"><span class="dot" style="background:${esc(m.color)}"></span><div><b>${esc(m.label!)}</b><small>${esc(m.sub ?? '')} · ${formatDistance(haversine(h, m), !!opts.imperial)} away</small></div><button data-t="${mk.indexOf(m)}" title="Teleport to them">Teleport</button><button data-m="${mk.indexOf(m)}">Show</button></div>`).join('')}` : ''}${nProjects ? `<h5>Your projects</h5>${mk.slice(0, nProjects).map((m, i) => `<div class="ow-wm-row"><span class="dot" style="background:${esc(m.color)}"></span><div><b>${esc(m.label!)}</b><small>${formatDistance(haversine(h, m), !!opts.imperial)} away</small></div>${m.teleport ? `<button data-t="${i}" title="Teleport straight inside">Teleport inside</button>` : ''}<button data-m="${i}">Show</button></div>`).join('')}` : ''}
         <h5>Around the world</h5>${places.map((p, i) => `<div class="ow-wm-row"><div><b>${esc(p.name)}</b><small>${esc(p.sub ?? '')}</small></div><button data-p="${i}">Go</button></div>`).join('')}`;
       sheet.querySelectorAll<HTMLButtonElement>('button[data-t]').forEach((b) => b.addEventListener('click', () => teleport(mk[Number(b.dataset.t)])));
       sheet.querySelectorAll<HTMLButtonElement>('button[data-m]').forEach((b) => b.addEventListener('click', () => { const m = mk[Number(b.dataset.m)]; flyTo(m.lat, m.lon, 17, m.label); }));
@@ -257,6 +261,7 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
       tip.classList.toggle('hidden', !h);
       if (h) {
         tip.querySelector('b')!.textContent = h.m.label ?? 'Building';
+        tip.querySelector('span')!.textContent = h.m.group === 'team' ? 'Click to teleport to them' : 'Click to teleport inside';
         tip.style.left = `${h.x}px`; tip.style.top = `${h.y}px`;
       }
       return;
@@ -323,8 +328,12 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
 
   // ---- draw loop ----
   let raf = 0, pending = false, lastHere = '';
+  let lastLive = '';
   const frame = () => {
     raf = requestAnimationFrame(frame);
+    // Markers that move (teammates) redraw the map when they do.
+    const lk = opts.markers().map((m) => (m.live ? `${m.lat.toFixed(5)},${m.lon.toFixed(5)};` : '')).join('');
+    if (lk !== lastLive) { lastLive = lk; dirty = true; }
     const h = opts.here();
     const hk = `${h.lat.toFixed(6)},${h.lon.toFixed(6)},${Math.round(h.heading)}`;
     if (hk !== lastHere) { lastHere = hk; dirty = true; }
@@ -357,7 +366,7 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
     // Project HQs: dots for all, names where they fit (big ones first, never overlapping).
     const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
     hits = [];
-    const ms = opts.markers().slice().sort((a, b) => Number(!!b.big) - Number(!!a.big));
+    const ms = opts.markers().slice().sort((a, b) => Number(b.group === 'team') - Number(a.group === 'team') || Number(!!b.big) - Number(!!a.big));
     gx.font = `700 ${12 * dpr}px Inter, sans-serif`; gx.textAlign = 'center'; gx.textBaseline = 'bottom';
     const named: { m: MapMarker; p: { x: number; y: number } }[] = [];
     for (const m of ms) {
@@ -372,7 +381,7 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
       gx.beginPath(); gx.arc(p.x, p.y, (m.teleport ? 7.5 : m.big ? 7 : 5) * dpr, 0, Math.PI * 2);
       gx.fillStyle = m.color; gx.fill();
       gx.lineWidth = 2 * dpr; gx.strokeStyle = '#fff'; gx.stroke();
-      if (m.label && (m.big || zoom >= 16 || (m.teleport && zoom >= 12.5))) named.push({ m, p });
+      if (m.label && !(m.group === 'team' && m.teleport) && (m.big || zoom >= 16 || (m.teleport && zoom >= 12.5))) named.push({ m, p });
     }
     // Names after every dot, so a later dot never paints over an earlier name.
     for (const { m, p } of named) {
@@ -382,6 +391,20 @@ export function openWorldMap(opts: WorldMapOpts): { close(): void } {
       placed.push(r);
       gx.lineWidth = 3 * dpr; gx.strokeStyle = 'rgba(255,255,255,.9)'; gx.strokeText(m.label!, p.x, p.y - 14 * dpr);
       gx.fillStyle = '#2b2622'; gx.fillText(m.label!, p.x, p.y - 14 * dpr);
+    }
+    // Teammates on top of everything else: a bigger dot in their suit color with their initial and name.
+    for (const m of ms) {
+      if (m.group !== 'team' || !m.teleport) continue;
+      const p = toScreen(m.lat, m.lon);
+      if (p.x < -20 || p.y < -20 || p.x > W + 20 || p.y > H + 20) continue;
+      gx.beginPath(); gx.arc(p.x, p.y, 13 * dpr, 0, Math.PI * 2); gx.fillStyle = '#fff'; gx.fill();
+      gx.beginPath(); gx.arc(p.x, p.y, 10.5 * dpr, 0, Math.PI * 2); gx.fillStyle = m.color; gx.fill();
+      gx.font = `700 ${11 * dpr}px Inter, sans-serif`; gx.textAlign = 'center'; gx.textBaseline = 'middle';
+      gx.fillStyle = '#fff'; gx.fillText([...(m.label ?? '?')][0]?.toUpperCase() ?? '?', p.x, p.y + 0.5 * dpr);
+      gx.font = `700 ${12 * dpr}px Inter, sans-serif`; gx.textBaseline = 'bottom';
+      const tw = gx.measureText(m.label ?? '').width / 2 + 6 * dpr;
+      gx.fillStyle = '#2b2622'; gx.beginPath(); gx.roundRect(p.x - tw, p.y - 35 * dpr, tw * 2, 18 * dpr, 6 * dpr); gx.fill();
+      gx.fillStyle = '#fff'; gx.fillText(m.label ?? '', p.x, p.y - 19 * dpr);
     }
     // Selected spot.
     if (selected) {

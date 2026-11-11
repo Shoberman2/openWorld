@@ -31,8 +31,17 @@ export interface Config {
   chat?: { provider?: 'anthropic' | 'claude-cli' | 'codex-cli' | 'openai' | 'gemini' | 'xai' | 'grok-cli' | 'compat'; model?: string };
   /** Leave private repos out of the world (for streaming, recording and sharing clips). */
   hidePrivate?: boolean;
+  /** Show famous open-source projects next to your own repos (they always show when GitHub isn't connected). */
+  showShowcase?: boolean;
   /** Any OpenAI-compatible chat endpoint (OpenRouter, Ollama, LM Studio, Groq…). The key is optional for local servers. */
   compat?: { preset?: string; baseUrl: string; key?: string; model: string };
+  /** Teammates: the relay to connect to and the team code (a secret), who you are there, and what you share. */
+  team?: {
+    relay?: string; code?: string; uid?: string; name?: string;
+    /** This computer runs the relay, on `port`. */
+    host?: boolean; port?: number;
+    shareLocation?: boolean; shareWork?: boolean; sharePrivate?: boolean;
+  };
 }
 
 export function readConfig(): Config {

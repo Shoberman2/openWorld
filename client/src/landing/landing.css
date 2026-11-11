@@ -185,3 +185,6 @@
 .lp-setup li.done button, #lp-setup-gh button { display: none; }
 .lp-setup button { flex: none; padding: 8px 14px; border-radius: 10px; border: 0; background: #fff; color: #111; font-weight: 700; font-size: 13px; cursor: pointer; }
 .lp-repos:empty { display: none; }
+
+/* Without GitHub: what fills the city meanwhile. */
+.lp-showcase { max-width: 460px; line-height: 1.5; }

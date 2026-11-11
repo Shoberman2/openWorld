@@ -5,6 +5,7 @@ import { esc } from '../interact.ts';
 import { chatUI, openPanel } from './panel.ts';
 import { assignStrip } from './assign.ts';
 import { openAgentLivePanel } from './agentPanel.ts';
+import { visitingStrip } from '../showcase.ts';
 
 export interface SpeechHooks {
   /** Called as the NPC's reply streams in, with the text so far. */
@@ -28,12 +29,18 @@ export function openWorkerPanel(ctx: GameCtx, repo: Repo, target: Worker | 'rece
   const w = isRec ? null : target;
   const who = isRec ? 'Reception' : w!.isAgent ? (w!.agentName ?? w!.author) : w!.author;
   const subtitle = isRec
-    ? `${esc(repo.fullName)} · ${repo.commits} commits · ${repo.prs} PRs`
+    ? repo.showcase
+      // Someone else's project, and its numbers are only known once GitHub has answered.
+      ? [esc(repo.fullName), 'public project', repo.stars ? `${repo.stars.toLocaleString('en-US')} stars` : '', repo.commits ? `${repo.commits.toLocaleString('en-US')} commits` : ''].filter(Boolean).join(' · ')
+      : `${esc(repo.fullName)} · ${repo.commits} commits · ${repo.prs} PRs`
     : [
         `<span class="tag ${w!.state === 'committed' ? '' : w!.state}">${w!.kind === 'pr' ? `PR #${w!.number}` : `commit ${esc(w!.sha?.slice(0, 7) ?? '')}`} · ${w!.state}</span>`,
         w!.isAgent ? `<span class="tag agent">🤖 ${esc(w!.agentName ?? 'AI agent')}</span>` : '',
+        // Without a token GitHub's list of a public project's PRs has no line counts: leave them out rather than show zeros.
+        ...(repo.showcase && !w!.additions && !w!.deletions && !w!.changedFiles ? [] : [
         `<span class="tag">+${w!.additions} −${w!.deletions}</span>`,
         `<span class="tag">${w!.changedFiles} files</span>`,
+        ]),
         `<span class="tag">${ago(w!.date)}</span>`,
       ].join('');
   const panel = openPanel({
@@ -54,7 +61,8 @@ export function openWorkerPanel(ctx: GameCtx, repo: Repo, target: Worker | 'rece
   }
 
   // One step from a conversation to real work: type what should get done, Enter, and an agent takes a desk.
-  panel.body.prepend(assignStrip(ctx, repo, isRec ? 'reception' : 'desk', {
+  if (repo.showcase) panel.body.prepend(visitingStrip(isRec ? 'reception' : 'desk'));
+  else panel.body.prepend(assignStrip(ctx, repo, isRec ? 'reception' : 'desk', {
     placeholder: isRec ? `What should get done in ${repo.name}?` : `Follow up on “${w!.title.slice(0, 60)}”: what should get done?`,
     onWatch: (a) => openAgentLivePanel(ctx, a),
   }));

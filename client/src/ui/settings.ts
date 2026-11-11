@@ -6,9 +6,10 @@ import { lookLabels, type HudLocation } from './hud.ts';
 import { openPanel, panelOpen, type Panel } from './panel.ts';
 import { esc } from '../interact.ts';
 import { agentsTab } from './agentKeys.ts';
+import { teamTab } from '../team/settingsTab.ts';
 import './settings.css';
 
-type Tab = 'controls' | 'agents' | 'display' | 'location';
+type Tab = 'controls' | 'agents' | 'team' | 'display' | 'location';
 
 /** Live data the in-game Settings can show; the landing page has none. */
 interface SettingsSource { location: () => HudLocation | null }
@@ -47,7 +48,7 @@ export function openSettings(tab: Tab = 'controls') {
   current = panel;
   panel.el.classList.add('settings-panel');
   document.body.classList.add('settings-open');
-  const tabs: [Tab, string][] = [['controls', 'Controls'], ['agents', 'Agents & keys'], ['display', 'Display & sound'], ['location', 'Location']];
+  const tabs: [Tab, string][] = [['controls', 'Controls'], ['agents', 'Agents & keys'], ['team', 'Team'], ['display', 'Display & sound'], ['location', 'Location']];
   panel.body.innerHTML = `
     <div class="st-tabs" role="tablist">${tabs.map(([id, label]) => `<button role="tab" data-tab="${id}">${label}</button>`).join('')}</div>
     <div class="st-page"></div>`;
@@ -60,6 +61,7 @@ export function openSettings(tab: Tab = 'controls') {
     panel.body.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === t)));
     if (t === 'controls') cleanup = controls(page);
     else if (t === 'agents') cleanup = agentsTab(page);
+    else if (t === 'team') cleanup = teamTab(page);
     else if (t === 'display') cleanup = display(page);
     else cleanup = location(page);
     panel.body.scrollTop = 0;

@@ -19,6 +19,8 @@ import { registerMasters } from './masters.ts';
 import { registerTiles } from './tiles.ts';
 import { registerWeather } from './weather.ts';
 import { registerPhotos } from './photos.ts';
+import { registerClips } from './clips.ts';
+import { registerHistory } from './history.ts';
 import { httpsEnabled, startHttps } from './https.ts';
 import { registerPulse } from './pulse.ts';
 import { registerSchedules } from './schedules.ts';
@@ -26,6 +28,9 @@ import { registerBriefing } from './briefing.ts';
 import { registerControl } from './control.ts';
 import { registerProviders, providerStatuses } from './providers/index.ts';
 import { guardHttp, localOnly, trustedRequest } from './guard.ts';
+import { registerTeam } from './team/index.ts';
+import { teamStats } from './team/stats.ts';
+import { registerShowcase, showcaseStats, showcaseToggle } from './showcase.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4317;
@@ -73,6 +78,7 @@ app.get('/api/me', h(async () => ({
   agentsReady: (await providerStatuses()).some((p) => p.ready),
   hidePrivate: hidingPrivate(),
   hidePrivateFromEnv: process.env.OPENWORLD_PUBLIC_ONLY === '1',
+  showcase: showcaseToggle(),
 })));
 
 // Hide private repos (for streaming and recording): only from this computer, like keys.
@@ -95,6 +101,10 @@ app.post('/api/token', h(async (req, res) => {
 }));
 
 // ---------- repos ----------
+
+// Famous public projects you can visit (showcase.ts). Registered first: it answers reads for its own
+// buildings and passes everything else on to the routes below.
+registerShowcase(app);
 
 app.get('/api/repos', h(() => listRepos()));
 
@@ -254,6 +264,7 @@ app.get('/api/stats', h(async () => {
   const dispatchSessions = new Set<string>();
   const earthSessions = new Set<string>();
   const exploredSessions = new Set<string>();
+  const enteredSessions = new Set<string>(), clipStarted = new Set<string>(), clipSaved = new Set<string>(), clipDownloaded = new Set<string>();
   for (const line of lines) {
     try {
       const e = JSON.parse(line);
@@ -262,6 +273,10 @@ app.get('/api/stats', h(async () => {
       if ((e.name === 'explore_far' || e.name === 'explore_teleport') && e.props?.session) exploredSessions.add(e.props.session);
       if (e.name === 'phone_opened' && e.props?.session) phoneSessions.add(e.props.session);
       if (e.name === 'office_dispatch' && e.props?.session) dispatchSessions.add(e.props.session);
+      if (e.name === 'building_entered' && e.props?.session) enteredSessions.add(e.props.session);
+      if (e.name === 'clip_started' && e.props?.session) clipStarted.add(e.props.session);
+      if (e.name === 'clip_saved' && e.props?.session) clipSaved.add(e.props.session);
+      if (e.name === 'clip_downloaded' && e.props?.session) clipDownloaded.add(e.props.session);
       const day = String(e.ts).slice(0, 10);
       (byDay[day] ||= {})[e.name] = (byDay[day][e.name] || 0) + 1;
       totals[e.name] = (totals[e.name] || 0) + 1;
@@ -286,6 +301,24 @@ app.get('/api/stats', h(async () => {
       exploredSessions: exploredSessions.size,
       exploreShare: earthSessions.size ? Math.round((exploredSessions.size / earthSessions.size) * 1000) / 1000 : 0,
     },
+    // Learning metric for the growth loop: of the sessions that walked into one of their own buildings
+    // (so a repo is connected), the share that also exported a clip (saved or downloaded). Pass mark: 0.2.
+    clips: (() => {
+      const exported = [...enteredSessions].filter((s) => clipSaved.has(s) || clipDownloaded.has(s)).length;
+      return {
+        enteredSessions: enteredSessions.size,
+        startedSessions: clipStarted.size,
+        savedSessions: clipSaved.size,
+        downloadedSessions: clipDownloaded.size,
+        enteredAndExported: exported,
+        clipShare: enteredSessions.size ? Math.round((exported / enteredSessions.size) * 1000) / 1000 : 0,
+      };
+    })(),
+    // Learning metric for the public city: of the sessions with no GitHub, how many walk into a famous
+    // project's building, and how many go on to connect their own.
+    showcase: showcaseStats(),
+    // Learning metric for teammates: of the sessions connected to a team, the share with 2+ people online at once.
+    team: teamStats(),
     byDay,
     perSession: sessions
       ? Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, Math.round((v / sessions) * 100) / 100]))
@@ -298,6 +331,8 @@ registerMasters(app, (msg) => broadcastAll(msg));
 registerTiles(app);
 registerWeather(app);
 registerPhotos(app);
+registerClips(app);
+registerHistory(app);
 // ---- pulse ----
 registerPulse(app, (msg) => broadcastAll(msg));
 // ---- schedules & briefing ----
@@ -308,6 +343,9 @@ registerControl(app);
 
 // ---- agents & keys ----
 registerProviders(app, h);
+
+// ---- teammates: presence and chat through a team relay (never the main server's port) ----
+const team = registerTeam(app, h, (msg) => broadcastAll(msg));
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -341,6 +379,8 @@ function broadcastAll(msg: ServerMsg) {
   for (const wss of sockets) for (const client of wss.clients) if (client.readyState === WebSocket.OPEN) client.send(data);
 }
 setBroadcaster(broadcastAll);
+// The page reports its own robot over /ws; the team bridge listens on every game socket.
+team.attach(() => sockets);
 // OPENWORLD_HTTPS=1: also serve over HTTPS on the LAN, for VR headsets (WebXR needs a secure context).
 if (httpsEnabled()) {
   startHttps(app, Number(process.env.HTTPS_PORT) || PORT + 1, (srv, allowed) =>

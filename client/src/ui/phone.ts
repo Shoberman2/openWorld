@@ -10,6 +10,7 @@ import { ago, renderProject, projectStatusHtml, type ProjectDeps, type ProjectVi
 import { pulse } from '../pulse.ts';
 import { agentPicker, pickedAgent } from './agentPick.ts';
 import type { GameCtx } from '../ctx.ts';
+import type { PhoneTeam } from '../team/phoneApp.ts';
 
 /** Alt frees the cursor while held (input.ts); Macs call it Option. */
 const ALT_KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌥ Option' : 'Alt';
@@ -31,6 +32,8 @@ export interface PhoneHooks {
   currentRepo?(): string | null;
   /** Opens the game's settings, if there is a settings screen. */
   openSettings?(): void;
+  /** The Team app (teammates, team chat): drawn by client/src/team/phoneApp.ts. */
+  team?: PhoneTeam;
 }
 
 /**
@@ -86,7 +89,7 @@ export interface Phone {
 }
 
 /** Four tabs; everything else is a screen pushed on top of one. */
-type Tab = 'home' | 'projects' | 'chat' | 'map';
+type Tab = 'home' | 'projects' | 'chat' | 'teammates' | 'map';
 type View =
   | { app: 'home' }
   | { app: 'projects' }
@@ -95,8 +98,9 @@ type View =
   | { app: 'chat' }
   | { app: 'thread'; id: string } // 'hq' or a repo name (its lead)
   | { app: 'mail'; open?: string; compose?: boolean }
+  | { app: 'teammates' }
   | { app: 'map' };
-const TAB_OF: Record<View['app'], Tab> = { home: 'home', projects: 'projects', project: 'projects', agent: 'home', chat: 'chat', thread: 'chat', mail: 'chat', map: 'map' };
+const TAB_OF: Record<View['app'], Tab> = { home: 'home', projects: 'projects', project: 'projects', agent: 'home', chat: 'chat', thread: 'chat', mail: 'chat', teammates: 'teammates', map: 'map' };
 /** Session restore and older callers used app names from before the four tabs. */
 const LEGACY: Record<string, View> = {
   messages: { app: 'thread', id: 'hq' }, team: { app: 'projects' }, agents: { app: 'home' }, review: { app: 'home' },
@@ -280,7 +284,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
   }
 
   function updateBadge() {
-    const n = unread() + leadUnread();
+    const n = unread() + leadUnread() + (hooks.team?.unread() ?? 0);
     badge.textContent = String(n);
     badge.classList.toggle('hidden', n === 0);
     changed();
@@ -504,6 +508,7 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     else if (view.app === 'chat') renderChats(fresh);
     else if (view.app === 'thread') { if (view.id === 'hq') renderMessages(fresh); else renderLead(view.id, fresh); }
     else if (view.app === 'mail') renderMail();
+    else if (view.app === 'teammates') hooks.team?.render(viewEl, fresh);
     else renderMaps();
     renderTabs();
   }
@@ -522,11 +527,12 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
     { id: 'home', name: 'Home', icon: ICON.home },
     { id: 'projects', name: 'Projects', icon: ICON.grid },
     { id: 'chat', name: 'Chat', icon: ICON.messages },
+    ...(hooks.team ? [{ id: 'teammates' as Tab, name: 'Team', icon: ICON.team }] : []),
     { id: 'map', name: 'Travel', icon: ICON.pin },
   ];
   function renderTabs() {
     const cur = TAB_OF[view.app];
-    const badgeOf = (t: Tab) => t === 'home' ? inbox().length : t === 'chat' ? unread() + leadUnread() : 0;
+    const badgeOf = (t: Tab) => t === 'home' ? inbox().length : t === 'chat' ? unread() + leadUnread() : t === 'teammates' ? hooks.team?.unread() ?? 0 : 0;
     tabsEl.innerHTML = TABS.map((t) => { const n = badgeOf(t.id); return `<button class="${t.id === cur ? 'on' : ''}" data-tab="${t.id}">${t.icon}<span>${t.name}</span>${n ? `<i>${n}</i>` : ''}</button>`; }).join('');
     tabsEl.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) => b.addEventListener('click', () => tab({ app: b.dataset.tab as Tab } as View)));
   }
@@ -1252,6 +1258,9 @@ export function installPhone(ctx: GameCtx, hooks: PhoneHooks): Phone {
 
   // Agents with a question call you, wherever you are.
   installRing(ctx, { onChange: () => { changed(); if (isOpen) refresh(); } });
+
+  // Teammates came or went, or the team chat moved: the Team app redraws itself; the badges are ours.
+  hooks.team?.onChange(() => { updateBadge(); if (isOpen) renderTabs(); });
 
   updateBadge();
   // The phone starts out (minimized only if you minimized it last time). On a small screen it would cover

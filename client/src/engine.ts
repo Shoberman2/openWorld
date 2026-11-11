@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { Bloom } from './post/bloom.ts';
+import { lights } from './post/lights.ts';
+import { FinalPass } from './post/final.ts';
+import { TemporalUpscale } from './post/taa.ts';
 import { Clouds, SkyDome, SkylineRing, artSky, makeStars } from './sky.ts';
 import { WeatherState, Precipitation, Lightning, Aurora } from './weather.ts';
 import { AtmospherePass } from './atmosphere.ts';
@@ -85,48 +86,53 @@ export interface SkyLook {
   ambient?: number;
 }
 
-/**
- * Camera-like grade on the final image: a gentle S-curve and a touch more color (the clear, vivid look
- * of a modern open-world game in good weather), a light sharpen to restore texture detail the
- * multisampling softens, and a soft lens vignette.
- */
-const GradeShader = {
-  uniforms: { tDiffuse: { value: null }, uSat: { value: 1.07 }, uContrast: { value: 1.06 }, uVignette: { value: 0.12 }, uSharpen: { value: 0.22 }, uTexel: { value: new THREE.Vector2(1 / 1280, 1 / 720) } },
-  vertexShader: /* glsl */ `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: /* glsl */ `
-    uniform sampler2D tDiffuse; uniform float uSat, uContrast, uVignette, uSharpen; uniform vec2 uTexel; varying vec2 vUv;
-    void main() {
-      vec4 c = texture2D(tDiffuse, vUv);
-      if (uSharpen > 0.0) {
-        vec3 n = texture2D(tDiffuse, vUv + vec2(uTexel.x, 0.0)).rgb + texture2D(tDiffuse, vUv - vec2(uTexel.x, 0.0)).rgb
-               + texture2D(tDiffuse, vUv + vec2(0.0, uTexel.y)).rgb + texture2D(tDiffuse, vUv - vec2(0.0, uTexel.y)).rgb;
-        vec3 d = c.rgb - n * 0.25;
-        c.rgb += clamp(d, -0.06, 0.06) * uSharpen * 4.0;
-      }
-      float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
-      c.rgb = mix(vec3(l), c.rgb, uSat);
-      // S-curve around mid grey: richer shadows and highlights without crushing either.
-      vec3 x = clamp(c.rgb, 0.0, 1.0);
-      vec3 s = x * x * (3.0 - 2.0 * x);
-      c.rgb = mix(x, s, (uContrast - 1.0) * 2.0);
-      vec2 d = vUv - 0.5;
-      c.rgb *= 1.0 - uVignette * smoothstep(0.25, 0.75, dot(d, d) * 2.0);
-      gl_FragColor = vec4(clamp(c.rgb, 0.0, 1.0), c.a);
-    }`,
-};
+/** Draws the scene into its own (multisampled) target; the atmosphere pass picks it up from there. */
+class ScenePass extends Pass {
+  constructor(public scene: THREE.Scene, public camera: THREE.Camera, private target: THREE.WebGLRenderTarget) {
+    super();
+    this.needsSwap = false;
+  }
+  /** Set for a frame to time this pass on the GPU: called around the draw. */
+  timer: { begin: () => void; end: () => void } | null = null;
+  render(renderer: THREE.WebGLRenderer) {
+    renderer.setRenderTarget(this.target);
+    this.timer?.begin();
+    renderer.render(this.scene, this.camera);
+    this.timer?.end();
+  }
+}
+
+/** The post chain's share on top of the scene pass (measured: about a quarter of the frame's GPU time). */
+const POST_SHARE = 1.3;
+/** Fractions of the output resolution the scene may be drawn at (below 1, the temporal upscaler fills in). */
+const SCALES = [1, 0.8, 0.67];
+const TAA_Q = new URLSearchParams(location.search).get('taa');
 
 export class Engine {
   renderer: THREE.WebGLRenderer;
   camera: THREE.PerspectiveCamera;
   composer: EffectComposer;
-  renderPass: RenderPass;
-  bloom: UnrealBloomPass;
+  renderPass: ScenePass;
+  /** Where the 3D scene is drawn: HDR color (alpha = 1 - reflection mask) and depth, multisampled. */
+  sceneRT: THREE.WebGLRenderTarget;
+  bloom: Bloom;
   /** Edge antialiasing on the final image (Ultra). */
   smaa: SMAAPass | null = null;
   /** Ambient occlusion, sun-lit haze, ground fog and light shafts (needs the scene's depth). */
   atmo: AtmospherePass;
   pmrem: THREE.PMREMGenerator;
-  grade: ShaderPass;
+  /** Bloom, tone mapping and the grade, in one pass (post/final.ts). Depth of field goes in before it. */
+  grade: FinalPass;
+  /** Rebuilds a full-resolution frame when the scene is drawn with fewer pixels (post/taa.ts). */
+  upscaler: TemporalUpscale;
+  /** The atmosphere's result at the scene's (reduced) resolution, for the upscaler. */
+  private lowRT: THREE.WebGLRenderTarget;
+  /** May the scene drop below output resolution and be upscaled? (`?taa=0` turns it off, `?taa=0.67` pins a scale.) */
+  upscale = !quality.low && TAA_Q !== '0';
+  /** Fraction of the output resolution the scene is drawn at. */
+  renderScale = 1;
+  private scaleCeil = 0;
+  private scaleCeilUntil = 0;
 
   /** The scene currently being rendered (city or an interior). */
   scene: THREE.Scene;
@@ -146,23 +152,27 @@ export class Engine {
     this.scene = new THREE.Scene();
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
 
-    // The post chain renders off-screen, where the canvas's antialiasing doesn't apply: multisample the target.
-    const rt = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, { type: THREE.HalfFloatType, samples: quality.low ? 0 : 4 });
-    rt.depthTexture = new THREE.DepthTexture(window.innerWidth, window.innerHeight, THREE.FloatType);
-    this.composer = new EffectComposer(this.renderer, rt);
-    // Only the scene render needs multisampling: the second buffer just takes post passes, and keeping
-    // it plain saves a full-screen multisample resolve after each pass that writes to it.
-    this.composer.renderTarget2.dispose();
-    this.composer.renderTarget2.samples = 0;
-    this.renderPass = new RenderPass(this.scene, this.camera);
+    // The scene is drawn off-screen, where the canvas's antialiasing doesn't apply, into its own
+    // multisampled target (with the depth the post effects read). The composer's two buffers only ever
+    // take full-screen passes, so they stay plain: no multisample resolve after each one.
+    this.sceneRT = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, { type: THREE.HalfFloatType, samples: quality.low ? 0 : 4 });
+    this.sceneRT.depthTexture = new THREE.DepthTexture(window.innerWidth, window.innerHeight, THREE.FloatType);
+    this.composer = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, { type: THREE.HalfFloatType, depthBuffer: false }));
+    this.renderPass = new ScenePass(this.scene, this.camera, this.sceneRT);
     this.composer.addPass(this.renderPass);
     this.atmo = new AtmospherePass(this.camera, quality.low);
     this.atmo.scene = this.scene;
+    this.atmo.source = this.sceneRT;
     this.composer.addPass(this.atmo);
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.3, 0.5, 0.95);
+    this.lowRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+    this.upscaler = new TemporalUpscale();
+    this.upscaler.enabled = false;
+    this.composer.addPass(this.upscaler);
+    const pin = Number(TAA_Q);
+    if (this.upscale && pin > 0.3 && pin < 1) { this.renderScale = pin; this.pinned = true; }
+    this.bloom = new Bloom();
     this.composer.addPass(this.bloom);
-    this.composer.addPass(new OutputPass());
-    this.grade = new ShaderPass(GradeShader);
+    this.grade = new FinalPass(this.bloom);
     if (quality.low) this.grade.uniforms.uSharpen.value = 0;
     // Ultra renders more pixels: less sharpening, so edges don't ring.
     if (quality.ultra) this.grade.uniforms.uSharpen.value = 0.16;
@@ -183,7 +193,10 @@ export class Engine {
     this.scene = scene;
     this.renderPass.scene = scene;
     this.atmo.scene = scene;
+    this.upscaler.reset();
   }
+  private pinned = false;
+  private sharpen0: number | undefined;
 
   resize() {
     const w = window.innerWidth, h = window.innerHeight;
@@ -192,6 +205,24 @@ export class Engine {
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
     const pr = this.renderer.getPixelRatio();
+    // Below full scale the scene is drawn smaller, unmultisampled (the upscaler does the smoothing),
+    // and everything that reads its depth works at that size too.
+    const up = this.renderScale < 1;
+    const fw = Math.round(w * pr), fh = Math.round(h * pr);
+    const rw = Math.max(1, Math.round(fw * this.renderScale)), rh = Math.max(1, Math.round(fh * this.renderScale));
+    const samples = quality.low || up ? 0 : 4;
+    if (this.sceneRT.samples !== samples) { this.sceneRT.samples = samples; this.sceneRT.dispose(); }
+    this.sceneRT.setSize(rw, rh);
+    this.lowRT.setSize(up ? rw : 1, up ? rh : 1);
+    this.atmo.target = up ? this.lowRT : null;
+    this.atmo.needsSwap = !up;
+    this.atmo.setSize(rw, rh);
+    this.upscaler.enabled = up;
+    // Moving, an upscaled frame is a touch softer than a native one: a little more sharpening evens it out.
+    this.sharpen0 ??= this.grade.uniforms.uSharpen.value;
+    this.grade.uniforms.uSharpen.value = this.sharpen0 + (up ? 0.1 : 0);
+    this.upscaler.source = this.lowRT;
+    this.upscaler.depth = this.sceneRT.depthTexture;
     (this.grade.uniforms.uTexel.value as THREE.Vector2).set(1 / (w * pr), 1 / (h * pr));
     // Supersampled 1.5x or more past the screen's own pixels, the edges are smooth already: SMAA
     // only earns its cost below that.
@@ -219,7 +250,7 @@ export class Engine {
   maxPixelRatio = 0;
   render() {
     // In VR the headset sets the resolution and post-processing doesn't run per eye: draw straight out.
-    if (this.renderer.xr.isPresenting) { this.renderer.render(this.scene, this.camera); return; }
+    if (this.renderer.xr.isPresenting) { lights.enabled = false; this.renderer.render(this.scene, this.camera); return; }
     const now = performance.now();
     if (this.lastFrame) {
       const dt = Math.min(200, now - this.lastFrame);
@@ -234,7 +265,14 @@ export class Engine {
         // Frames are missing 60 fps, and (where we can tell) the GPU is what's holding them up:
         // when the CPU is the bottleneck (a dense city's draw calls), fewer pixels wouldn't help.
         const slow = this.frameMs > 21 && (!gpu || gpu > this.frameMs * 0.7);
-        if (slow && pr > 1) {
+        const si = SCALES.indexOf(this.renderScale);
+        let scale = this.renderScale;
+        if (slow && this.upscale && !this.pinned && si >= 0 && si < SCALES.length - 1) {
+          // First draw fewer pixels and rebuild the full frame from several: it costs far less sharpness
+          // than shrinking the output.
+          scale = SCALES[si + 1];
+          this.scaleCeil = this.renderScale; this.scaleCeilUntil = now + 45000; this.calm = 0;
+        } else if (slow && pr > 1) {
           next = Math.max(1, pr - (this.frameMs > 30 ? 0.5 : 0.25));
           // Don't climb straight back to a resolution that didn't hold up.
           this.ceiling = pr; this.ceilingUntil = now + 45000; this.calm = 0;
@@ -245,8 +283,15 @@ export class Engine {
           const banned = now < this.ceilingUntil && up >= this.ceiling;
           this.calm = fits && !banned ? this.calm + 1 : 0;
           if (this.calm >= 2) { next = up; this.calm = 0; }
+        } else if (si > 0 && !this.pinned) {
+          const up = SCALES[si - 1];
+          const fits = gpu ? this.frameMs < 18 && gpu * (up / scale) ** 2 * (up === 1 ? 1.5 : 1) < 14 : this.frameMs < 14;
+          const banned = now < this.scaleCeilUntil && up >= this.scaleCeil;
+          this.calm = fits && !banned ? this.calm + 1 : 0;
+          if (this.calm >= 2) { scale = up; this.calm = 0; }
         }
-        if (next !== pr) {
+        if (next !== pr || scale !== this.renderScale) {
+          this.renderScale = scale;
           this.renderer.setPixelRatio(next);
           this.composer.setPixelRatio(next);
           this.resize();
@@ -254,28 +299,31 @@ export class Engine {
       }
     }
     this.lastFrame = now;
-    // A faint daytime glow is all but invisible, and bloom is one of the costliest passes in the chain
-    // (~5-8 ms at 1080p on an M-series GPU): it runs when it shows (dusk, night, lit interiors).
-    this.bloom.enabled = this.bloom.strength > 0.1;
     const ext = this.gpuTiming ? this.gpuTimer : null;
-    if (!ext) { this.composer.render(); return; }
+    if (this.upscaler.enabled) this.upscaler.begin(this.camera, this.sceneRT.width, this.sceneRT.height);
+    if (!ext) { this.renderPass.timer = null; this.composer.render(); this.upscaler.end(); return; }
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
     // Collect finished timings (they arrive a frame or two late).
     const disjoint = gl.getParameter(ext.GPU_DISJOINT_EXT);
     while (this.queries.length && gl.getQueryParameter(this.queries[0], gl.QUERY_RESULT_AVAILABLE)) {
       const q = this.queries.shift()!;
       if (!disjoint) {
-        const ms = gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6;
+        const ms = (gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6) * POST_SHARE;
         this.gpuMs = this.gpuMs ? this.gpuMs + (ms - this.gpuMs) * 0.1 : ms;
       }
       gl.deleteQuery(q);
     }
-    if (this.queries.length > 4) { this.composer.render(); return; }
-    const q = gl.createQuery()!;
-    gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+    // Only the scene pass is timed (shadows and the multisampled draw: where the pixels go). A timer
+    // around the whole chain also counts the gaps between its many small passes and reads far too high.
+    if (this.queries.length > 4) this.renderPass.timer = null;
+    else {
+      this.renderPass.timer ??= {
+        begin: () => { const q = gl.createQuery()!; gl.beginQuery(ext.TIME_ELAPSED_EXT, q); this.queries.push(q); },
+        end: () => gl.endQuery(ext.TIME_ELAPSED_EXT),
+      };
+    }
     this.composer.render();
-    gl.endQuery(ext.TIME_ELAPSED_EXT);
-    this.queries.push(q);
+    this.upscaler.end();
   }
 }
 
@@ -447,12 +495,18 @@ export class DayNight {
     this.dome.mesh.position.copy(cam.position);
     this.stars.position.copy(cam.position);
     this.cloudLayer.cover = w.cover;
-    this.cloudLayer.mesh.visible = this.clouds && this.cloudLayer.cover > 0;
+    // The volumetric layer takes over from the sprite clouds where the post chain runs (not VR, not low).
+    const vol = at.clouds;
+    vol.cover = this.clouds ? w.cover : 0;
+    vol.storm = w.dark;
+    const volOn = at.cloudsActive() && !this.engine.renderer.xr.isPresenting;
+    this.cloudLayer.mesh.visible = this.clouds && this.cloudLayer.cover > 0 && !volOn;
     // Clouds ride the wind (a bit faster aloft; racing in a time-lapse).
     w.windVector(this.windV).multiplyScalar(1.6 * (this.lapse ? 12 : 1));
     if (this.windV.lengthSq() < 1) this.windV.set(3, 1.2);
     this.cloudLayer.wind.copy(this.windV);
     this.cloudLayer.update(dt, cam);
+    vol.wind.addScaledVector(this.windV, dt);
     w.windVector(this.windV);
     this.precip.update(dt, cam, w.rain, w.snow, this.windV, this.night);
     this.lightning.update(dt, w.storm, cam.position);
@@ -540,6 +594,8 @@ export class DayNight {
     cl.uLit.value.copy(a.cloudLit);
     cl.uShade.value.copy(a.cloudShade);
     cl.uHaze.value.copy(haze);
+    const vc = this.engine.atmo.clouds;
+    vc.sunDir.copy(cl.uSunDir.value); vc.lit.copy(a.cloudLit); vc.shade.copy(a.cloudShade); vc.haze.copy(haze);
     (this.stars.material as THREE.PointsMaterial).opacity = THREE.MathUtils.smoothstep(night, 0.5, 1) * 0.95 * (1 - g);
 
     (this.envGround.material as THREE.MeshBasicMaterial).color.copy(a.hemiGround).multiplyScalar(0.8);
@@ -561,6 +617,15 @@ export class DayNight {
     at.haze.copy(haze);
     at.sunDir.copy(this.sunDir);
     at.sunColor.copy(a.horizonSun).multiplyScalar(day * (1 - Math.min(0.95, g * 1.1)));
+    // The night's lamps come up at dusk. What a white wall reads under the ambient alone, so the
+    // light pass can tell a surface's color from its (dimly lit) pixel.
+    at.lightGain = night;
+    at.ambientRef = Math.max(0.03, (this.hemi.intensity * (this.hemi.color.r * 0.3 + this.hemi.color.g * 0.59 + this.hemi.color.b * 0.11)) / Math.PI * 0.8 + night * 0.06);
+    at.reflections.rain = w.rain;
+    // Cloud shadows on a day of broken cloud; under a solid deck the whole light is already dimmed.
+    at.cloudShadow = day * (1 - Math.min(1, g * 1.4)) * 0.9;
+    // Eyes open up in the dark, but night should stay night.
+    at.exposure.max = THREE.MathUtils.lerp(1.7, 1.3, night);
     this.background.copy(haze);
     this.engine.renderer.toneMappingExposure = THREE.MathUtils.lerp(1.0, 1.25, night);
     this.engine.bloom.strength = THREE.MathUtils.lerp(0.06, 0.17, night);

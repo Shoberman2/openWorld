@@ -1,4 +1,5 @@
 // Cars and pedestrians on the streamed road network: lanes, one-ways, signals, hills, bridges.
+import { lights } from '../post/lights.ts';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeTypes, pickType, type CarType, type TypeId } from '../traffic.ts';
@@ -290,6 +291,7 @@ export class EarthTraffic {
     }
     // Cars on the road are packed at the front of each type's instances and only those are drawn.
     const slot = this.mix();
+    const headK = lights.enabled ? shared.uNight.value * 1.5 : 0;
     for (const c of this.cars) {
       const body = this.bodies.get(c.type.id)!, li = this.lights.get(c.type.id)!;
       if (c.live && Math.hypot(c.pos.x - player.x, c.pos.z - player.z) > 400) this.spawn(c, player, 140, 330);
@@ -315,6 +317,14 @@ export class EarthTraffic {
       body.setMatrixAt(n, this.m4);
       body.setColorAt(n, c.paint);
       li.setMatrixAt(n, this.m4);
+      // Headlights after dark: a pool of light on the road ahead of each car near you.
+      if (headK > 0 && c.type.id !== 'bike') {
+        const ddx = c.pos.x - player.x, ddz = c.pos.z - player.z;
+        if (ddx * ddx + ddz * ddz < 150 * 150) {
+          const fx = Math.sin(c.heading), fz = Math.cos(c.heading), a = c.type.length / 2 + 5;
+          lights.push(c.pos.x + fx * a, c.pos.y + 1.1, c.pos.z + fz * a, 13, 0.95 * headK, 0.93 * headK, 0.85 * headK);
+        }
+      }
     }
     for (const id of this.bodies.keys()) {
       const b = this.bodies.get(id)!, li = this.lights.get(id)!;

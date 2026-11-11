@@ -1,4 +1,4 @@
-import type { ProvidersState, CompatTest, AgentEvent, AgentInfo, ReviewAction, Me, Repo, RepoDetail, ServerMsg, TalkRequest, BoardroomRequest, OfficeChannel, OfficeMessage, OfficeRequest, MasterMessage, MasterThreadSummary, Schedule, Briefing, RepoPulse, PrDetail, IssueDetail, ControlResult } from '../../shared/types.ts';
+import type { ClientMsg, ProvidersState, CompatTest, AgentEvent, AgentInfo, ReviewAction, Me, Repo, RepoDetail, ServerMsg, TalkRequest, BoardroomRequest, OfficeChannel, OfficeMessage, OfficeRequest, MasterMessage, MasterThreadSummary, Schedule, Briefing, RepoPulse, PrDetail, IssueDetail, ControlResult, RepoHistory, ClipInfo } from '../../shared/types.ts';
 
 async function json<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}));
@@ -14,7 +14,16 @@ export const api = {
   setHidePrivate: (on: boolean) =>
     fetch('/api/settings/hide-private', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on }) }).then((r) => json<{ hidePrivate: boolean }>(r)),
   repos: () => fetch('/api/repos').then((r) => json<Repo[]>(r)),
+  /** Famous public projects to visit: on without GitHub, or when switched on in Settings. Empty when off. */
+  showcase: () => fetch('/api/showcase').then((r) => json<{ on: boolean; connected: boolean; repos: Repo[] }>(r)),
+  setShowcase: (on: boolean) =>
+    fetch('/api/settings/showcase', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on }) }).then((r) => json<{ showcase: boolean }>(r)),
   repo: (name: string) => fetch(`/api/repos/${encodeURIComponent(name)}`).then((r) => json<RepoDetail>(r)),
+  /** The repo's whole life (commits per week or month, releases, contributors), for the history replay. */
+  history: (name: string) => fetch(`/api/repos/${encodeURIComponent(name)}/history`).then((r) => json<RepoHistory>(r)),
+  /** Keep a recorded clip in ~/.openworld/clips. */
+  saveClip: (blob: Blob, meta: { repo: string; kind: string; aspect: string; seconds: number }) =>
+    fetch(`/api/clips?${new URLSearchParams({ ...meta, seconds: String(meta.seconds) })}`, { method: 'POST', headers: { 'content-type': blob.type.split(';')[0] }, body: blob }).then((r) => json<ClipInfo>(r)),
   logoUrl: (name: string) => `/api/repos/${encodeURIComponent(name)}/logo`,
   agents: () => fetch('/api/agents').then((r) => json<AgentInfo[]>(r)),
   /** provider: which coding agent (claude | codex | gemini | grok | opencode); the server falls back to the user's default. */
@@ -78,6 +87,11 @@ export function connectLive() {
     } catch { /* ignore */ }
   };
   ws.onclose = () => setTimeout(connectLive, 2000);
+}
+
+/** Tell our own server something over the live socket (teammates: where the robot is). Dropped while it reconnects. */
+export function sendLive(msg: ClientMsg) {
+  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
 export function onLive(l: Listener) {

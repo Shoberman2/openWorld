@@ -41,6 +41,8 @@ export interface Repo {
   hasLogo: boolean;
   /** Brand color, guessed from the logo or language. */
   brandColor: string;
+  /** A famous public project from the showcase (GET /api/showcase), not one of yours: look around, change nothing. */
+  showcase?: boolean;
 }
 
 export interface Me {
@@ -55,6 +57,8 @@ export interface Me {
   /** Private repos are left out of the world (Settings, or OPENWORLD_PUBLIC_ONLY=1). */
   hidePrivate?: boolean;
   hidePrivateFromEnv?: boolean;
+  /** Settings: also show famous open-source projects next to your own (without GitHub they always show). */
+  showcase?: boolean;
 }
 
 /** A desk worker: one past PR or (for repos with no PRs) one past commit. */
@@ -164,7 +168,13 @@ export type ServerMsg =
   | { type: 'master:message'; repo: string; message: MasterMessage }
   | { type: 'master:typing'; repo: string; on: boolean }
   | { type: 'pulse:update'; pulse: RepoPulse }
-  | { type: 'schedule:update'; schedule: Schedule };
+  | { type: 'schedule:update'; schedule: Schedule }
+  | { type: 'team:state'; state: TeamState }
+  | { type: 'team:poses'; poses: Record<string, TeamPose> }
+  | { type: 'team:chat'; message: TeamChatMessage }
+  | { type: 'team:emote'; id: string; name: string; kind: 'wave' }
+  | { type: 'team:ping'; ping: TeamPing }
+  | { type: 'team:event'; kind: 'join' | 'leave'; id: string; name: string };
 
 // ---------- Work pulse: the live state of each repo, drawn onto its building ----------
 // GET /api/pulse            -> RepoPulse[]   (refreshed in the background ~every 2 min; WS pulse:update on change)
@@ -285,6 +295,8 @@ export interface BoardroomRequest {
 // GET  /api/repos                   -> Repo[]
 // GET  /api/repos/:name             -> RepoDetail
 // GET  /api/repos/:name/logo        -> image bytes (404 if none)
+// GET  /api/showcase                -> {on, connected, repos: Repo[]}  (famous public projects; empty when off)
+// POST /api/settings/showcase {on}  -> {showcase}     (show them next to your own repos; loopback only)
 // GET  /api/agents                  -> AgentInfo[]
 // POST /api/agents {repo, task}     -> AgentInfo
 // GET  /api/agents/:id/log          -> {events: {event:AgentEvent, ts:number}[]}
@@ -471,3 +483,141 @@ export interface CompatStatus {
 // POST   /api/providers/compat      {preset?, baseUrl, key?, model}  -> ProvidersState (tested first; loopback only)
 // DELETE /api/providers/compat                                       -> ProvidersState
 export interface CompatTest { ok: boolean; message: string; models: string[] }
+
+// ---------- Building history (the "Replay history" film at an HQ) ----------
+// GET /api/repos/:name/history -> RepoHistory   (cached on disk; GitHub's stats can take a few seconds the first time)
+export interface RepoHistory {
+  repo: string;
+  /** How wide each bucket is: weeks for a repo up to three years old, calendar months beyond that. */
+  unit: 'week' | 'month';
+  /** Commits per bucket, oldest first, covering the repo's whole life (`t` is the bucket's first day, ISO). */
+  buckets: { t: string; commits: number }[];
+  totalCommits: number;
+  /** Date of the very first commit, when GitHub could tell us. */
+  firstCommitAt: string | null;
+  createdAt: string;
+  pushedAt: string;
+  releases: { tag: string; publishedAt: string }[];
+  /** When each contributor's first commit landed (to the bucket), oldest first. Empty when unknown. */
+  contributors: { login: string; firstAt: string; commits: number }[];
+  /** 'commits' (counted from the commit log) and 'stats' (GitHub's contributor stats, coarser) are real; 'estimate' is even growth between createdAt and pushedAt. */
+  source: 'stats' | 'commits' | 'estimate';
+  /** True for 'estimate': the curve is a guess and must be labelled as one. */
+  approximate: boolean;
+  fetchedAt: string;
+}
+
+// ---------- Clips (photo mode / an HQ's "Record clip") ----------
+// POST /api/clips?repo=&kind=&aspect=&seconds=  body: the video bytes (video/mp4 or video/webm) -> ClipInfo
+// GET  /api/clips                               -> ClipInfo[]   (newest first)
+// GET  /api/clips/:name                         -> the video
+export interface ClipInfo {
+  name: string;
+  url: string;
+  /** Where it is on this computer, e.g. "~/.openworld/clips/2026-…-orbit.mp4". */
+  path: string;
+  repo: string;
+  kind: string;
+  aspect: string;
+  bytes: number;
+  takenAt: string;
+}
+
+// ---------- Teammates (server/team, client/src/team) ----------
+// People on the same team see each other in the world. Each player's own server holds one outbound
+// connection to a small team relay (presence and chat only) and bridges it to the page: `team:*`
+// messages on /ws, and these routes. Settings routes are loopback only, like keys.
+// GET  /api/team                      -> TeamState  (invites only when asked from this computer)
+// GET  /api/team/chat                 -> {messages: TeamChatMessage[]}
+// POST /api/team/host {name?, port?}  -> TeamState  (start a relay inside this server and join it)
+// POST /api/team/join {invite, name?} -> TeamState
+// POST /api/team/leave                -> TeamState
+// POST /api/team/settings {name?, shareLocation?, shareWork?, sharePrivate?} -> TeamState
+// POST /api/team/chat {text}          -> {ok:true}
+// POST /api/team/emote {kind:'wave'}  -> {ok:true}
+// POST /api/team/ping {lat, lon, alt, label} -> {ok:true}   (a "come here" marker for everyone)
+// The page reports its own robot over /ws: {type:'team:pose', pose: TeamPoseReport}.
+
+export type TeamStatus = 'off' | 'connecting' | 'online' | 'error';
+
+/** Where a robot is and how it's moving. Positions are lat/lon/altitude: every player's scene has its own origin. */
+export interface TeamPose {
+  lat?: number; lon?: number;
+  /** Meters above sea level, and above the ground under them. */
+  alt?: number; agl?: number;
+  /** Robot rotation, Euler YXZ (x, y, z). */
+  rot: [number, number, number];
+  /** Robot animation state, ground speed, vehicle id, thrusters, lean, wingsuit, pedal cadence. */
+  st: string; sp: number; veh: string; rk: number; lx: number; lz: number; wg: number; cad: number;
+  /** Inside a project HQ (x/y/z are in that interior's own space) or another building. */
+  in?: 'hq' | 'room';
+  x?: number; y?: number; z?: number;
+}
+
+/** What the page tells its own server about the player, ~10 times a second. */
+export interface TeamPoseReport extends TeamPose {
+  /** "Midtown, New York". */
+  place?: string;
+  /** The project HQ the player is in (its repo name here), and the floor ("Work floor"). */
+  repo?: string; room?: string;
+  /** Any other building they're inside. */
+  title?: string;
+  /** Full name of a public showcase project the player is visiting (it isn't one of their repos). */
+  pub?: string;
+}
+
+export interface TeamWork {
+  /** Project name, or "A private project" when it's private and you don't have it too. */
+  repo: string;
+  private: boolean;
+  branch: string | null;
+  file: string | null;
+  agents: { name: string; task: string; status: string }[];
+  agentCount: number;
+}
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  /** Their suit color in your world. */
+  color: string;
+  online: boolean;
+  /** Connected, but their game isn't open. */
+  idle: boolean;
+  lastSeen: string;
+  place: string | null;
+  lat: number | null; lon: number | null;
+  vehicle: string;
+  /** localRepo: your own repo of the same name, when you have it (you can meet inside). fullName: set for public projects. */
+  inside: { kind: 'hq' | 'room'; label: string; localRepo: string | null; fullName: string | null; room: string | null } | null;
+  work: TeamWork | null;
+}
+
+export interface TeamState {
+  status: TeamStatus;
+  error: string | null;
+  /** On a team (connected or trying to be). */
+  configured: boolean;
+  /** This computer runs the team's relay. */
+  hosting: boolean;
+  /** "host:4319", never the code. */
+  relay: string | null;
+  me: { id: string; name: string } | null;
+  members: TeamMember[];
+  cap: number;
+  shareLocation: boolean;
+  shareWork: boolean;
+  sharePrivate: boolean;
+  /** Hide-private mode is on: private details are never shared, whatever the toggle says. */
+  hidePrivate: boolean;
+  /** Team settings can only be changed from this computer. */
+  canEdit: boolean;
+  /** Pasteable invites (relay address + team code). Empty unless asked from this computer. */
+  invites: { label: string; url: string }[];
+}
+
+export interface TeamChatMessage { id: string; from: string; name: string; text: string; ts: number; mine: boolean }
+export interface TeamPing { from: string; name: string; lat: number; lon: number; alt: number; label: string; ts: number; mine: boolean }
+
+/** Page -> its own server, over /ws. */
+export type ClientMsg = { type: 'team:pose'; pose: TeamPoseReport };

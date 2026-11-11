@@ -2,7 +2,7 @@
 // the default agent for new tasks, who voices the office, and the GitHub connection.
 // Keys go straight to the local server and are never shown again (only the last 4 characters).
 import type { CompatTest, Me, ProvidersState, ProviderStatus } from '../../../shared/types.ts';
-import { api, providers } from '../api.ts';
+import { api, providers, track } from '../api.ts';
 import { esc } from '../interact.ts';
 import { refreshProviders } from './agentPick.ts';
 
@@ -130,7 +130,9 @@ export function agentsTab(page: HTMLElement) {
         ${me && !me.connected && st.canEdit ? `<form class="ak-key" data-gh><input type="password" autocomplete="off" placeholder="GitHub token (repo scope)" /><button class="st-btn" type="submit">Connect</button></form>
           <p class="ak-get"><a href="https://github.com/settings/tokens/new?scopes=repo&description=OpenWorld" target="_blank" rel="noopener">Create a token ↗</a></p>` : ''}
         ${me?.connected ? `<div class="st-row"><div class="st-act"><b>Hide private repos</b><span>${me.hidePrivateFromEnv ? 'Set by <code>OPENWORLD_PUBLIC_ONLY</code> in your environment.' : 'Before you stream, record or share a clip: private repos leave the city, the phone and the office. The page reloads to rebuild the city.'}</span></div>
-          <div class="st-seg" role="radiogroup"><button data-hide="0" aria-checked="${!me.hidePrivate}" ${st.canEdit && !me.hidePrivateFromEnv ? '' : 'disabled'}>Show</button><button data-hide="1" aria-checked="${!!me.hidePrivate}" ${st.canEdit && !me.hidePrivateFromEnv ? '' : 'disabled'}>Hide</button></div></div>` : ''}
+          <div class="st-seg" role="radiogroup"><button data-hide="0" aria-checked="${!me.hidePrivate}" ${st.canEdit && !me.hidePrivateFromEnv ? '' : 'disabled'}>Show</button><button data-hide="1" aria-checked="${!!me.hidePrivate}" ${st.canEdit && !me.hidePrivateFromEnv ? '' : 'disabled'}>Hide</button></div></div>
+        <div class="st-row"><div class="st-act"><b>Show famous open-source projects</b><span>React, Linux, VS Code and others get buildings you can visit, next to yours. Your own repos keep their buildings. The page reloads to rebuild the city.</span></div>
+          <div class="st-seg" role="radiogroup"><button data-showcase="0" aria-checked="${!me.showcase}" ${st.canEdit ? '' : 'disabled'}>Off</button><button data-showcase="1" aria-checked="${!!me.showcase}" ${st.canEdit ? '' : 'disabled'}>On</button></div></div>` : ''}
         ${notes.get('gh') ? `<p class="ak-note ${notes.get('gh')!.ok ? 'ok' : 'bad'}">${esc(notes.get('gh')!.text)}</p>` : ''}
       </section>
       <section class="st-group"><h4>Coding agents</h4>${st.providers.map(card).join('')}</section>
@@ -149,7 +151,7 @@ export function agentsTab(page: HTMLElement) {
     const value = input.value.trim();
     if (!value) { input.focus(); return; }
     if (form.hasAttribute('data-gh')) {
-      try { me = await api.saveToken(value); notes.set('gh', { ok: true, text: `Connected as ${me.login}. Reload to load your repos.` }); }
+      try { me = await api.saveToken(value); track('github_connected', { from: 'settings' }); notes.set('gh', { ok: true, text: `Connected as ${me.login}. Reload to load your repos.` }); }
       catch (err) { notes.set('gh', { ok: false, text: (err as Error).message }); }
       render();
       return;
@@ -214,6 +216,13 @@ export function agentsTab(page: HTMLElement) {
       const on = hide.dataset.hide === '1';
       if (on === !!me?.hidePrivate) return;
       try { await api.setHidePrivate(on); location.reload(); } catch (err) { notes.set('gh', { ok: false, text: (err as Error).message }); render(); }
+      return;
+    }
+    const sc = t.closest<HTMLElement>('[data-showcase]');
+    if (sc) {
+      const on = sc.dataset.showcase === '1';
+      if (on === !!me?.showcase) return;
+      try { await api.setShowcase(on); location.reload(); } catch (err) { notes.set('gh', { ok: false, text: (err as Error).message }); render(); }
       return;
     }
     try {

@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { quality, shared } from '../engine.ts';
 import { styleGlsl } from './build/facades.ts';
+import { reflectOut } from '../post/reflect.ts';
 // ---- Europe & Middle East
 import { euProps } from './cities/eu-props.ts';
 
@@ -714,9 +715,13 @@ export function buildingMaterial() {
         }
         totalEmissiveRadiance += diffuseColor.rgb * facadeSign * uNight * 2.2;`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
-        ${NEUTRAL_SHADE}`);
+        ${NEUTRAL_SHADE}`)
+      // Glass mirrors the street (screen-space reflections): windows as glass does, curtain walls as
+      // mirrors; fading out where a window is a pixel or two, which would only sparkle.
+      .replace('#include <opaque_fragment>', `#include <opaque_fragment>
+        ${reflectOut('max(facadeWin * mix(0.5, 0.95, smoothstep(0.0, 0.6, facadeMetal)), facadeShop * 0.5) * (1.0 - smoothstep(0.12, 0.4, facadePx))')}`);
   };
-  mat.customProgramCacheKey = () => 'earth-building-v13';
+  mat.customProgramCacheKey = () => 'earth-building-v15';
   mat.userData.quality = facadeQuality;
   buildingMat = mat;
   return mat;
@@ -765,14 +770,16 @@ const groundPatch = (sh: THREE.WebGLProgramParametersWithUniforms) => {
       roughnessFactor = mix(0.95, 0.38, gWetPave);`)
     .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
       ${NEUTRAL_SHADE}
-      ${NIGHT_GLOW}`);
+      ${NIGHT_GLOW}`)
+    .replace('#include <opaque_fragment>', `#include <opaque_fragment>
+      ${reflectOut('gWetPave * 0.3')}`);
 };
 
 /** Ground of a detailed chunk: its painted landuse map plus grass and paving detail. */
 export function groundMaterial(tex: THREE.Texture | null) {
   const m = new THREE.MeshStandardMaterial({ map: tex, color: tex ? 0xffffff : 0xa9c77a, roughness: 0.97, metalness: 0 });
   m.onBeforeCompile = groundPatch;
-  m.customProgramCacheKey = () => (tex ? 'earth-ground-map-v2' : 'earth-ground-plain-v2');
+  m.customProgramCacheKey = () => (tex ? 'earth-ground-map-v3' : 'earth-ground-plain-v3');
   return m;
 }
 
@@ -854,9 +861,11 @@ export function waterMaterial() {
           // Light scattered up out of the water body: a little green-blue, strongest looking down into it.
           float down = clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0);
           totalEmissiveRadiance += vec3(0.006, 0.02, 0.022) * down * (1.0 - uNightW * 0.9);
-        }`);
+        }`)
+      .replace('#include <opaque_fragment>', `#include <opaque_fragment>
+        ${reflectOut('0.45')}`);
   };
-  m.customProgramCacheKey = () => 'earth-water-v3';
+  m.customProgramCacheKey = () => 'earth-water-v5';
   waterMat = m;
   return m;
 }
@@ -895,6 +904,7 @@ function street<T extends THREE.MeshStandardMaterial>(m: T, kind: 'road' | 'walk
         float spx = fwidth(sp.x);
         float sfine = 1.0 - smoothstep(0.03, 0.2, spx);
         float sRough = roughness;
+        float sRefl = 0.0;
         {
           vec3 c = diffuseColor.rgb;
           float big = evn(sp * 0.05), mid = evn(sp * 0.4), grit = eh21(floor(sp * 22.0));
@@ -993,6 +1003,8 @@ function street<T extends THREE.MeshStandardMaterial>(m: T, kind: 'road' | 'walk
             c *= 1.0 - 0.12 * puddle;
             sRough = mix(sRough, ${kind === 'paint' ? '0.26' : '0.24'}, uWet * 0.85);
             sRough = mix(sRough, 0.03, puddle);
+            // What the screen-space reflections mirror: damp paving a little (smeared), puddles fully.
+            sRefl = mix(uWet * ${kind === 'deck' ? '0.2' : '0.34'}, 0.45, puddle);
           }
           diffuseColor.rgb = c;
         }`)
@@ -1000,9 +1012,11 @@ function street<T extends THREE.MeshStandardMaterial>(m: T, kind: 'road' | 'walk
         roughnessFactor = sRough;`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
         ${NEUTRAL_SHADE}
-        ${NIGHT_GLOW}`);
+        ${NIGHT_GLOW}`)
+      .replace('#include <opaque_fragment>', `#include <opaque_fragment>
+        ${reflectOut('sRefl')}`);
   };
-  m.customProgramCacheKey = () => `earth-street-${kind}-v7`;
+  m.customProgramCacheKey = () => `earth-street-${kind}-v9`;
   return m;
 }
 

@@ -10,7 +10,8 @@
     "models": "node scripts/fetch-models.mjs",
     "postinstall": "node scripts/fetch-models.mjs",
     "start": "npm run build && NODE_ENV=production tsx --env-file-if-exists=.env server/index.ts",
-    "vr": "npm run build && NODE_ENV=production OPENWORLD_HTTPS=1 tsx --env-file-if-exists=.env server/index.ts"
+    "vr": "npm run build && NODE_ENV=production OPENWORLD_HTTPS=1 tsx --env-file-if-exists=.env server/index.ts",
+    "team-relay": "tsx --env-file-if-exists=.env server/team/relay-main.ts"
   },
   "keywords": [
     "open-world",

@@ -1,5 +1,5 @@
 import type { CityId, GeoPlace, Me, Repo } from '../../../shared/types.ts';
-import { api } from '../api.ts';
+import { api, track } from '../api.ts';
 import { esc } from '../interact.ts';
 import { searchPlaces } from '../earth/index.ts';
 import { DESTINATIONS, REGIONS, toGeoPlace, type Destination, type Region } from './places.ts';
@@ -70,6 +70,7 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
         <button type="submit">Connect</button>
       </form>
       <p id="lp-repos" class="lp-repos"></p>
+      <p id="lp-showcase" class="lp-repos lp-showcase hidden"></p>
       <div id="lp-setup" class="lp-setup hidden" aria-label="Set up">
         <b>Set up in two steps</b>
         <ol>
@@ -135,6 +136,8 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
   const first = lastStart();
   $('play-label').textContent = `Enter ${cityOf(first)}`;
   $('play').addEventListener('click', () => go(first));
+  // A link into a project (?repo=…) skips the title screen: straight into the world, then the building.
+  if (new URLSearchParams(location.search).get('repo')) setTimeout(() => go(first), 0);
   // A saved session: continuing is the main button; the start place becomes "Start fresh".
   const saved = loadSession();
   if (saved) {
@@ -262,11 +265,19 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
     $('lp-setup-gh').classList.toggle('done', me.connected);
     $('lp-setup-agent').classList.toggle('done', !!me.agentsReady);
     if (!me.connected) $('lp-repos').innerHTML = ''; // the setup card says how
+    // No GitHub: say what the city holds meanwhile (asking also gets the logos ready before you enter).
+    $('lp-showcase').classList.add('hidden');
+    if (!me.connected) api.showcase().then(({ repos }) => {
+      if (!repos.length || me?.connected) return;
+      const [a, b, c] = repos.map((r) => r.name);
+      $('lp-showcase').innerHTML = `<b>No GitHub needed to look around.</b> The city is filled with ${repos.length} famous open-source projects (${[a, b, c].filter(Boolean).map(esc).join(', ')} and more) you can walk into, until you connect your own.`;
+      $('lp-showcase').classList.remove('hidden');
+    }).catch(() => { /* an older server: the hero is fine without it */ });
     form.onsubmit = async (e) => {
       e.preventDefault();
       const token = ($('token-input') as HTMLInputElement).value.trim();
       if (!token) return;
-      try { me = await api.saveToken(token); } catch (err) { $('lp-repos').textContent = String((err as Error).message); return; }
+      try { me = await api.saveToken(token); track('github_connected', { from: 'landing' }); } catch (err) { $('lp-repos').textContent = String((err as Error).message); return; }
       connect();
     };
   };

@@ -17,6 +17,10 @@ export interface PhotoDeps {
   /** Called when entering/leaving so the game can hide the HUD and freeze the player. */
   onToggle: (on: boolean) => void;
   where: () => { place: string; lat?: number; lon?: number };
+  /** R: open the clip sheet (client/src/clip.ts). */
+  clip?: () => void;
+  /** Something else has the keyboard (the clip sheet, a film playing). */
+  paused?: () => boolean;
 }
 
 interface Row { label: string; value: () => string; step: (dir: 1 | -1) => void }
@@ -108,7 +112,7 @@ export class PhotoMode {
   }
 
   private key(e: KeyboardEvent) {
-    if (!this.active) return;
+    if (!this.active || this.d.paused?.()) return;
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
     const stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
@@ -120,6 +124,7 @@ export class PhotoMode {
       case 'ArrowLeft': this.rows[this.sel].step(-1); stop(); break;
       case 'ArrowRight': this.rows[this.sel].step(1); stop(); break;
       case 'Enter': case 'Space': if (!e.repeat) void this.shoot(); stop(); break;
+      case 'KeyR': if (!this.d.clip) return; if (!e.repeat) this.d.clip(); stop(); break;
       case 'KeyH': this.hidden = !this.hidden; this.el.classList.toggle('faded', this.hidden); stop(); break;
       case 'Escape': case 'KeyF': if (!e.repeat) this.exit(); stop(); break;
       default: return;
@@ -154,7 +159,8 @@ export class PhotoMode {
         const eng = this.d.engine;
         this.bokeh = new BokehPass(eng.scene, cam, { focus: 6, aperture: 0.0002, maxblur: 0.012 });
         const passes = eng.composer.passes;
-        const out = passes.findIndex((p) => p.constructor.name === 'OutputPass');
+        // Before the final pass (bloom, tone mapping, grade), so the blur works on the HDR image.
+        const out = passes.indexOf(eng.grade);
         eng.composer.insertPass(this.bokeh, out >= 0 ? out : passes.length);
       }
       this.bokeh.enabled = true;
@@ -172,7 +178,7 @@ export class PhotoMode {
     this.el.innerHTML = `
       <div class="ow-photo-title">📷 Photo mode</div>
       ${this.rows.map((r, i) => `<div class="ow-photo-row${i === this.sel ? ' on' : ''}"><span>${esc(r.label)}</span><b>‹ ${esc(r.value())} ›</b></div>`).join('')}
-      <div class="ow-photo-keys"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>←</kbd><kbd>→</kbd> change · ${kbd('jump')} take the picture · ${kbd('forward', 'left', 'back', 'right', 'wingsuit', 'interact')} move · drag/mouse look · wheel distance · <kbd>H</kbd> hide · ${kbd('photo')} done</div>
+      <div class="ow-photo-keys"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>←</kbd><kbd>→</kbd> change · ${kbd('jump')} take the picture · ${kbd('forward', 'left', 'back', 'right', 'wingsuit', 'interact')} move · drag/mouse look · wheel distance · ${this.d.clip ? '<kbd>R</kbd> record a clip · ' : ''}<kbd>H</kbd> hide · ${kbd('photo')} done</div>
       <div class="ow-photo-gallery"></div>`;
     this.renderGallery();
   }
