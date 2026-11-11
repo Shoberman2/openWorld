@@ -24,7 +24,8 @@ const API_MODELS: Record<string, string> = {
  * their Anthropic, OpenAI, Gemini or xAI key, a signed-in Claude Code, Codex or Grok, or any OpenAI-compatible server (OpenRouter, Ollama…). OPENWORLD_MODEL still overrides the model.
  */
 export async function streamClaude(opts: StreamOpts): Promise<string> {
-  const chat = await chatProvider();
+  // The public web demo never speaks through anyone's AI account: the scripted lines only.
+  const chat = process.env.OPENWORLD_DEMO === '1' ? null : await chatProvider();
   const model = opts.model || process.env.OPENWORLD_MODEL || chat?.model || '';
   if (chat?.provider === 'anthropic') return streamApi({ ...opts, model });
   if (chat?.provider === 'claude-cli') return streamCli({ ...opts, model });

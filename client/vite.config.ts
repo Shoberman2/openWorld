@@ -13,4 +13,6 @@ export default defineConfig({
     },
   },
   build: { outDir: 'dist', emptyOutDir: true, chunkSizeWarningLimit: 2000 },
+  // The public web demo is the same client built with OPENWORLD_DEMO_BUILD=1 (scripts/vercel-build.mjs).
+  define: { __OW_DEMO__: JSON.stringify(process.env.OPENWORLD_DEMO_BUILD === '1') },
 });

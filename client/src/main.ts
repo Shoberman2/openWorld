@@ -3,6 +3,7 @@ import './prefs.ts';
 import * as THREE from 'three';
 import type { AgentInfo, CityId, GeoPlace, Repo } from '../../shared/types.ts';
 import { api, connectLive, onLive, track } from './api.ts';
+import { DEMO } from './demo.ts';
 import { Engine, DayNight, quality } from './engine.ts';
 import { makeCityView } from './rooms/cityView.ts';
 import { Input } from './input.ts';
@@ -176,8 +177,8 @@ async function start(where: CityId | GeoPlace) {
   const cityPulse = installCityPulse({ sites: place.sites, scene: cityScene, camera: engine.camera, agents: () => ctx.agents, visible: sitesHere, night: () => dayNight.night,
     partsNear: earth ? (x, z, r) => earth.footprintsNear(x, z, r).map((n) => ({ ring: n.ring, base: n.fp.base, top: n.fp.top, cx: n.cx, cz: n.cz })) : undefined });
 
-  // ---- Live agents ----
-  connectLive();
+  // ---- Live agents ---- (the web demo has none, and no socket to ask)
+  if (!DEMO) connectLive();
   onLive((msg) => {
     if (msg.type !== 'agent:update') return;
     const prev = ctx.agents.get(msg.agent.id);
@@ -624,7 +625,7 @@ async function start(where: CityId | GeoPlace) {
   $('loading').classList.add('hidden');
   $('hud').classList.remove('hidden');
   toast(guestSites.length && !repos.length
-    ? `Welcome to <b>${esc(place.title)}</b>. Until you connect GitHub, the city is home to ${guestSites.length} famous open-source projects, like <b>${esc(guestSites[0].repo.name)}</b>${guestSites[1] ? ` and <b>${esc(guestSites[1].repo.name)}</b>` : ''}. Walk into any of them. Your own repos move in when you connect GitHub in Settings (<b>${keymap.label('settings')}</b>).${earth ? ` Hold <b>${keymap.label('jump')}</b> in the air to fly, <b>${keymap.label('map')}</b> for the map.` : ''}`
+    ? `Welcome to <b>${esc(place.title)}</b>. Until you connect GitHub, the city is home to ${guestSites.length} famous open-source projects, like <b>${esc(guestSites[0].repo.name)}</b>${guestSites[1] ? ` and <b>${esc(guestSites[1].repo.name)}</b>` : ''}. Walk into any of them. ${DEMO ? 'Run OpenWorld on your own computer and your repos move in too.' : `Your own repos move in when you connect GitHub in Settings (<b>${keymap.label('settings')}</b>).`}${earth ? ` Hold <b>${keymap.label('jump')}</b> in the air to fly, <b>${keymap.label('map')}</b> for the map.` : ''}`
     : !repos.length
     ? `Welcome to <b>${esc(place.title)}</b>. Connect GitHub in Settings (<b>${keymap.label('settings')}</b>) and your repos move in as buildings. ${earth ? `Hold <b>${keymap.label('jump')}</b> in the air to fly, <b>${keymap.label('map')}</b> for the map of the world.` : ''}`
     : earth

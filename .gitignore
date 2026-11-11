@@ -10,3 +10,5 @@ vite.log
 .claude/worktrees/
 *.log
 client/public/models/*.glb
+.vercel/
+client/dist-demo

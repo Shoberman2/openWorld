@@ -130,6 +130,10 @@ Inside each building:
 - **Agent Lab**: hire an agent. Type a task and a real coding agent starts working in an isolated git worktree of the repo. It takes a desk in a suit, its monitor shows live progress, and you can watch the diff grow, stop it, or open a pull request when it's done. While a task runs, busy agents get up, walk over to each other and talk through what they're doing.
 - **Boardroom**: put a decision to the board (Chair, CTO, Head of Product, Design Lead, Growth). They debate, take positions and record a resolution with next steps.
 
+### The web demo
+
+`npm run build:web` builds a public, read-only version for Vercel (`vercel deploy --prebuilt --prod`): the real planet and the city of famous open-source projects, with no GitHub, agents, keys or saved data on the server (`server/demo.ts`). `npm run demo` runs the same thing locally on port 4400. Set `OPENWORLD_SHOWCASE_TOKEN` (a GitHub token with no scopes) on the host so the showcase's live numbers don't hit GitHub's 60-requests-an-hour limit.
+
 ### Straight to the boardroom
 
 From inside any of your repos, `node /path/to/openWorld/bin/boardroom.mjs "Should we ship this week?"` starts the game if it isn't running and opens it at the head of that project's board table, with the question typed in. The link it opens works on its own too: `http://localhost:4317/?repo=my-api&room=boardroom&ask=…` (leave out `room` to land in the lobby). In Claude Code, save the same line as a `/boardroom` command.

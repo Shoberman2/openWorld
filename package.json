@@ -11,7 +11,9 @@
     "postinstall": "node scripts/fetch-models.mjs",
     "start": "npm run build && NODE_ENV=production tsx --env-file-if-exists=.env server/index.ts",
     "vr": "npm run build && NODE_ENV=production OPENWORLD_HTTPS=1 tsx --env-file-if-exists=.env server/index.ts",
-    "team-relay": "tsx --env-file-if-exists=.env server/team/relay-main.ts"
+    "team-relay": "tsx --env-file-if-exists=.env server/team/relay-main.ts",
+    "build:web": "node scripts/vercel-build.mjs",
+    "demo": "OPENWORLD_DEMO_BUILD=1 vite build --config client/vite.config.ts --outDir dist-demo --emptyOutDir && tsx server/demo.ts"
   },
   "keywords": [
     "open-world",

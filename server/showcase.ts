@@ -30,10 +30,13 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** Without a token GitHub allows 60 requests an hour: once it says no, stop asking until the hour resets. */
 let limitedUntil = 0;
 
+/** The token for reading public projects: a dedicated read-only one when set (the web demo), else yours. */
+const readToken = async () => (process.env.OPENWORLD_SHOWCASE_TOKEN ? { token: process.env.OPENWORLD_SHOWCASE_TOKEN } : getToken());
+
 async function pub(url: string, opts: { accept?: string; body?: unknown; timeoutMs?: number } = {}): Promise<Response | null> {
   const target = url.startsWith('/') ? `https://api.github.com${url}` : url;
   const isApi = target.startsWith('https://api.github.com');
-  const tok = isApi ? (await getToken())?.token : undefined;
+  const tok = isApi ? (await readToken())?.token : undefined;
   if (isApi && !tok && Date.now() < limitedUntil) return null;
   const call = (auth?: string) => fetch(target, {
     method: opts.body ? 'POST' : 'GET',
@@ -255,7 +258,7 @@ async function listShowcase(): Promise<{ on: boolean; connected: boolean; repos:
   const list = await visible();
   if (list.length) {
     // Numbers first (only with a token: one cheap batch), then logos; neither may hold the world up for long.
-    if ((await getToken()) && list.some((x) => !fresh(x))) await Promise.race([refreshAllStats().catch(() => {}), sleep(6000)]);
+    if ((await readToken()) && list.some((x) => !fresh(x))) await Promise.race([refreshAllStats().catch(() => {}), sleep(6000)]);
     await Promise.race([Promise.all(list.map((x) => ensureShowcaseLogo(x))), sleep(3500)]);
   }
   return { ...st, repos: list.map(toRepo) };
@@ -348,7 +351,7 @@ const detailJobs = new Map<string, Promise<Detail>>();
 async function showcaseDetail(x: ShowcaseEntry): Promise<{ readme: string; workers: Worker[] }> {
   const file = join(DIR, `detail-${safe(x.label)}.json`);
   const hit = readJson<Detail | null>(file, null);
-  const authed = !!(await getToken());
+  const authed = !!(await readToken());
   if (hit && Date.now() - hit.at < (authed ? DAY / 4 : 3 * DAY)) return hit;
   let job = detailJobs.get(x.label);
   if (!job) {
@@ -401,7 +404,7 @@ export function registerShowcase(app: Express) {
   app.get('/api/repos/:name', wrap(async (req, res, next) => {
     const x = await guest(String(req.params.name));
     if (!x) return next();
-    if (!(await getToken()) && !fresh(x)) await refreshStats(x).catch(() => {});
+    if (!(await readToken()) && !fresh(x)) await refreshStats(x).catch(() => {});
     const { readme, workers } = await showcaseDetail(x);
     const detail: RepoDetail = { repo: toRepo(x), readme, workers, decisions: [], agents: [] };
     res.json(detail);
@@ -446,7 +449,7 @@ export function registerShowcase(app: Express) {
       opener = 'A visitor just walked up to your reception desk. Greet them, say in a sentence that this is a public project they are visiting, and give a short, vivid overview of what the project is and what has been happening lately.';
       fallback = `Welcome to ${repo.name}. ${repo.description} This is a public open-source project (${repo.fullName}) you're visiting${numbers ? `: ${numbers}` : ''}. `
         + (workers.length ? `Lately: ${workers.slice(0, 3).map((w) => `"${w.title}" by ${w.author}`).join('; ')}. The people behind recent changes are at the desks upstairs: walk up and press E. ` : 'The desks upstairs fill in when GitHub can be reached. ')
-        + 'Connect GitHub in Settings and your own projects move into buildings like this one.';
+        + (process.env.OPENWORLD_DEMO === '1' ? 'Run OpenWorld on your own computer and your projects move into buildings like this one.' : 'Connect GitHub in Settings and your own projects move into buildings like this one.');
     } else {
       const w = workers.find((k) => k.id === String(body.workerId));
       if (!w) { res.status(404).json({ error: `Unknown worker ${body.workerId}` }); return; }

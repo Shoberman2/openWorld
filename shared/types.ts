@@ -57,6 +57,8 @@ export interface Me {
   /** Private repos are left out of the world (Settings, or OPENWORLD_PUBLIC_ONLY=1). */
   hidePrivate?: boolean;
   hidePrivateFromEnv?: boolean;
+  /** The public web demo (no GitHub, no agents, nothing saved): the page shows how to run your own. */
+  demo?: boolean;
   /** Settings: also show famous open-source projects next to your own (without GitHub they always show). */
   showcase?: boolean;
 }

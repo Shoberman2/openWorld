@@ -6,8 +6,12 @@ import { api, track } from './api.ts';
 import { esc } from './interact.ts';
 import { openPanel } from './ui/panel.ts';
 import { openSettings } from './ui/settings.ts';
+import { DEMO, getOpenWorld } from './demo.ts';
 
-export const VISITING = "This is a public project you're visiting. Connect GitHub to see your own.";
+export const VISITING = DEMO
+  ? "This is a public project you're visiting. Run OpenWorld on your computer to see your own repos here."
+  : "This is a public project you're visiting. Connect GitHub to see your own.";
+const CONNECT = DEMO ? 'Get OpenWorld' : 'Connect GitHub';
 
 /** The showcase projects for this session: none when it's off, the server is old or GitHub is slow. */
 export const loadShowcase = () => api.showcase().catch(() => ({ on: false, connected: false, repos: [] as Repo[] }));
@@ -18,7 +22,7 @@ export const visitWord = (r: Repo) => `Public project · ${r.fullName}`;
 /** Open Settings on the GitHub section, and count it for the showcase experiment. */
 export function connectGitHub(from: string) {
   track('showcase_connect_clicked', { from });
-  openSettings('agents');
+  if (DEMO) getOpenWorld(); else openSettings('agents');
 }
 
 /** A row that takes the place of "hand off a task" in a showcase building. */
@@ -26,7 +30,7 @@ export function visitingStrip(from: string) {
   const el = document.createElement('div');
   el.className = 'assign-strip visiting-strip';
   el.innerHTML = `<span class="as-label">Visiting</span><span class="vs-text">${esc(VISITING)}</span>
-    <button class="btn primary" type="button">Connect GitHub</button>`;
+    <button class="btn primary" type="button">${CONNECT}</button>`;
   el.querySelector('button')!.addEventListener('click', () => connectGitHub(from));
   return el;
 }
@@ -38,7 +42,7 @@ export function openVisitingPanel(repo: Repo, what: string, from: string) {
       <p><b>${esc(VISITING)}</b></p>
       <p>${esc(repo.name)} belongs to the people who build it, so nothing here can change it. Talk to reception and the people at the desks about their recent work.</p>
       <p>In your own buildings this is where ${esc(what === 'The boardroom' ? 'the board debates your decisions' : 'you hire a coding agent and watch it work')}.</p>
-      <button class="btn primary" type="button">Connect GitHub</button>
+      <button class="btn primary" type="button">${CONNECT}</button>
     </div>`;
   panel.body.querySelector('button')!.addEventListener('click', () => connectGitHub(from));
   return panel;

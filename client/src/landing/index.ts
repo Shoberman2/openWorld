@@ -1,3 +1,4 @@
+import { REPO_URL } from '../demo.ts';
 import type { CityId, GeoPlace, Me, Repo } from '../../../shared/types.ts';
 import { api, track } from '../api.ts';
 import { esc } from '../interact.ts';
@@ -247,6 +248,20 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
     }
     play.disabled = false;
     ($('lp-resume') as HTMLButtonElement).disabled = false;
+    if (me.demo) {
+      // The website: nothing to connect here. Say what the city holds and how to get your own.
+      status.innerHTML = '<span class="dot"></span>Web demo';
+      form.classList.add('hidden');
+      $('lp-setup').classList.add('hidden');
+      $('lp-repos').innerHTML = `Your own repos become buildings when you run OpenWorld on your computer: <a href="${REPO_URL}" target="_blank" rel="noopener">get it on GitHub</a>.`;
+      api.showcase().then(({ repos }) => {
+        if (!repos.length) return;
+        const [a, b, c] = repos.map((r) => r.name);
+        $('lp-showcase').innerHTML = `<b>Walk into famous open-source projects.</b> The city is home to ${repos.length} of them (${[a, b, c].filter(Boolean).map(esc).join(', ')} and more): talk to reception and the people at the desks about their latest work.`;
+        $('lp-showcase').classList.remove('hidden');
+      }).catch(() => {});
+      return;
+    }
     if (me.connected) {
       status.innerHTML = `${me.avatarUrl ? `<img src="${esc(me.avatarUrl)}" alt="">` : '<span class="dot"></span>'}<b>${esc(me.login ?? '')}</b>`;
       form.classList.add('hidden');
