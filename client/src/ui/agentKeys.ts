@@ -5,6 +5,7 @@ import type { CompatTest, Me, ProvidersState, ProviderStatus } from '../../../sh
 import { api, providers, track } from '../api.ts';
 import { esc } from '../interact.ts';
 import { refreshProviders } from './agentPick.ts';
+import { signInWithGitHub } from '../githubLogin.ts';
 
 const CHAT_LABEL: Record<string, string> = {
   anthropic: 'Claude (Anthropic key)', 'claude-cli': 'Claude Code login', 'codex-cli': 'ChatGPT login (Codex)', openai: 'ChatGPT (OpenAI key)', gemini: 'Gemini key', xai: 'Grok (xAI key)', 'grok-cli': 'Grok login', compat: 'Other model',
@@ -115,6 +116,7 @@ export function agentsTab(page: HTMLElement) {
     </div>`;
   };
 
+  let ghWaiting = false;
   const render = () => {
     if (!st) { page.innerHTML = `<div class="st-empty">Checking which agents this computer can run…</div>`; return; }
     const anyReady = st.providers.some((p) => p.ready);
@@ -127,6 +129,7 @@ export function agentsTab(page: HTMLElement) {
           ? `<b>Connected as ${esc(me.login ?? '')}</b><span>${me.tokenSource === 'gh' ? 'Using your GitHub CLI login (gh).' : me.tokenSource === 'env' ? 'Using GITHUB_TOKEN from your environment.' : 'Using the token you pasted.'}</span>`
           : `<b>Not connected</b><span>Run <code>gh auth login</code>, or paste a token with repo access.</span>`}</div>
           ${me?.connected ? '<em class="ak-chip ok">Connected</em>' : ''}</div>
+        ${me && !me.connected && st.canEdit && me.githubLogin ? `<div class="st-row"><div class="st-act"><b>Sign in with GitHub</b><span>Approve OpenWorld on github.com with a short code. Or paste a token below.</span></div><button class="st-btn" type="button" data-ghlogin ${ghWaiting ? 'disabled' : ''}>${ghWaiting ? 'Waiting for GitHub' : 'Sign in'}</button></div>` : ''}
         ${me && !me.connected && st.canEdit ? `<form class="ak-key" data-gh><input type="password" autocomplete="off" placeholder="GitHub token (repo scope)" /><button class="st-btn" type="submit">Connect</button></form>
           <p class="ak-get"><a href="https://github.com/settings/tokens/new?scopes=repo&description=OpenWorld" target="_blank" rel="noopener">Create a token ↗</a></p>` : ''}
         ${me?.connected ? `<div class="st-row"><div class="st-act"><b>Hide private repos</b><span>${me.hidePrivateFromEnv ? 'Set by <code>OPENWORLD_PUBLIC_ONLY</code> in your environment.' : 'Before you stream, record or share a clip: private repos leave the city, the phone and the office. The page reloads to rebuild the city.'}</span></div>
@@ -206,6 +209,18 @@ export function agentsTab(page: HTMLElement) {
     if (t.closest('[data-cf-test]')) { void compatTest(); return; }
     if (t.closest('[data-cf-remove]')) {
       try { const next = await providers.removeCompat(); notes.set('compat', { ok: true, text: 'Removed.' }); cf.init = false; apply(next); } catch (err) { fail('compat', err); }
+      return;
+    }
+    if (t.closest('[data-ghlogin]')) {
+      ghWaiting = true;
+      notes.delete('gh');
+      render();
+      try {
+        me = await signInWithGitHub('settings', ({ code }) => { notes.set('gh', { ok: true, text: `Enter ${code} on the GitHub tab (it's copied).` }); render(); });
+        notes.set('gh', { ok: true, text: `Connected as ${me.login}. Reload to load your repos.` });
+      } catch (err) { notes.set('gh', { ok: false, text: (err as Error).message }); }
+      ghWaiting = false;
+      render();
       return;
     }
     const rm = t.closest<HTMLElement>('[data-remove]');

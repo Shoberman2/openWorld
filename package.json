@@ -1,5 +1,5 @@
 {
-  "name": "openworld",
+  "name": "openworld-hq",
   "version": "1.0.0",
   "description": "Your GitHub as an open world: walk the real planet, every repo is a building, and AI coding agents (Claude, ChatGPT/Codex, Gemini or any model) work inside.",
   "scripts": {
@@ -13,7 +13,8 @@
     "vr": "npm run build && NODE_ENV=production OPENWORLD_HTTPS=1 tsx --env-file-if-exists=.env server/index.ts",
     "team-relay": "tsx --env-file-if-exists=.env server/team/relay-main.ts",
     "build:web": "node scripts/vercel-build.mjs",
-    "demo": "OPENWORLD_DEMO_BUILD=1 vite build --config client/vite.config.ts --outDir dist-demo --emptyOutDir && tsx server/demo.ts"
+    "demo": "OPENWORLD_DEMO_BUILD=1 vite build --config client/vite.config.ts --outDir dist-demo --emptyOutDir && tsx server/demo.ts",
+    "prepack": "npm run build"
   },
   "keywords": [
     "open-world",
@@ -53,6 +54,25 @@
   },
   "type": "module",
   "bin": {
+    "openworld-hq": "bin/openworld.js",
     "openworld": "bin/openworld.js"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shoberman2/openWorld.git"
+  },
+  "homepage": "https://openworld-phi.vercel.app",
+  "bugs": {
+    "url": "https://github.com/Shoberman2/openWorld/issues"
+  },
+  "files": [
+    "bin/openworld.js",
+    "bin/boardroom.mjs",
+    "server",
+    "shared",
+    "client/dist",
+    "!client/dist/models/*.glb",
+    "scripts/fetch-models.mjs",
+    "NOTICE"
+  ]
 }

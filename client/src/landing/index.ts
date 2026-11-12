@@ -1,3 +1,4 @@
+import { signInWithGitHub } from '../githubLogin.ts';
 import { REPO_URL } from '../demo.ts';
 import type { CityId, GeoPlace, Me, Repo } from '../../../shared/types.ts';
 import { api, track } from '../api.ts';
@@ -65,6 +66,10 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
         <button id="lp-resume" class="lp-play hidden" disabled><span class="lp-two"><span>Continue where you left off</span><small id="lp-resume-sub"></small></span>${icon('arrow')}</button>
         <button id="play" class="lp-play" disabled><span id="play-label">Enter New York</span>${icon('arrow')}</button>
         <a class="lp-ghost" href="#lp-places">Start somewhere else</a>
+      </div>
+      <div id="gh-login" class="lp-ghlogin hidden">
+        <button id="gh-login-btn" class="lp-ghost" type="button">Sign in with GitHub</button>
+        <p id="gh-login-code" class="lp-repos" aria-live="polite"></p>
       </div>
       <form id="token-form" class="lp-token hidden">
         <input id="token-input" type="password" placeholder="Paste a GitHub token (repo scope)" autocomplete="off" />
@@ -288,6 +293,26 @@ export function installLanding(opts: { onStart: (where: CityId | GeoPlace) => vo
       $('lp-showcase').innerHTML = `<b>No GitHub needed to look around.</b> The city is filled with ${repos.length} famous open-source projects (${[a, b, c].filter(Boolean).map(esc).join(', ')} and more) you can walk into, until you connect your own.`;
       $('lp-showcase').classList.remove('hidden');
     }).catch(() => { /* an older server: the hero is fine without it */ });
+    // Sign in with GitHub (device flow), where this copy has it set up.
+    const login = $('gh-login'), loginBtn = $('gh-login-btn') as HTMLButtonElement, loginCode = $('gh-login-code');
+    login.classList.toggle('hidden', !!me.connected || !me.githubLogin);
+    if (!me.connected && me.githubLogin) $('lp-setup-gh').querySelector('small')!.innerHTML = 'Sign in above, run <code>gh auth login</code>, or paste a token.';
+    loginBtn.onclick = async () => {
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Waiting for GitHub';
+      try {
+        me = await signInWithGitHub('landing', ({ code, url }) => {
+          loginCode.innerHTML = `Enter <b class="lp-code">${esc(code)}</b> on GitHub (it's copied). <a href="${esc(url)}" target="_blank" rel="noopener">Open GitHub</a>`;
+        });
+        loginCode.textContent = '';
+        connect();
+      } catch (err) {
+        loginCode.textContent = (err as Error).message;
+      } finally {
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Sign in with GitHub';
+      }
+    };
     form.onsubmit = async (e) => {
       e.preventDefault();
       const token = ($('token-input') as HTMLInputElement).value.trim();

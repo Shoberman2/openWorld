@@ -10,6 +10,11 @@ export const api = {
   me: () => fetch('/api/me').then((r) => json<Me>(r)),
   saveToken: (token: string) =>
     fetch('/api/token', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) }).then((r) => json<Me>(r)),
+  /** Start "Sign in with GitHub": a code to type at github.com/login/device. */
+  githubLogin: () =>
+    fetch('/api/github/login', { method: 'POST' }).then((r) => json<{ id: string; userCode: string; verificationUri: string; interval: number; expiresIn: number }>(r)),
+  githubLoginPoll: (id: string) =>
+    fetch('/api/github/login/poll', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) }).then((r) => json<{ status: 'pending' | 'done' | 'denied' | 'expired'; interval?: number; me?: Me }>(r)),
   /** Leave private repos out of the world (for streaming and recording). */
   setHidePrivate: (on: boolean) =>
     fetch('/api/settings/hide-private', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on }) }).then((r) => json<{ hidePrivate: boolean }>(r)),

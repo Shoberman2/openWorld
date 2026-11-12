@@ -64,6 +64,10 @@
 .lp-ghost:hover:not(:disabled) { background: rgba(10, 12, 24, .5); }
 .lp-ghost:disabled { opacity: .5; cursor: not-allowed; }
 .lp-ghost .ico { width: 16px; height: 16px; }
+.lp-ghlogin { margin-top: 18px; }
+.lp-ghlogin .lp-repos { margin-top: 10px; }
+.lp-ghlogin a { color: #fff; font-weight: 600; }
+.lp-code { font-family: var(--mono); letter-spacing: .08em; font-size: 16px; }
 .lp-token { display: flex; gap: 8px; margin: 18px 0 0; max-width: 440px; }
 .lp-token input { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,.3); background: rgba(10, 12, 24, .6); color: #fff; font: inherit; font-size: 14px; }
 .lp-token input::placeholder { color: rgba(255,255,255,.6); }
