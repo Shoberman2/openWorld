@@ -4,6 +4,12 @@ Your GitHub, as a living open world. Start anywhere on Earth, walk the real stre
 
 You play a robot with a white shell head and a visor face, in a navy suit and rocket shoes.
 
+**Try it in your browser: [openworld-phi.vercel.app](https://openworld-phi.vercel.app)** (the real planet and a city of famous open-source projects, no install). For your own repos and agents, run it on your computer with one command:
+
+```bash
+npx openworld-hq
+```
+
 Free and open source under the [MIT License](LICENSE). Everything runs on your own computer, with your own GitHub account and your own AI keys or logins.
 
 - [Quick start](#quick-start)
@@ -17,7 +23,15 @@ Free and open source under the [MIT License](LICENSE). Everything runs on your o
 
 ## Quick start
 
-You need **Node.js 22.9 or newer** and **git**. macOS, Linux and Windows (WSL) work; a computer with a decent GPU makes the city look its best.
+You need **Node.js 22.9 or newer**. macOS, Linux and Windows (WSL) work; a computer with a decent GPU makes the city look its best.
+
+```bash
+npx openworld-hq
+```
+
+That downloads OpenWorld, starts it and opens http://localhost:4317 in your browser. Run the same command whenever you want to play.
+
+To work on the code instead, you also need **git**:
 
 ```bash
 git clone https://github.com/Shoberman2/openWorld.git
@@ -94,6 +108,7 @@ Keys you paste are saved only in `~/.openworld/config.json` (readable by your us
 
 Your repos become the buildings, and agents open pull requests through your account. Any one of:
 
+- **Sign in with GitHub** on the title screen or in **Settings → Agents & keys → GitHub**: approve OpenWorld on github.com with a short code. Nothing to copy or paste.
 - **GitHub CLI**: run `gh auth login` once. OpenWorld picks it up.
 - **Token in `.env`**: `GITHUB_TOKEN=…`
 - **Paste a token** in **Settings → Agents & keys → GitHub**.
@@ -132,7 +147,7 @@ Inside each building:
 
 ### The web demo
 
-`npm run build:web` builds a public, read-only version for Vercel (`vercel deploy --prebuilt --prod`): the real planet and the city of famous open-source projects, with no GitHub, agents, keys or saved data on the server (`server/demo.ts`). `npm run demo` runs the same thing locally on port 4400. Set `OPENWORLD_SHOWCASE_TOKEN` (a GitHub token with no scopes) on the host so the showcase's live numbers don't hit GitHub's 60-requests-an-hour limit.
+`npm run build:web` builds a public, read-only version for Vercel (every push to `main` deploys it, through `vercel.json`; or by hand with `vercel deploy --prebuilt --prod`): the real planet and the city of famous open-source projects, with no GitHub, agents, keys or saved data on the server (`server/demo.ts`). `npm run demo` runs the same thing locally on port 4400. Set `OPENWORLD_SHOWCASE_TOKEN` (a GitHub token with no scopes) on the host so the showcase's live numbers don't hit GitHub's 60-requests-an-hour limit.
 
 ### Straight to the boardroom
 
@@ -250,6 +265,7 @@ Everything is optional. Copy [.env.example](.env.example) to `.env`; the `npm` s
 | `OPENWORLD_MODEL` | Force the chat model by name |
 | `PORT` / `HTTPS_PORT` | Server ports (default 4317 / 4318) |
 | `OPENWORLD_HTTPS=1` | Also serve over HTTPS on the LAN (VR) |
+| `OPENWORLD_GITHUB_CLIENT_ID` | Your own GitHub OAuth app (device flow on) for Sign in with GitHub, instead of OpenWorld's |
 | `OPENWORLD_HOME` | Where OpenWorld keeps its data (default `~/.openworld`) |
 | `OPENWORLD_TILE_CACHE_MB` | Map tile cache size (default 3000) |
 | `OPENWORLD_CODE_DIRS` | Folders to look in for local clones of your repos (separated like `PATH`), for the branch and file teammates see |

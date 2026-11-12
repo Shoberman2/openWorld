@@ -31,6 +31,7 @@ import { guardHttp, localOnly, trustedRequest } from './guard.ts';
 import { registerTeam } from './team/index.ts';
 import { teamStats } from './team/stats.ts';
 import { registerShowcase, showcaseStats, showcaseToggle } from './showcase.ts';
+import { registerGitHubLogin, clientId as githubClientId } from './githubLogin.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 4317;
@@ -79,6 +80,7 @@ app.get('/api/me', h(async () => ({
   hidePrivate: hidingPrivate(),
   hidePrivateFromEnv: process.env.OPENWORLD_PUBLIC_ONLY === '1',
   showcase: showcaseToggle(),
+  githubLogin: !!githubClientId(),
 })));
 
 // Hide private repos (for streaming and recording): only from this computer, like keys.
@@ -99,6 +101,8 @@ app.post('/api/token', h(async (req, res) => {
   resetToken();
   return getMe();
 }));
+
+registerGitHubLogin(app);
 
 // ---------- repos ----------
 

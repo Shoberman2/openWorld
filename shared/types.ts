@@ -59,6 +59,8 @@ export interface Me {
   hidePrivateFromEnv?: boolean;
   /** The public web demo (no GitHub, no agents, nothing saved): the page shows how to run your own. */
   demo?: boolean;
+  /** "Sign in with GitHub" (device flow) is set up in this copy. */
+  githubLogin?: boolean;
   /** Settings: also show famous open-source projects next to your own (without GitHub they always show). */
   showcase?: boolean;
 }
