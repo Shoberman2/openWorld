@@ -1,6 +1,7 @@
 // Settings first: a saved quality choice must reach the URL before the engine reads it.
 import './prefs.ts';
 import * as THREE from 'three';
+import { inject } from '@vercel/analytics';
 import type { AgentInfo, CityId, GeoPlace, Repo } from '../../shared/types.ts';
 import { api, connectLive, onLive, track } from './api.ts';
 import { DEMO } from './demo.ts';
@@ -45,6 +46,8 @@ import { installSettings, toggleSettings } from './ui/settings.ts';
 import { keymap } from './keymap.ts';
 import { installTeam } from './team/index.ts';
 import { loadShowcase, visitWord } from './showcase.ts';
+
+inject();
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
